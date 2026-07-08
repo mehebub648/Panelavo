@@ -7,6 +7,8 @@ import {
   ArrowLeft,
   ArrowRight,
   Braces,
+  Cloud,
+  AlertTriangle,
   Check,
   Clipboard,
   Code2,
@@ -83,6 +85,7 @@ type Values = {
   appPort: string;
   reverseProxyUrl: string;
 };
+type CloudflareZone = { id: string; name: string; credentialId: string; credentialLabel: string };
 const initial: Values = {
   domain: "",
   siteUser: "",
@@ -106,18 +109,22 @@ export function CreateSiteForm() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
+  const [zones, setZones] = useState<CloudflareZone[]>([]);
+  const [domainMode, setDomainMode] = useState<"cloudflare" | "custom">("cloudflare");
+  const [selectedZone, setSelectedZone] = useState<CloudflareZone | null>(null);
+  const [subdomain, setSubdomain] = useState("");
+  const [existingRecord, setExistingRecord] = useState<{ content: string } | null>(null);
+  const [replaceRecord, setReplaceRecord] = useState(false);
   useEffect(() => {
     (async () => {
       try {
-        const response = await fetch("/api/sites/options", {
-          cache: "no-store",
-        });
-        const result = await response.json();
+        const [result, zoneResult] = await Promise.all([fetch("/api/sites/options", { cache: "no-store" }).then((r) => r.json()), fetch("/api/cloudflare/zones", { cache: "no-store" }).then((r) => r.json())]);
         if (!result.success)
           throw new Error(
             result.error?.message || "Options could not be loaded.",
           );
         const next = result.data.options as SiteCreationOptions;
+        if (zoneResult.success) { setZones(zoneResult.data.zones); if (!zoneResult.data.zones.length) setDomainMode("custom"); }
         setOptions(next);
         setValues((current) => ({
           ...current,
@@ -169,6 +176,16 @@ export function CreateSiteForm() {
           .slice(0, 28),
     }));
   }
+  async function checkRecord(domain: string, zone = selectedZone) {
+    if (!zone || !domain) { setExistingRecord(null); return; }
+    const result = await fetch(`/api/cloudflare/check?credentialId=${encodeURIComponent(zone.credentialId)}&zoneId=${encodeURIComponent(zone.id)}&name=${encodeURIComponent(domain)}`).then((r) => r.json());
+    if (result.success) setExistingRecord(result.data.record);
+  }
+  function chooseZone(value: string) {
+    const zone = zones.find((item) => `${item.credentialId}:${item.id}` === value) ?? null; setSelectedZone(zone); setSubdomain(""); setExistingRecord(null);
+    if (zone) { change("domain", zone.name); void checkRecord(zone.name, zone); }
+  }
+  function changeSubdomain(value: string) { const clean = value.toLowerCase().replace(/[^a-z0-9-]/g, ""); setSubdomain(clean); if (selectedZone) { const domain = clean ? `${clean}.${selectedZone.name}` : selectedZone.name; change("domain", domain); } }
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -203,11 +220,12 @@ export function CreateSiteForm() {
             : type === "reverse-proxy"
               ? { ...shared, reverseProxyUrl: values.reverseProxyUrl }
               : shared;
+    const requestBody = domainMode === "cloudflare" && selectedZone ? { ...body, dns: { credentialId: selectedZone.credentialId, zoneId: selectedZone.id, replace: replaceRecord, proxied: false } } : body;
     try {
       const response = await fetch("/api/sites", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify(requestBody),
       });
       const result = await response.json();
       if (!result.success)
@@ -360,19 +378,9 @@ export function CreateSiteForm() {
           </div>
           <div className="grid gap-x-6 gap-y-5 p-5 sm:grid-cols-2 sm:p-7">
             <div className="sm:col-span-2">
-              <Label htmlFor="domain">Domain name</Label>
-              <Input
-                id="domain"
-                value={values.domain}
-                onChange={(e) => change("domain", e.target.value)}
-                onBlur={domainBlur}
-                placeholder="example.com"
-                autoComplete="off"
-                required
-              />
-              <p className="mt-1.5 text-xs text-slate-400">
-                Enter the domain only—without a path or port.
-              </p>
+              <div className="mb-3 flex gap-2"><button type="button" onClick={() => setDomainMode("cloudflare")} disabled={!zones.length} className={`rounded-lg border px-3 py-2 text-sm font-medium ${domainMode === "cloudflare" ? "border-panel-400 bg-panel-50 text-panel-700" : "border-slate-200"}`}><Cloud className="mr-2 inline h-4 w-4" />Cloudflare domain</button><button type="button" onClick={() => { setDomainMode("custom"); setSelectedZone(null); setExistingRecord(null); }} className={`rounded-lg border px-3 py-2 text-sm font-medium ${domainMode === "custom" ? "border-panel-400 bg-panel-50 text-panel-700" : "border-slate-200"}`}>Custom domain</button></div>
+              {domainMode === "cloudflare" ? <div className="grid gap-3 sm:grid-cols-2"><div><Label>Cloudflare zone</Label><Select value={selectedZone ? `${selectedZone.credentialId}:${selectedZone.id}` : ""} onChange={(e) => chooseZone(e.target.value)} required><option value="">Select a zone…</option>{zones.map((zone) => <option key={`${zone.credentialId}:${zone.id}`} value={`${zone.credentialId}:${zone.id}`}>{zone.name} · {zone.credentialLabel}</option>)}</Select></div><div><Label htmlFor="subdomain">Subdomain (optional)</Label><Input id="subdomain" value={subdomain} onChange={(e) => changeSubdomain(e.target.value)} onBlur={() => void checkRecord(values.domain)} placeholder="www, app, api…" disabled={!selectedZone} /></div><div className="sm:col-span-2 rounded-xl bg-slate-50 px-4 py-3 text-sm"><span className="text-slate-500">Website domain:</span> <b>{values.domain || "Select a zone"}</b><p className="mt-1 text-xs text-slate-500">An A record will be created automatically for this server.</p></div></div> : <><Label htmlFor="domain">Domain name</Label><Input id="domain" value={values.domain} onChange={(e) => change("domain", e.target.value)} onBlur={domainBlur} placeholder="example.com" autoComplete="off" required /><p className="mt-1.5 text-xs text-slate-400">Any domain is allowed; Cloudflare is not required.</p></>}
+              {existingRecord && <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800"><div className="flex gap-2"><AlertTriangle className="h-5 w-5 shrink-0" /><div><b>An A record already exists</b><p className="mt-1">{values.domain} currently points to {existingRecord.content}.</p><label className="mt-3 flex items-center gap-2 font-medium"><input type="checkbox" checked={replaceRecord} onChange={(e) => setReplaceRecord(e.target.checked)} />Replace it with this server&apos;s IP</label></div></div></div>}
             </div>
             {type === "php" && (
               <>

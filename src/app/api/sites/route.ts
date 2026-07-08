@@ -6,6 +6,7 @@ import { createSiteSchema } from "@/schemas/sites";
 import { fail, ok } from "@/server/http";
 import { audit } from "@/server/security/log";
 import { assertWriteRequest, rateLimit } from "@/server/security/request";
+import { setARecord } from "@/server/cloudflare/store";
 
 export async function GET() {
   const requestId = randomUUID();
@@ -35,7 +36,8 @@ export async function POST(request: NextRequest) {
           403,
         ),
       );
-    const input = createSiteSchema.parse(await request.json());
+    const raw = await request.json();
+    const input = createSiteSchema.parse(raw);
     audit("sites.create.request", "success", {
       requestId,
       user: session.user.username,
@@ -46,6 +48,17 @@ export async function POST(request: NextRequest) {
       session.record.cloudPanel,
       input,
     );
+    if (raw.dns?.credentialId && raw.dns?.zoneId) {
+      try {
+        const forwarded = request.headers.get("x-forwarded-host")?.split(":")[0];
+        const ip = process.env.SERVER_PUBLIC_IP || forwarded || request.nextUrl.hostname;
+        if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) throw new Error("SERVER_PUBLIC_IP must be configured to create DNS records.");
+        await setARecord(session.user.id, { credentialId: String(raw.dns.credentialId), zoneId: String(raw.dns.zoneId), name: input.domain, ip, replace: raw.dns.replace === true, proxied: raw.dns.proxied === true });
+      } catch (dnsError) {
+        await getCloudPanelClient().deleteSite(session.record.cloudPanel, input.domain).catch(() => undefined);
+        throw dnsError;
+      }
+    }
     audit("sites.create", "success", {
       requestId,
       user: session.user.username,

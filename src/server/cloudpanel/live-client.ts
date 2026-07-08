@@ -122,6 +122,22 @@ export class LiveCloudPanelClient implements CloudPanelClient {
     return result.sites;
   }
 
+  async listUsers(session: CloudPanelSession) {
+    const result = await this.bridge({ action: "users", username: this.sessionUser(session) });
+    if (!result.ok || !result.data || typeof result.data !== "object") throw new AppError("FORBIDDEN", "Users are available to administrators only.", 403);
+    return ((result.data as { users?: CloudPanelUser[] }).users ?? []);
+  }
+
+  async manageUser(session: CloudPanelSession, input: Record<string, unknown>) {
+    const current = await this.getCurrentUser(session); if (current.role !== "admin") throw new AppError("FORBIDDEN", "Users are available to administrators only.", 403);
+    const action = String(input.action ?? "");
+    if (action === "add") await this.run("/usr/bin/clpctl", ["user:add", `--userName=${String(input.username)}`, `--email=${String(input.email)}`, `--firstName=${String(input.firstName)}`, `--lastName=${String(input.lastName)}`, `--password=${String(input.password)}`, `--role=${String(input.role)}`, `--sites=${String(input.sites ?? "")}`, "--timezone=UTC", "--status=1"], { timeout: 90_000 });
+    else if (action === "update") { const result = await this.bridge({ action: "manage-user", username: this.sessionUser(session), operation: input }); if (!result.ok) throw new AppError("INVALID_REQUEST", "User settings could not be updated.", 400); }
+    else if (action === "reset-password") await this.run("/usr/bin/clpctl", ["user:reset:password", `--userName=${String(input.username)}`, `--password=${String(input.password)}`]);
+    else if (action === "delete") await this.run("/usr/bin/clpctl", ["user:delete", `--userName=${String(input.username)}`, "--force"]);
+    else throw new AppError("INVALID_REQUEST", "Unknown user action.", 400);
+  }
+
   async getSiteCreationOptions(session: CloudPanelSession): Promise<SiteCreationOptions> {
     const user = await this.getCurrentUser(session);
     if (!user.canCreateSites)

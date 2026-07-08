@@ -81,6 +81,7 @@ PHP versions are discovered from `/etc/php`. CloudPanel 2.5.4 compatibility fall
 ## Live acceptance checklist
 
 1. Set `CLOUDPANEL_MODE=live`, the base URL, version `2.5.4`, and a strong session secret.
+   Also set a separate `CREDENTIALS_ENCRYPTION_KEY` (32+ characters) and `SERVER_PUBLIC_IP` for Cloudflare-managed A records.
 2. Confirm a trusted TLS chain, or explicitly accept the documented development-only risk.
 3. Test an admin, site manager, restricted user, MFA user, and invalid password.
 4. Confirm the restricted account sees exactly its assigned sites and cannot call `POST /api/sites`.

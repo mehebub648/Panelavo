@@ -194,6 +194,8 @@ export class MockCloudPanelClient implements CloudPanelClient {
       sites.filter((site) => account.siteIds.includes(site.id)),
     );
   }
+  async listUsers(session: CloudPanelSession) { const account = accountFor(session); if (account.user.role !== "admin") throw new AppError("FORBIDDEN", "Administrators only.", 403); return Object.values(accounts).map((entry) => entry.user); }
+  async manageUser(session: CloudPanelSession) { const account = accountFor(session); if (account.user.role !== "admin") throw new AppError("FORBIDDEN", "Administrators only.", 403); }
 
   async getSiteCreationOptions(session: CloudPanelSession) {
     const account = accountFor(session);

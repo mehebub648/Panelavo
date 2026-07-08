@@ -1,10 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { Globe2, LogOut, Menu, Plus, UserRound, X } from "lucide-react";
+import { Cloud, Globe2, LogOut, Menu, Plus, UserRound, Users, X } from "lucide-react";
 import type { CloudPanelUser } from "@/types/cloudpanel";
 import { Brand } from "@/components/brand";
 import { Button } from "@/components/ui/button";
@@ -22,17 +22,29 @@ export function AppShell({
   const [open, setOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const title =
-    pathname === "/sites/new"
+    pathname === "/domains"
+      ? "Domains & DNS"
+      : pathname === "/users"
+        ? "User management"
+        : pathname === "/sites/new"
       ? "Add website"
       : pathname.split("/").length > 3
         ? "Website workspace"
         : "Websites";
   const nav = [
     { href: "/sites", label: "Websites", icon: Globe2 },
+    { href: "/domains", label: "Domains", icon: Cloud },
     ...(user.canCreateSites
       ? [{ href: "/sites/new", label: "Add website", icon: Plus }]
       : []),
+    ...(user.role === "admin" ? [{ href: "/users", label: "Users", icon: Users }] : []),
   ];
+  useEffect(() => {
+    let timer: ReturnType<typeof setInterval>;
+    const warm = () => { if (document.visibilityState === "visible") void fetch("/api/cloudflare/zones", { cache: "no-store" }); };
+    const start = () => { warm(); timer = setInterval(warm, 10 * 60_000); };
+    start(); return () => clearInterval(timer);
+  }, []);
   async function logout() {
     setLoggingOut(true);
     try {

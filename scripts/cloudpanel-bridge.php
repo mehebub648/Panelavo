@@ -53,6 +53,9 @@ function publicUser(User $user): array
         'displayName' => trim($user->getFirstName() . ' ' . $user->getLastName()),
         'role' => $role,
         'canCreateSites' => in_array($role, ['admin', 'site-manager'], true),
+        'email' => $user->getEmail(),
+        'status' => (bool) $user->getStatus(),
+        'sites' => array_map(fn($site) => $site->getDomainName(), $user->getSites()->toArray()),
         'mfa' => (bool) $user->hasMfaEnabled(),
     ];
 }
@@ -214,6 +217,38 @@ function siteKeyPair(Site $site): array
     ];
 }
 
+function runGit(Site $site, array $args, bool $allowFailure = false): array
+{
+    $cwd = realpath('/home/' . $site->getUser() . '/htdocs/' . $site->getRootDirectory());
+    if (!$cwd) respond(['ok' => false, 'code' => 'SITE_NOT_FOUND']);
+    $command = array_merge(['/usr/bin/sudo', '-u', $site->getUser(), '/usr/bin/git', '-c', 'safe.directory=' . $cwd], $args);
+    $process = proc_open($command, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, $cwd, ['HOME' => '/home/' . $site->getUser(), 'PATH' => '/usr/local/bin:/usr/bin:/bin']);
+    if (!is_resource($process)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+    fclose($pipes[0]); $stdout = stream_get_contents($pipes[1]); fclose($pipes[1]); $stderr = stream_get_contents($pipes[2]); fclose($pipes[2]); $code = proc_close($process);
+    if ($code !== 0 && !$allowFailure) respond(['ok' => false, 'code' => 'GIT_FAILED', 'message' => trim($stderr ?: $stdout)]);
+    return ['code' => $code, 'stdout' => substr($stdout ?: '', 0, 500000), 'stderr' => substr($stderr ?: '', 0, 50000)];
+}
+
+function gitSection(Site $site): array
+{
+    $root = '/home/' . $site->getUser() . '/htdocs/' . $site->getRootDirectory();
+    $repo = is_dir($root . '/.git');
+    if (!$repo) return ['isRepository' => false, 'path' => $root];
+    $branch = trim(runGit($site, ['branch', '--show-current'], true)['stdout']);
+    $head = trim(runGit($site, ['rev-parse', '--short', 'HEAD'], true)['stdout']);
+    $remotesRaw = trim(runGit($site, ['remote', '-v'], true)['stdout']);
+    $branchesRaw = trim(runGit($site, ['branch', '--format=%(refname:short)'], true)['stdout']);
+    $statusRaw = trim(runGit($site, ['status', '--porcelain=v1'], true)['stdout']);
+    $logRaw = trim(runGit($site, ['log', '-20', '--pretty=format:%h%x09%an%x09%ar%x09%s'], true)['stdout']);
+    $diff = runGit($site, ['diff', '--no-color'], true)['stdout'];
+    return ['isRepository' => true, 'path' => $root, 'branch' => $branch, 'head' => $head,
+        'remotes' => array_values(array_filter(array_map(fn($line) => preg_split('/\s+/', $line), explode("\n", $remotesRaw)))),
+        'branches' => $branchesRaw === '' ? [] : explode("\n", $branchesRaw),
+        'changes' => $statusRaw === '' ? [] : array_map(fn($line) => ['status' => substr($line, 0, 2), 'path' => trim(substr($line, 3))], explode("\n", $statusRaw)),
+        'commits' => $logRaw === '' ? [] : array_map(function ($line) { $p = explode("\t", $line, 4); return ['hash' => $p[0] ?? '', 'author' => $p[1] ?? '', 'date' => $p[2] ?? '', 'subject' => $p[3] ?? '']; }, explode("\n", $logRaw)),
+        'diff' => substr($diff, 0, 200000)];
+}
+
 try {
     $input = json_decode(stream_get_contents(STDIN), true, 16, JSON_THROW_ON_ERROR);
     $kernel = new Kernel($_SERVER['APP_ENV'] ?? 'prod', false);
@@ -250,6 +285,24 @@ try {
                 ? $manager->getRepository(Site::class)->findBy([], ['domainName' => 'ASC'])
                 : $user->getSites()->toArray();
             respond(['ok' => true, 'sites' => array_map('publicSite', $sites)]);
+
+        case 'users':
+            if ($user->getRole() !== User::ROLE_ADMIN) respond(['ok' => false, 'code' => 'FORBIDDEN']);
+            respond(['ok' => true, 'data' => ['users' => array_map('publicUser', $manager->getRepository(User::class)->findBy([], ['userName' => 'ASC']))]]);
+
+        case 'manage-user':
+            if ($user->getRole() !== User::ROLE_ADMIN) respond(['ok' => false, 'code' => 'FORBIDDEN']);
+            $operation = $input['operation'] ?? [];
+            $target = $manager->getRepository(User::class)->findOneBy(['userName' => strtolower(trim((string) ($operation['username'] ?? '')))]);
+            if (!$target instanceof User) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+            $role = str_replace('-', '_', strtoupper((string) ($operation['role'] ?? 'user')));
+            $role = 'ROLE_' . preg_replace('/^ROLE_/', '', $role);
+            if (!in_array($role, [User::ROLE_ADMIN, User::ROLE_SITE_MANAGER, User::ROLE_USER], true)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+            $target->setRole($role); $target->setStatus((bool) ($operation['status'] ?? true));
+            if ($target->getId() === $user->getId() && !$target->getStatus()) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+            $target->removeSites();
+            if ($role === User::ROLE_USER) foreach (($operation['sites'] ?? []) as $domain) { $assigned = $manager->getRepository(Site::class)->findOneBy(['domainName' => (string) $domain]); if ($assigned) $target->addSite($assigned); }
+            $manager->flush(); respond(['ok' => true]);
 
         case 'site':
             respond(['ok' => true, 'site' => publicSite(authorizedSite(
@@ -292,6 +345,7 @@ try {
                     'keyPair' => siteKeyPair($site),
                 ],
                 'file-manager' => fileManagerListing($site, null),
+                'git' => gitSection($site),
                 'cron-jobs' => ['sitePath' => '/home/' . $site->getUser() . '/htdocs/' . $site->getRootDirectory(), 'items' => array_map(fn($item) => ['id' => (string) $item->getId(), 'schedule' => $item->getSchedule(), 'command' => $item->getCommand(), 'expression' => $item->getCrontabExpression()], $site->getCronJobs()->toArray())],
                 'logs' => (function () use ($site) {
                     $base = '/home/' . $site->getUser() . '/logs';
@@ -309,11 +363,30 @@ try {
             $operation = $input['operation'] ?? [];
             $action = (string) ($operation['action'] ?? '');
             $model = $updater = null;
-            if (!in_array($section, ['file-manager', 'logs'], true) && !($section === 'users' && $action === 'generate-keypair')) {
+            if (!in_array($section, ['file-manager', 'logs', 'git'], true) && !($section === 'users' && $action === 'generate-keypair')) {
                 [$model, $updater] = siteModel($site);
             }
 
-            if ($section === 'users' && $action === 'generate-keypair') {
+            if ($section === 'git') {
+                $ref = (string) ($operation['branch'] ?? '');
+                if ($ref !== '' && !preg_match('/^[A-Za-z0-9._\/-]{1,200}$/', $ref)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                if ($action === 'clone') {
+                    $url = trim((string) ($operation['url'] ?? '')); if (!preg_match('#^(https://|git@)[^\s]+$#', $url)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                    $root = realpath('/home/' . $site->getUser() . '/htdocs/' . $site->getRootDirectory());
+                    if (!$root || count(array_diff(scandir($root) ?: [], ['.', '..'])) > 0) respond(['ok' => false, 'code' => 'DIRECTORY_NOT_EMPTY']);
+                    runGit($site, array_values(array_filter(['clone', $ref ? '--branch' : null, $ref ?: null, $url, '.'])));
+                } elseif ($action === 'init') runGit($site, ['init']);
+                elseif ($action === 'set-remote') {
+                    $url = trim((string) ($operation['url'] ?? '')); if (!preg_match('#^(https://|git@)[^\s]+$#', $url)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                    runGit($site, ['remote', 'remove', 'origin'], true); runGit($site, ['remote', 'add', 'origin', $url]);
+                } elseif ($action === 'fetch') runGit($site, ['fetch', '--prune', 'origin']);
+                elseif ($action === 'pull') runGit($site, $ref ? ['pull', '--ff-only', 'origin', $ref] : ['pull', '--ff-only']);
+                elseif ($action === 'push') runGit($site, $ref ? ['push', '-u', 'origin', $ref] : ['push']);
+                elseif ($action === 'checkout') runGit($site, ['checkout', $ref]);
+                elseif ($action === 'commit') { $message = trim((string) ($operation['message'] ?? '')); if ($message === '' || strlen($message) > 500) respond(['ok' => false, 'code' => 'INVALID_REQUEST']); runGit($site, ['add', '--all']); runGit($site, ['commit', '-m', $message]); }
+                else respond(['ok' => false, 'code' => 'INVALID_ACTION']);
+                respond(['ok' => true, 'data' => gitSection($site)]);
+            } elseif ($section === 'users' && $action === 'generate-keypair') {
                 $home = '/home/' . $site->getUser();
                 $ssh = $home . '/.ssh';
                 $key = $ssh . '/id_ed25519';

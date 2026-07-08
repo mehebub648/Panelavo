@@ -7,6 +7,7 @@ import {
   Code2,
   Database,
   Files,
+  GitBranch,
   KeyRound,
   Settings,
   ShieldCheck,
@@ -23,6 +24,7 @@ const sections = [
   ["security", "Security", ShieldCheck],
   ["users", "SSH/FTP", UsersRound],
   ["file-manager", "Files", Files],
+  ["git", "Git", GitBranch],
   ["cron-jobs", "Cron jobs", CalendarClock],
   ["logs", "Logs", TerminalSquare],
 ] as const;

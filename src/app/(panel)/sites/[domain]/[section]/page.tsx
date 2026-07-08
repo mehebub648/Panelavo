@@ -3,6 +3,7 @@ import { requireUser } from "@/server/auth/require-user";
 import { getCloudPanelClient } from "@/server/cloudpanel";
 import { SiteSettings } from "@/components/sites/site-settings";
 import { SiteSectionManager } from "@/components/sites/site-section-manager";
+import { GitManager } from "@/components/sites/git-manager";
 
 const titles: Record<string, string> = {
   settings: "Settings",
@@ -12,6 +13,7 @@ const titles: Record<string, string> = {
   security: "Security",
   users: "SSH/FTP",
   "file-manager": "File Manager",
+  git: "Git",
   "cron-jobs": "Cron Jobs",
   logs: "Logs",
 };
@@ -23,6 +25,7 @@ const descriptions: Record<string, string> = {
   security: "Control blocked traffic, authentication, and proxy access.",
   users: "Manage shell and file-transfer access to this website.",
   "file-manager": "Browse and organize files in the website root.",
+  git: "Manage repository status, remotes, branches, commits, pulls, and pushes.",
   "cron-jobs": "Create and review recurring background commands.",
   logs: "Inspect available log files and clear them when needed.",
 };
@@ -49,6 +52,7 @@ export default async function SiteSectionPage({
     domain,
     section,
   );
+  if (section === "git") return <div className="w-full space-y-5"><div><h2 className="text-2xl font-bold tracking-tight text-ink">Git</h2><p className="mt-1 text-sm text-slate-500">{descriptions.git}</p></div><GitManager domain={domain} initialData={data as Parameters<typeof GitManager>[0]["initialData"]} /></div>;
   return (
     <div className="w-full space-y-5">
       <div>

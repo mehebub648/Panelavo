@@ -6,6 +6,9 @@ export interface CloudPanelUser {
   displayName?: string;
   role?: "admin" | "site-manager" | "user" | "unknown";
   canCreateSites: boolean;
+  email?: string;
+  status?: boolean;
+  sites?: string[];
 }
 
 export interface CloudPanelSession {
@@ -99,6 +102,8 @@ export interface CloudPanelClient {
   }): Promise<CloudPanelLoginResult>;
   getCurrentUser(session: CloudPanelSession): Promise<CloudPanelUser>;
   listSites(session: CloudPanelSession): Promise<CloudPanelSite[]>;
+  listUsers(session: CloudPanelSession): Promise<CloudPanelUser[]>;
+  manageUser(session: CloudPanelSession, input: Record<string, unknown>): Promise<void>;
   getSiteCreationOptions(
     session: CloudPanelSession,
   ): Promise<SiteCreationOptions>;
