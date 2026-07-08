@@ -71,9 +71,19 @@ function idFromToken(token?: string) {
     : null;
 }
 
+function sweepExpiredSessions(now: number) {
+  for (const [id, record] of sessions) {
+    if (record.expiresAt < now) sessions.delete(id);
+  }
+}
+
 export async function createSession(record: Omit<SessionRecord, "expiresAt">) {
+  const now = Date.now();
+  // Abandoned sessions (cookie expired, user never returns) are otherwise only
+  // evicted on a same-id lookup, so the in-memory map grows without bound.
+  sweepExpiredSessions(now);
   const id = randomBytes(32).toString("base64url");
-  sessions.set(id, { ...record, expiresAt: Date.now() + maxAge() * 1000 });
+  sessions.set(id, { ...record, expiresAt: now + maxAge() * 1000 });
   const jar = await cookies();
   jar.set(COOKIE_NAME, tokenFor(id), {
     httpOnly: true,
