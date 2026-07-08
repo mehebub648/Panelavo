@@ -13,18 +13,30 @@ export function assertWriteRequest(request: NextRequest) {
       "Cross-origin requests are not allowed.",
       403,
     );
+  // Compare the Origin against the host the request actually arrived on rather
+  // than a hard-coded env var, so the panel works on any domain/IP with no
+  // per-install configuration. Behind a reverse proxy the browser-facing host
+  // is carried in X-Forwarded-Host; schemes differ (proxy terminates TLS) so
+  // only the host is compared.
   const origin = request.headers.get("origin");
-  const expected = process.env.APP_BASE_URL;
-  if (
-    origin &&
-    expected &&
-    new URL(origin).origin !== new URL(expected).origin
-  ) {
-    throw new AppError(
-      "FORBIDDEN",
-      "Cross-origin requests are not allowed.",
-      403,
-    );
+  if (origin) {
+    const host = (
+      request.headers.get("x-forwarded-host") ?? request.headers.get("host")
+    )
+      ?.split(",")[0]
+      .trim();
+    let originHost: string;
+    try {
+      originHost = new URL(origin).host;
+    } catch {
+      throw new AppError("FORBIDDEN", "Cross-origin requests are not allowed.", 403);
+    }
+    if (host && originHost !== host)
+      throw new AppError(
+        "FORBIDDEN",
+        "Cross-origin requests are not allowed.",
+        403,
+      );
   }
 }
 

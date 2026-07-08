@@ -1,5 +1,6 @@
 "use client";
 import { useState, useMemo, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { KeyRound, Pencil, Plus, Trash2, UserRound, X, Shield, Globe, ShieldAlert, CheckCircle2, Lock, Shuffle, Search, MoreVertical, Copy } from "lucide-react";
 import { toast } from "sonner";
 import type { CloudPanelUser } from "@/types/cloudpanel";
@@ -517,8 +518,15 @@ function UserModal({
   close: () => void;
   children: React.ReactNode;
 }) {
-  return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/40 backdrop-blur-sm animate-in fade-in duration-200">
+  // Portal to <body> so the slide-over always covers the full viewport,
+  // independent of any transformed/blurred ancestor in the page layout.
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[80] flex justify-end bg-slate-950/40 backdrop-blur-sm animate-in fade-in duration-200"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) close();
+      }}
+    >
       {/* Slide-over panel */}
       <div className="w-full max-w-2xl h-full bg-white shadow-2xl animate-in slide-in-from-right duration-300 flex flex-col overflow-hidden">
         <div className="px-6 py-5 border-b border-slate-100 flex justify-between items-center bg-white shrink-0">
@@ -529,6 +537,7 @@ function UserModal({
         </div>
         {children}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

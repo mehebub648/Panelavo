@@ -28,9 +28,10 @@ import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { FileManager, type FileManagerData } from "@/components/sites/file-manager";
 import { CodeEditor, preloadCodeEditor } from "@/components/ui/code-editor";
+import { certAlternativeNames } from "@/lib/domains";
 
 type DatabaseItem = { id: string; name: string; users?: string[] };
-type CertificateItem = { id: string; domains?: string[]; expiresAt?: string };
+type CertificateItem = { id: string; type?: string; domains?: string[]; expiresAt?: string; default?: boolean };
 type FtpItem = { username: string; home?: string };
 type CronItem = { id: string; expression: string; command: string };
 type Data = Record<string, unknown> & {
@@ -246,16 +247,36 @@ export function SiteSectionManager({
             <div className="mb-4 flex items-center justify-between gap-3"><h2 className="font-bold">Installed certificates</h2><Button size="sm" onClick={() => setOpenForm(openForm === "certificate" ? null : "certificate")}><Shield className="h-4 w-4" /> Issue certificate</Button></div>
             <div className="space-y-3">
               {((data.items as CertificateItem[]) ?? []).map((item) => (
-                <div key={item.id} className="group rounded-xl border border-slate-200/60 bg-white/50 p-4 transition-all hover:bg-white hover:shadow-sm">
-                  <div className="flex items-center gap-2">
-                    <KeyRound className="h-4 w-4 text-emerald-600" />
-                    <b>{item.domains?.join(", ")}</b>
+                <div key={item.id} className={`group flex flex-wrap items-center justify-between gap-3 rounded-xl border p-4 transition-all hover:shadow-sm ${item.default ? "border-emerald-200/70 bg-emerald-50/40" : "border-slate-200/60 bg-white/50 hover:bg-white"}`}>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <KeyRound className={`h-4 w-4 ${item.default ? "text-emerald-600" : "text-red-500"}`} />
+                      <b className="truncate">{item.domains?.join(", ")}</b>
+                      {item.type && <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">{item.type}</span>}
+                    </div>
+                    <p className="mt-2 text-xs text-slate-500">
+                      Expires {item.expiresAt || "unknown"}
+                    </p>
                   </div>
-                  <p className="mt-2 text-xs text-slate-500">
-                    Expires {item.expiresAt || "unknown"}
-                  </p>
+                  {item.default ? (
+                    <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700 ring-1 ring-inset ring-emerald-600/20">
+                      <CheckCircle2 className="h-3.5 w-3.5" /> Active
+                    </span>
+                  ) : (
+                    <div className="flex shrink-0 items-center gap-2">
+                      <span className="inline-flex items-center gap-1.5 rounded-full bg-red-50 px-2.5 py-1 text-xs font-semibold text-red-600 ring-1 ring-inset ring-red-600/20">
+                        <Ban className="h-3.5 w-3.5" /> Inactive
+                      </span>
+                      <Button variant="outline" size="sm" disabled={busy} onClick={() => act({ action: "set-default", id: item.id })}>
+                        Activate
+                      </Button>
+                    </div>
+                  )}
                 </div>
               ))}
+              {!((data.items as CertificateItem[]) ?? []).length && (
+                <div className="rounded-xl border border-dashed border-slate-200 py-7 text-center text-sm text-slate-400">No certificates installed</div>
+              )}
             </div>
           </section>
           {openForm === "certificate" && <FormModal title="Issue certificate" onClose={() => setOpenForm(null)}><form
@@ -264,14 +285,15 @@ export function SiteSectionManager({
           >
             <h2 className="font-bold">Let&apos;s Encrypt</h2>
             <p className="text-sm text-slate-500">
-              Issue or renew a trusted certificate.
+              Issue or renew a trusted certificate. The primary domain
+              (<b>{domain}</b>) is always included.
             </p>
             <div>
               <Label>Alternative names</Label>
               <Input
                 name="subjectAlternativeName"
                 placeholder="www.example.com,api.example.com"
-                defaultValue={`www.${domain}`}
+                defaultValue={certAlternativeNames(domain).join(",")}
               />
             </div>
             {feedback}

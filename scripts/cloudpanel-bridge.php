@@ -458,6 +458,43 @@ try {
             } elseif ($section === 'cron-jobs' && $action === 'delete') {
                 $entity = $manager->getRepository(CronJob::class)->find((int) $operation['id']);
                 if ($entity && $entity->getSite()->getId() === $site->getId()) { $site->removeCronJob($entity); $manager->remove($entity); $updater->updateUserCrontab(); }
+            } elseif ($section === 'certificates' && $action === 'set-default') {
+                // Mark the chosen certificate as default and deploy it to the
+                // fixed nginx path. A config test with rollback guarantees an
+                // invalid certificate can never take the vhost down.
+                $certId = (int) ($operation['id'] ?? 0);
+                $target = null;
+                foreach ($site->getCertificates() as $cert) {
+                    $isTarget = $cert->getId() === $certId;
+                    $cert->setDefaultCertificate($isTarget);
+                    if ($isTarget) $target = $cert;
+                }
+                if (!$target) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                $getCert = $getKey = null;
+                foreach (['getCertificate', 'getCert', 'getCertificatePem'] as $m) if (method_exists($target, $m)) { $getCert = $m; break; }
+                foreach (['getPrivateKey', 'getKey', 'getPrivateKeyPem'] as $m) if (method_exists($target, $m)) { $getKey = $m; break; }
+                if (!$getCert || !$getKey) respond(['ok' => false, 'code' => 'INVALID_ACTION']);
+                $chain = '';
+                foreach (['getCertificateChain', 'getChain', 'getIntermediateCertificate', 'getCaBundle'] as $m) if (method_exists($target, $m)) { $chain = (string) $target->$m(); break; }
+                $crt = rtrim((string) $target->$getCert()) . "\n";
+                if (trim($chain) !== '') $crt .= rtrim($chain) . "\n";
+                $key = rtrim((string) $target->$getKey()) . "\n";
+                if (trim($crt) === '' || trim($key) === '') respond(['ok' => false, 'code' => 'INVALID_ACTION']);
+                $dir = '/etc/nginx/ssl-certificates';
+                $crtPath = $dir . '/' . $site->getDomainName() . '.crt';
+                $keyPath = $dir . '/' . $site->getDomainName() . '.key';
+                $backupCrt = @file_get_contents($crtPath);
+                $backupKey = @file_get_contents($keyPath);
+                file_put_contents($crtPath, $crt);
+                file_put_contents($keyPath, $key);
+                $testOutput = []; $testCode = 0;
+                exec('nginx -t 2>&1', $testOutput, $testCode);
+                if ($testCode !== 0) {
+                    if ($backupCrt !== false) file_put_contents($crtPath, $backupCrt);
+                    if ($backupKey !== false) file_put_contents($keyPath, $backupKey);
+                    respond(['ok' => false, 'code' => 'CLOUDPANEL_UNAVAILABLE']);
+                }
+                exec('systemctl reload nginx 2>&1');
             } elseif ($section === 'file-manager') {
                 $base = fileManagerBase($site);
                 $relative = trim((string) ($operation['path'] ?? ''), '/');
