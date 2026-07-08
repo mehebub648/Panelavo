@@ -126,3 +126,20 @@ export const createSiteSchema = z.discriminatedUnion("type", [
 ]);
 
 export type ValidCreateSiteInput = z.infer<typeof createSiteSchema>;
+
+export const updateSiteSchema = z
+  .object({
+    rootDirectory: z
+      .string()
+      .trim()
+      .max(200)
+      .regex(/^\/?[a-zA-Z0-9._/-]*$/, "Use a relative directory path.")
+      .optional(),
+    runtimeVersion: runtime.optional(),
+    appPort: z.coerce.number().int().min(1024).max(65535).optional(),
+    reverseProxyUrl: proxyUrl.optional(),
+  })
+  .strict()
+  .refine((value) => Object.values(value).some((item) => item !== undefined), {
+    message: "Provide at least one setting to update.",
+  });

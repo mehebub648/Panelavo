@@ -1,6 +1,6 @@
 # Server Panel
 
-A small, modern Next.js frontend for an existing CloudPanel installation. CloudPanel remains the source of truth for accounts, passwords, MFA, roles, site assignments, runtime support, and server-side permissions. This application creates no user database and never sends a CloudPanel cookie to the browser.
+A small, modern Next.js frontend for an existing CloudPanel installation. CloudPanel remains the source of truth for accounts, passwords, MFA, roles, site assignments, runtime support, and server-side permissions. This application creates no user database and communicates locally through CloudPanel's CLI and a read-only Symfony CLI bridge. It never accesses or scrapes the CloudPanel portal.
 
 ## Stack
 
@@ -30,11 +30,11 @@ Mock credentials are development-only. Never enable mock mode on a public produc
 
 ## Environment
 
-Copy `.env.example` to `.env.local`. Use `CLOUDPANEL_MODE=mock` for local UI work or `CLOUDPANEL_MODE=live` for the installed panel. `CLOUDPANEL_TLS_VERIFY=false` is an explicit development escape hatch for a self-signed local certificate; it weakens server identity verification. Production should use a trusted certificate or configured CA and leave verification enabled.
+Copy `.env.example` to `.env.local`. Use `CLOUDPANEL_MODE=mock` for local UI work or `CLOUDPANEL_MODE=live` for the installed panel. Live mode requires non-interactive sudo access to `/usr/bin/clpctl` and `/usr/bin/php` for the local CLI bridge.
 
 The application cookie is opaque, `HttpOnly`, `SameSite=Strict`, scoped to `/`, and `Secure` in production. Sessions expire after `SESSION_MAX_AGE_SECONDS`. The initial session store is process memory, so production must run a single Next.js process. Replace the isolated store in `src/server/auth/session.ts` before horizontal scaling or zero-downtime multi-process restarts.
 
-## Tested CloudPanel integration
+## Tested CloudPanel CLI integration
 
 The live adapter was developed against the CloudPanel installation on this host on 2026-07-08:
 
@@ -42,19 +42,17 @@ The live adapter was developed against the CloudPanel installation on this host 
 - CLI version: **6.0.8**
 - Panel origin: configured by `CLOUDPANEL_BASE_URL` (locally observed on HTTPS port 8443)
 
-Discovery was performed without modifying CloudPanel. `GET /` redirected to `/login`; `GET /login` returned a server-rendered form; and login used `POST /login` with `userName`, `password`, and a per-session `_csrf_token`. CloudPanel issued an `HttpOnly`, `Secure`, `SameSite=Lax` `cloudpanel` session cookie. Invalid login redirected to `/login` and displayed `Invalid credentials.`. The version came from the login asset query strings. CloudPanel’s original frontend remains untouched.
-
-No real CloudPanel credentials were supplied during development. Consequently, the authenticated 2FA field names and authenticated site table markup could not be exercised end to end. The adapter discovers the MFA form fields and site-list link from authenticated HTML and fails closed with `CLOUDPANEL_VERSION_UNSUPPORTED` if the expected semantic markup is absent. These parsers are the explicitly undocumented, version-sensitive part of the integration and live only in `src/server/cloudpanel/live-client.ts`.
+Root operations use `/usr/bin/clpctl`. CloudPanel does not expose password verification, MFA verification, or site listing through public `clpctl` commands, so `scripts/cloudpanel-bridge.php` boots CloudPanel's own Symfony kernel from the command line and uses its password data, MFA verifier, Doctrine entities, roles, and site assignments directly. The bridge is read-only. CloudPanel's original frontend remains untouched and is never contacted.
 
 ### Authentication and authorization
 
-The server owns the CloudPanel cookie jar. After CloudPanel accepts credentials (and MFA, when requested), the browser receives only a random application-session identifier. Every protected route revalidates the CloudPanel session and current role. Restricted lists come from the authenticated CloudPanel page; the browser is never given an unrestricted list to filter.
+After the CLI bridge accepts credentials (and MFA, when enabled), the browser receives only a random application-session identifier. Every protected route revalidates the account and current role through the bridge. Restricted site lists are selected from the user's CloudPanel assignments before they reach the browser.
 
-The live HTML adapter conservatively identifies create permission from CloudPanel’s role/authorized creation navigation. Unknown roles do not receive elevated access. MFA form action, code field, CSRF value, and temporary CloudPanel cookies remain in the server session.
+Create permission is derived from CloudPanel's Admin and Site Manager roles. Unknown roles do not receive elevated access.
 
 ### Site list
 
-The live adapter follows the authenticated landing page, discovers the authorized Sites navigation target, and parses the server-rendered table. This is undocumented CloudPanel behavior. If CloudPanel changes that markup, the adapter returns a compatibility error rather than guessing an endpoint or querying its database.
+The bridge loads sites through CloudPanel's own Doctrine entities. Admins and Site Managers receive all sites; restricted users receive only their assigned collection.
 
 ### Site creation
 

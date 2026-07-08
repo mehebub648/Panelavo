@@ -11,6 +11,7 @@ export interface CloudPanelUser {
 export interface CloudPanelSession {
   cookies: Record<string, string>;
   usernameHint?: string;
+  cliAuthenticated?: boolean;
   pendingTwoFactor?: boolean;
   twoFactorPath?: string;
   twoFactorField?: string;
@@ -24,6 +25,9 @@ export interface CloudPanelSite {
   runtimeVersion?: string;
   siteUser?: string;
   application?: string;
+  rootDirectory?: string;
+  appPort?: number;
+  reverseProxyUrl?: string;
   status?: "active" | "inactive" | "unknown";
   createdAt?: string;
   url: string;
@@ -102,5 +106,27 @@ export interface CloudPanelClient {
     session: CloudPanelSession,
     input: CreateSiteInput,
   ): Promise<CloudPanelSite>;
+  updateSite(
+    session: CloudPanelSession,
+    domain: string,
+    input: {
+      rootDirectory?: string;
+      runtimeVersion?: string;
+      appPort?: number;
+      reverseProxyUrl?: string;
+    },
+  ): Promise<CloudPanelSite>;
+  deleteSite(session: CloudPanelSession, domain: string): Promise<void>;
+  getSiteSection(
+    session: CloudPanelSession,
+    domain: string,
+    section: string,
+  ): Promise<unknown>;
+  manageSiteSection(
+    session: CloudPanelSession,
+    domain: string,
+    section: string,
+    input: Record<string, unknown>,
+  ): Promise<unknown>;
   logout(session: CloudPanelSession): Promise<void>;
 }

@@ -266,6 +266,44 @@ export class MockCloudPanelClient implements CloudPanelClient {
     return structuredClone(site);
   }
 
+  async updateSite(
+    session: CloudPanelSession,
+    domain: string,
+    input: Partial<CloudPanelSite>,
+  ) {
+    const account = accountFor(session);
+    if (!account.user.canCreateSites)
+      throw new AppError("FORBIDDEN", "You do not have permission to modify websites.", 403);
+    const site = sites.find((item) => item.domain === domain);
+    if (!site) throw new AppError("SITE_NOT_FOUND", "Website not found.", 404);
+    Object.assign(site, input);
+    return structuredClone(site);
+  }
+
+  async deleteSite(session: CloudPanelSession, domain: string) {
+    const account = accountFor(session);
+    if (!account.user.canCreateSites)
+      throw new AppError("FORBIDDEN", "You do not have permission to delete websites.", 403);
+    const index = sites.findIndex((item) => item.domain === domain);
+    if (index < 0) throw new AppError("SITE_NOT_FOUND", "Website not found.", 404);
+    sites.splice(index, 1);
+  }
+
+  async getSiteSection(session: CloudPanelSession, domain: string, section: string) {
+    accountFor(session);
+    return { section, domain, items: [] };
+  }
+
+  async manageSiteSection(
+    session: CloudPanelSession,
+    domain: string,
+    section: string,
+    input: Record<string, unknown>,
+  ) {
+    accountFor(session);
+    return { domain, section, input, items: [] };
+  }
+
   async logout() {}
 }
 

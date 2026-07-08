@@ -12,6 +12,7 @@ import {
   RefreshCw,
   Search,
   ServerCrash,
+  Settings,
 } from "lucide-react";
 import { toast } from "sonner";
 import type {
@@ -300,6 +301,11 @@ export function SiteList({ user }: { user: CloudPanelUser }) {
                       </td>
                       <td className="px-6 py-4">
                         <div className="flex justify-end gap-1">
+                          <Button variant="ghost" size="icon" asChild>
+                            <Link href={`/sites/${encodeURIComponent(site.domain)}`} aria-label={`Manage ${site.domain}`}>
+                              <Settings className="h-4 w-4" />
+                            </Link>
+                          </Button>
                           <Button
                             variant="ghost"
                             size="icon"
@@ -356,6 +362,11 @@ export function SiteList({ user }: { user: CloudPanelUser }) {
                       </span>
                     </div>
                     <div className="flex gap-1">
+                      <Button variant="outline" size="sm" asChild>
+                        <Link href={`/sites/${encodeURIComponent(site.domain)}`}>
+                          Manage
+                        </Link>
+                      </Button>
                       <Button
                         variant="ghost"
                         size="icon"
