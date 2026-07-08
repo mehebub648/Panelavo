@@ -1,7 +1,10 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
+import { setDefaultResultOrder } from "node:dns";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { AppError } from "@/server/cloudpanel/errors";
+
+setDefaultResultOrder("ipv4first");
 
 export type CloudflareCredential = { id: string; label: string; token: string; createdAt: string };
 export type CloudflareZone = { id: string; name: string; status: string; credentialId: string; credentialLabel: string };
@@ -48,7 +51,7 @@ export async function listCredentials(userId: string) {
   return (await load()).users[userId]?.map((item) => ({ id: item.id, label: item.label, createdAt: item.createdAt })) ?? [];
 }
 export async function addCredential(userId: string, label: string, token: string) {
-  await cf(token, "/user/tokens/verify");
+  await cf(token, "/zones?per_page=1");
   const store = await load(); const item = { id: randomUUID(), label: label.trim(), token: token.trim(), createdAt: new Date().toISOString() };
   store.users[userId] = [...(store.users[userId] ?? []), item]; await save(store); cache.delete(userId);
   return { id: item.id, label: item.label, createdAt: item.createdAt };
