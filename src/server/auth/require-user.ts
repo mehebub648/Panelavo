@@ -1,0 +1,24 @@
+import { destroySession, getSession, updateSession } from "./session";
+import { getCloudPanelClient } from "@/server/cloudpanel";
+import { AppError } from "@/server/cloudpanel/errors";
+
+export async function requireUser() {
+  const session = await getSession();
+  if (!session)
+    throw new AppError(
+      "SESSION_EXPIRED",
+      "Your session has expired. Please sign in again.",
+      401,
+    );
+  try {
+    const user = await getCloudPanelClient().getCurrentUser(
+      session.record.cloudPanel,
+    );
+    await updateSession(session.id, { user });
+    return { ...session, user };
+  } catch (error) {
+    if (error instanceof AppError && error.code === "SESSION_EXPIRED")
+      await destroySession();
+    throw error;
+  }
+}

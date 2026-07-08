@@ -1,0 +1,387 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
+import {
+  Check,
+  Clipboard,
+  ExternalLink,
+  Globe2,
+  Plus,
+  RefreshCw,
+  Search,
+  ServerCrash,
+} from "lucide-react";
+import { toast } from "sonner";
+import type {
+  CloudPanelSite,
+  CloudPanelUser,
+  SiteType,
+} from "@/types/cloudpanel";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
+import { formatDate } from "@/lib/utils";
+
+const typeLabels: Record<SiteType, string> = {
+  php: "PHP",
+  nodejs: "Node.js",
+  static: "Static HTML",
+  python: "Python",
+  "reverse-proxy": "Reverse proxy",
+};
+function TypeBadge({ type }: { type?: SiteType }) {
+  return (
+    <span className="inline-flex rounded-md bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-600">
+      {type ? typeLabels[type] : "—"}
+    </span>
+  );
+}
+function Status({ status }: { status?: string }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700">
+      <span
+        className={`h-1.5 w-1.5 rounded-full ${status === "inactive" ? "bg-slate-400" : "bg-emerald-500"}`}
+      />
+      {status === "inactive"
+        ? "Inactive"
+        : status === "unknown"
+          ? "Unknown"
+          : "Active"}
+    </span>
+  );
+}
+
+export function SiteList({ user }: { user: CloudPanelUser }) {
+  const router = useRouter();
+  const params = useSearchParams();
+  const [sites, setSites] = useState<CloudPanelSite[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState("");
+  const [query, setQuery] = useState("");
+  const [type, setType] = useState("all");
+  const [copied, setCopied] = useState("");
+  const load = useCallback(
+    async (refresh = false) => {
+      if (refresh) setRefreshing(true);
+      else setLoading(true);
+      setError("");
+      try {
+        const response = await fetch("/api/sites", { cache: "no-store" });
+        const result = await response.json();
+        if (response.status === 401) {
+          router.replace("/login?reason=session-expired");
+          return;
+        }
+        if (!result.success)
+          throw new Error(
+            result.error?.message || "Websites could not be loaded.",
+          );
+        setSites(result.data.sites);
+        if (refresh) toast.success("Website list refreshed");
+      } catch (reason) {
+        setError(
+          reason instanceof Error
+            ? reason.message
+            : "Websites could not be loaded.",
+        );
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    },
+    [router],
+  );
+  useEffect(() => {
+    void load();
+  }, [load]);
+  useEffect(() => {
+    const created = params.get("created");
+    if (created) {
+      toast.success(`${created} was created`);
+      router.replace("/sites", { scroll: false });
+    }
+  }, [params, router]);
+  const types = useMemo(
+    () =>
+      [
+        ...new Set(sites.map((site) => site.type).filter(Boolean)),
+      ] as SiteType[],
+    [sites],
+  );
+  const filtered = useMemo(
+    () =>
+      sites.filter(
+        (site) =>
+          (type === "all" || site.type === type) &&
+          [
+            site.domain,
+            site.siteUser,
+            site.application,
+            site.runtimeVersion,
+          ].some((value) => value?.toLowerCase().includes(query.toLowerCase())),
+      ),
+    [sites, query, type],
+  );
+  async function copy(domain: string) {
+    await navigator.clipboard.writeText(domain);
+    setCopied(domain);
+    toast.success("Domain copied");
+    setTimeout(() => setCopied(""), 1400);
+  }
+
+  if (loading)
+    return (
+      <div className="space-y-5">
+        <div className="h-24 animate-pulse rounded-2xl border border-slate-200 bg-white" />
+        <div className="h-72 animate-pulse rounded-2xl border border-slate-200 bg-white" />
+      </div>
+    );
+  if (error)
+    return (
+      <div className="grid min-h-[420px] place-items-center rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-card">
+        <div>
+          <span className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-red-50 text-red-600">
+            <ServerCrash />
+          </span>
+          <h2 className="mt-5 text-lg font-bold">Couldn’t load websites</h2>
+          <p className="mt-2 max-w-md text-sm text-slate-500">{error}</p>
+          <Button className="mt-5" onClick={() => load()}>
+            Try again
+          </Button>
+        </div>
+      </div>
+    );
+  return (
+    <div className="mx-auto max-w-[1380px] space-y-5">
+      <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
+        <div>
+          <h2 className="text-2xl font-bold tracking-tight text-ink">
+            Your websites
+          </h2>
+          <p className="mt-1 text-sm text-slate-500">
+            {sites.length} {sites.length === 1 ? "website" : "websites"}{" "}
+            available to your CloudPanel account
+          </p>
+        </div>
+        {user.canCreateSites && (
+          <Button asChild>
+            <Link href="/sites/new">
+              <Plus className="h-4 w-4" />
+              Add website
+            </Link>
+          </Button>
+        )}
+      </div>
+      <section className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-card">
+        <div className="flex flex-col gap-3 border-b border-slate-100 p-4 sm:flex-row sm:items-center">
+          <div className="relative flex-1">
+            <Search className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search domains, users, or runtimes…"
+              className="pl-10 shadow-none"
+              aria-label="Search websites"
+            />
+          </div>
+          {types.length > 1 && (
+            <Select
+              value={type}
+              onChange={(e) => setType(e.target.value)}
+              className="w-full shadow-none sm:w-44"
+              aria-label="Filter by site type"
+            >
+              <option value="all">All site types</option>
+              {types.map((item) => (
+                <option key={item} value={item}>
+                  {typeLabels[item]}
+                </option>
+              ))}
+            </Select>
+          )}
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={() => load(true)}
+            disabled={refreshing}
+            aria-label="Refresh websites"
+          >
+            <RefreshCw
+              className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`}
+            />
+          </Button>
+        </div>
+        {sites.length === 0 ? (
+          <div className="grid min-h-[420px] place-items-center p-8 text-center">
+            <div>
+              <span className="mx-auto grid h-16 w-16 place-items-center rounded-2xl bg-panel-50 text-panel-600">
+                <Globe2 className="h-7 w-7" />
+              </span>
+              <h3 className="mt-5 text-xl font-bold">No websites found</h3>
+              <p className="mt-2 text-sm text-slate-500">
+                Create your first website to start hosting an application.
+              </p>
+              {user.canCreateSites && (
+                <Button asChild className="mt-6">
+                  <Link href="/sites/new">
+                    <Plus className="h-4 w-4" />
+                    Create website
+                  </Link>
+                </Button>
+              )}
+            </div>
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="grid min-h-64 place-items-center p-8 text-center">
+            <div>
+              <Search className="mx-auto h-7 w-7 text-slate-300" />
+              <p className="mt-3 font-semibold">No matching websites</p>
+              <button
+                className="mt-2 text-sm font-medium text-panel-600"
+                onClick={() => {
+                  setQuery("");
+                  setType("all");
+                }}
+              >
+                Clear filters
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="hidden overflow-x-auto md:block">
+              <table className="w-full text-left">
+                <thead>
+                  <tr className="bg-slate-50/70 text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                    <th className="px-6 py-3.5">Domain</th>
+                    <th className="px-4 py-3.5">Type</th>
+                    <th className="px-4 py-3.5">Runtime</th>
+                    <th className="px-4 py-3.5">Site user</th>
+                    <th className="px-4 py-3.5">Status</th>
+                    <th className="px-4 py-3.5">Created</th>
+                    <th className="px-6 py-3.5 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {filtered.map((site) => (
+                    <tr key={site.id} className="group hover:bg-slate-50/50">
+                      <td className="px-6 py-4">
+                        <div className="flex items-center gap-3">
+                          <span className="grid h-9 w-9 place-items-center rounded-lg bg-panel-50 text-panel-600">
+                            <Globe2 className="h-4 w-4" />
+                          </span>
+                          <div>
+                            <p className="font-semibold text-slate-800">
+                              {site.domain}
+                            </p>
+                            <p className="mt-0.5 text-xs text-slate-400">
+                              {site.application || "—"}
+                            </p>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-4 py-4">
+                        <TypeBadge type={site.type} />
+                      </td>
+                      <td className="px-4 py-4 text-sm text-slate-600">
+                        {site.runtimeVersion || "—"}
+                      </td>
+                      <td className="px-4 py-4 text-sm text-slate-600">
+                        {site.siteUser || "—"}
+                      </td>
+                      <td className="px-4 py-4">
+                        <Status status={site.status} />
+                      </td>
+                      <td className="px-4 py-4 text-sm text-slate-500">
+                        {formatDate(site.createdAt)}
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="flex justify-end gap-1">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => copy(site.domain)}
+                            aria-label={`Copy ${site.domain}`}
+                          >
+                            {copied === site.domain ? (
+                              <Check className="h-4 w-4 text-emerald-600" />
+                            ) : (
+                              <Clipboard className="h-4 w-4" />
+                            )}
+                          </Button>
+                          <Button variant="ghost" size="icon" asChild>
+                            <a
+                              href={site.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              aria-label={`Open ${site.domain}`}
+                            >
+                              <ExternalLink className="h-4 w-4" />
+                            </a>
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="divide-y divide-slate-100 md:hidden">
+              {filtered.map((site) => (
+                <article key={site.id} className="p-5">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-panel-50 text-panel-600">
+                        <Globe2 className="h-4 w-4" />
+                      </span>
+                      <div className="min-w-0">
+                        <p className="truncate font-semibold text-slate-800">
+                          {site.domain}
+                        </p>
+                        <p className="mt-1 text-xs text-slate-400">
+                          {site.siteUser || "No site user available"}
+                        </p>
+                      </div>
+                    </div>
+                    <Status status={site.status} />
+                  </div>
+                  <div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-4">
+                    <div className="flex items-center gap-2">
+                      <TypeBadge type={site.type} />
+                      <span className="text-xs text-slate-500">
+                        {site.runtimeVersion || "—"}
+                      </span>
+                    </div>
+                    <div className="flex gap-1">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => copy(site.domain)}
+                        aria-label={`Copy ${site.domain}`}
+                      >
+                        <Clipboard className="h-4 w-4" />
+                      </Button>
+                      <Button variant="outline" size="sm" asChild>
+                        <a
+                          href={site.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          Open
+                          <ExternalLink className="h-3.5 w-3.5" />
+                        </a>
+                      </Button>
+                    </div>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </>
+        )}
+      </section>
+    </div>
+  );
+}
