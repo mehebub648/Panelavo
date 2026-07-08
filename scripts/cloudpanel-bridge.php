@@ -201,10 +201,15 @@ function siteKeyPair(Site $site): array
 {
     $key = '/home/' . $site->getUser() . '/.ssh/id_ed25519';
     $public = is_file($key . '.pub') ? trim((string) file_get_contents($key . '.pub')) : '';
+    $privatePreview = '';
+    if (is_file($key)) {
+        $lines = preg_split('/\R/', trim((string) file_get_contents($key))) ?: [];
+        $privatePreview = implode("\n", array_merge(array_slice($lines, 0, 2), ['••••••••••••••••••••••••'], array_slice($lines, -2)));
+    }
     return [
         'exists' => is_file($key) && $public !== '',
         'publicKey' => $public,
-        'privateKeyMasked' => is_file($key) ? "-----BEGIN OPENSSH PRIVATE KEY-----\n••••••••••••••••••••••••\n-----END OPENSSH PRIVATE KEY-----" : '',
+        'privateKeyMasked' => $privatePreview,
         'fingerprint' => $public !== '' ? trim((string) shell_exec('/usr/bin/ssh-keygen -lf ' . escapeshellarg($key . '.pub') . ' 2>/dev/null')) : '',
     ];
 }
@@ -287,7 +292,7 @@ try {
                     'keyPair' => siteKeyPair($site),
                 ],
                 'file-manager' => fileManagerListing($site, null),
-                'cron-jobs' => ['items' => array_map(fn($item) => ['id' => (string) $item->getId(), 'schedule' => $item->getSchedule(), 'command' => $item->getCommand(), 'expression' => $item->getCrontabExpression()], $site->getCronJobs()->toArray())],
+                'cron-jobs' => ['sitePath' => '/home/' . $site->getUser() . '/htdocs/' . $site->getRootDirectory(), 'items' => array_map(fn($item) => ['id' => (string) $item->getId(), 'schedule' => $item->getSchedule(), 'command' => $item->getCommand(), 'expression' => $item->getCrontabExpression()], $site->getCronJobs()->toArray())],
                 'logs' => (function () use ($site) {
                     $base = '/home/' . $site->getUser() . '/logs';
                     $files = array_merge(glob($base . '/*') ?: [], glob($base . '/*/*') ?: []);
@@ -372,9 +377,11 @@ try {
             } elseif ($section === 'cron-jobs' && $action === 'add') {
                 $parts = preg_split('/\s+/', trim((string) $operation['schedule']));
                 if (count($parts) !== 5) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                $commands = array_values(array_filter(array_map('trim', preg_split('/\R/', (string) ($operation['command'] ?? '')) ?: [])));
+                if (!$commands || count($commands) > 20 || strlen(implode(' && ', $commands)) > 10000) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
                 $entity = new CronJob(); $entity->setSite($site);
                 $entity->setMinute($parts[0]); $entity->setHour($parts[1]); $entity->setDay($parts[2]); $entity->setMonth($parts[3]); $entity->setWeekday($parts[4]);
-                $entity->setCommand((string) $operation['command']); $site->addCronJob($entity); $manager->persist($entity); $updater->updateUserCrontab();
+                $entity->setCommand(implode(' && ', $commands)); $site->addCronJob($entity); $manager->persist($entity); $updater->updateUserCrontab();
             } elseif ($section === 'cron-jobs' && $action === 'delete') {
                 $entity = $manager->getRepository(CronJob::class)->find((int) $operation['id']);
                 if ($entity && $entity->getSite()->getId() === $site->getId()) { $site->removeCronJob($entity); $manager->remove($entity); $updater->updateUserCrontab(); }
@@ -451,6 +458,17 @@ try {
                 $real = realpath($path);
                 if (!$base || !$name || !$real || !is_file($real) || !str_starts_with($real, $base . '/')) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
                 file_put_contents($path, '');
+            } elseif ($section === 'logs' && $action === 'read') {
+                $base = realpath('/home/' . $site->getUser() . '/logs');
+                $name = ltrim((string) ($operation['name'] ?? ''), '/');
+                $real = $base ? realpath($base . '/' . $name) : false;
+                if (!$base || !$name || !$real || !is_file($real) || !str_starts_with($real, $base . '/')) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                $size = filesize($real) ?: 0;
+                $handle = fopen($real, 'rb');
+                if (!$handle) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                if ($size > 500000) fseek($handle, -500000, SEEK_END);
+                $content = stream_get_contents($handle); fclose($handle);
+                respond(['ok' => true, 'data' => ['name' => $name, 'content' => $content ?: '', 'truncated' => $size > 500000]]);
             } else respond(['ok' => false, 'code' => 'INVALID_ACTION']);
             $manager->flush();
             respond(['ok' => true]);

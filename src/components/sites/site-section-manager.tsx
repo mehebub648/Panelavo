@@ -1,18 +1,25 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import {
   CheckCircle2,
+  Ban,
+  Bot,
+  Cloud,
   Copy,
   Database,
   EyeOff,
+  ExternalLink,
   KeyRound,
+  LockKeyhole,
   LoaderCircle,
   Plus,
   Save,
   Shield,
   Trash2,
+  X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -36,6 +43,7 @@ type Data = Record<string, unknown> & {
   ssh?: string[];
   ftp?: FtpItem[];
   path?: string;
+  sitePath?: string;
   keyPair?: { exists?: boolean; publicKey?: string; privateKeyMasked?: string; fingerprint?: string };
 };
 
@@ -53,6 +61,8 @@ export function SiteSectionManager({
   const [error, setError] = useState("");
   const data = initialData;
   const [openForm, setOpenForm] = useState<string | null>(null);
+  const [logViewer, setLogViewer] = useState<null | { name: string; content: string; truncated?: boolean }>(null);
+  const [cloudPanelOrigin, setCloudPanelOrigin] = useState("");
   const [editorContent, setEditorContent] = useState(String(initialData.content ?? ""));
   const [savedEditorContent, setSavedEditorContent] = useState(String(initialData.content ?? ""));
 
@@ -90,6 +100,7 @@ export function SiteSectionManager({
     }
   }
   useEffect(() => {
+    setCloudPanelOrigin(`https://${window.location.hostname}:8443`);
     void preloadCodeEditor().catch(() => undefined);
     function shortcut(event: KeyboardEvent) {
       if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
@@ -107,7 +118,17 @@ export function SiteSectionManager({
   function submit(action: string, event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const values = Object.fromEntries(new FormData(event.currentTarget));
-    void act({ action, ...values });
+    return act({ action, ...values });
+  }
+  async function readLog(name: string) {
+    setBusy(true); setError("");
+    try {
+      const response = await fetch(`/api/sites/${encodeURIComponent(domain)}/sections/logs`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "read", name }) });
+      const result = await response.json();
+      if (!result.success) throw new Error(result.error?.message || "Could not read this log.");
+      setLogViewer(result.data);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not read this log."); }
+    finally { setBusy(false); }
   }
   const card =
     "overflow-hidden rounded-2xl border border-white/40 bg-white/60 backdrop-blur-md shadow-card transition-all hover:shadow-card-hover animate-fade-in p-5 sm:p-6";
@@ -157,9 +178,9 @@ export function SiteSectionManager({
 
   if (section === "databases")
     return (
-      <div className={`grid gap-5 ${openForm === "database" ? "lg:grid-cols-[1fr_360px]" : ""}`}>
+      <div className="grid gap-5">
         <section className={card}>
-          <div className="mb-4 flex items-center justify-between gap-3"><h2 className="font-bold">Databases</h2><Button size="sm" onClick={() => setOpenForm(openForm === "database" ? null : "database")}><Plus className="h-4 w-4" /> Add database</Button></div>
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-bold">Databases</h2><p className="mt-1 text-sm text-slate-500">Manage databases and open them in phpMyAdmin.</p></div><div className="flex gap-2"><Button asChild variant="outline" size="sm" className={!cloudPanelOrigin ? "pointer-events-none opacity-50" : ""}><a href={`${cloudPanelOrigin}/pma`} target="_blank" rel="noopener noreferrer"><ExternalLink className="h-4 w-4" /> Open phpMyAdmin</a></Button><Button size="sm" onClick={() => setOpenForm(openForm === "database" ? null : "database")}><Plus className="h-4 w-4" /> Add database</Button></div></div>
           <div className="space-y-3">
             {((data.items as DatabaseItem[]) ?? []).map((item) => (
               <div
@@ -175,14 +196,7 @@ export function SiteSectionManager({
                     </p>
                   </div>
                 </div>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="opacity-0 group-hover:opacity-100 transition-opacity"
-                  onClick={() => act({ action: "delete", name: item.name })}
-                >
-                  <Trash2 className="h-4 w-4 text-red-500 hover:text-red-600" />
-                </Button>
+                <div className="flex items-center gap-1"><Button asChild variant="ghost" size="sm"><a href={`${cloudPanelOrigin}/pma/${encodeURIComponent(domain)}/${encodeURIComponent(item.users?.[0] ?? "")}`} target="_blank" rel="noopener noreferrer"><ExternalLink className="h-4 w-4" /> Manage</a></Button><Button variant="ghost" size="icon" className="opacity-60 transition-opacity hover:opacity-100" onClick={() => act({ action: "delete", name: item.name })}><Trash2 className="h-4 w-4 text-red-500 hover:text-red-600" /></Button></div>
               </div>
             ))}
             {!data.items?.length && (
@@ -190,18 +204,18 @@ export function SiteSectionManager({
             )}
           </div>
         </section>
-        {openForm === "database" && <form
-          className={`${card} space-y-4`}
-          onSubmit={(e) => { submit("add", e); setOpenForm(null); }}
+        {openForm === "database" && <FormModal title="Create database" onClose={() => setOpenForm(null)}><form
+          className="space-y-4"
+          onSubmit={async (e) => { if (await submit("add", e)) setOpenForm(null); }}
         >
           <h2 className="font-bold">Add database</h2>
           <div>
             <Label>Database name</Label>
-            <Input name="name" required />
+            <Input name="name" pattern="[A-Za-z][A-Za-z0-9-]{1,49}" title="Start with a letter; use only letters, numbers, and hyphens" defaultValue={`${domain.split(".")[0].replace(/[^a-z0-9]/gi, "-")}-db`} required />
           </div>
           <div>
             <Label>User name</Label>
-            <Input name="username" required />
+            <Input name="username" pattern="[A-Za-z][A-Za-z0-9-]{2,31}" title="Start with a letter; use only letters, numbers, and hyphens" defaultValue={`${domain.split(".")[0].replace(/[^a-z0-9]/gi, "-")}-user`} required />
           </div>
           <div>
             <Label>Password</Label>
@@ -211,13 +225,13 @@ export function SiteSectionManager({
           <Button disabled={busy}>
             <Plus className="h-4 w-4" /> Create database
           </Button>
-        </form>}
+        </form></FormModal>}
       </div>
     );
 
   if (section === "certificates")
     return (
-      <div className={`grid gap-5 ${openForm === "certificate" ? "lg:grid-cols-[1fr_360px]" : ""}`}>
+      <div className="grid gap-5">
         <section className={card}>
           <div className="mb-4 flex items-center justify-between gap-3"><h2 className="font-bold">Installed certificates</h2><Button size="sm" onClick={() => setOpenForm(openForm === "certificate" ? null : "certificate")}><Shield className="h-4 w-4" /> Issue certificate</Button></div>
           <div className="space-y-3">
@@ -234,8 +248,8 @@ export function SiteSectionManager({
             ))}
           </div>
         </section>
-        {openForm === "certificate" && <form
-          className={`${card} space-y-4`}
+        {openForm === "certificate" && <FormModal title="Issue certificate" onClose={() => setOpenForm(null)}><form
+          className="space-y-4"
           onSubmit={(e) => submit("lets-encrypt", e)}
         >
           <h2 className="font-bold">Let&apos;s Encrypt</h2>
@@ -247,13 +261,14 @@ export function SiteSectionManager({
             <Input
               name="subjectAlternativeName"
               placeholder="www.example.com,api.example.com"
+              defaultValue={`www.${domain}`}
             />
           </div>
           {feedback}
           <Button disabled={busy}>
             <Shield className="h-4 w-4" /> Issue certificate
           </Button>
-        </form>}
+        </form></FormModal>}
       </div>
     );
 
@@ -264,85 +279,49 @@ export function SiteSectionManager({
           {
             key: "blockedIps",
             title: "Blocked IPs",
+            description: "IP addresses denied at the web server.",
             add: "add-ip",
             del: "delete-ip",
             placeholder: "203.0.113.4",
+            icon: Ban,
           },
           {
             key: "blockedBots",
             title: "Blocked bots",
+            description: "User agents prevented from accessing the site.",
             add: "add-bot",
             del: "delete-bot",
             placeholder: "BadBot",
+            icon: Bot,
           },
         ].map((x) => (
           <section key={x.key} className={card}>
-            <h2 className="font-bold">{x.title}</h2>
-            <form
-              className="my-4 flex gap-2"
-              onSubmit={(e) => submit(x.add, e)}
-            >
-              <Input name="value" placeholder={x.placeholder} required />
-              <Button size="icon">
-                <Plus className="h-4 w-4" />
-              </Button>
-            </form>
-            <div className="space-y-2">
+            <div className="flex items-start justify-between gap-3"><div className="flex gap-3"><span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-red-50 text-red-600"><x.icon className="h-5 w-5" /></span><div><h2 className="font-bold">{x.title}</h2><p className="mt-0.5 text-sm text-slate-500">{x.description}</p></div></div><Button variant="outline" size="sm" onClick={() => setOpenForm(x.key)}><Plus className="h-4 w-4" /> Add</Button></div>
+            <div className="mt-5 space-y-2">
               {((data[x.key] as string[] | undefined) ?? []).map((v) => (
                 <div
                   key={v}
-                  className="group flex justify-between rounded-lg border border-slate-200/60 bg-slate-50/50 p-3 text-sm transition-all hover:bg-white hover:shadow-sm"
+                  className="group flex items-center justify-between rounded-lg border border-slate-200/60 bg-slate-50/50 p-3 text-sm transition-all hover:bg-white hover:shadow-sm"
                 >
-                  {v}
-                  <button className="opacity-0 group-hover:opacity-100 transition-opacity" onClick={() => act({ action: x.del, value: v })}>
+                  <code>{v}</code>
+                  <button aria-label={`Remove ${v}`} className="opacity-60 transition-opacity hover:opacity-100" onClick={() => act({ action: x.del, value: v })}>
                     <Trash2 className="h-4 w-4 text-red-500" />
                   </button>
                 </div>
               ))}
+              {!((data[x.key] as string[] | undefined) ?? []).length && <div className="rounded-xl border border-dashed border-slate-200 py-7 text-center text-sm text-slate-400">No entries configured</div>}
             </div>
+            {openForm === x.key && <FormModal title={`Add to ${x.title}`} onClose={() => setOpenForm(null)}><form className="space-y-4" onSubmit={(event) => { submit(x.add, event); setOpenForm(null); }}><div><Label>Value</Label><Input name="value" placeholder={x.placeholder} autoFocus required /></div><div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={() => setOpenForm(null)}>Cancel</Button><Button disabled={busy}><Plus className="h-4 w-4" /> Add entry</Button></div></form></FormModal>}
           </section>
         ))}
-        <form
-          className={`${card} space-y-4`}
-          onSubmit={(e) => submit("basic-auth", e)}
-        >
-          <h2 className="font-bold">Basic authentication</h2>
-          <label className="flex gap-2 text-sm">
-            <input
-              name="active"
-              type="checkbox"
-              value="true"
-              defaultChecked={data.basicAuth?.active}
-            />{" "}
-            Enabled
-          </label>
-          <Input
-            name="username"
-            placeholder="User name"
-            defaultValue={data.basicAuth?.username}
-          />
-          <Input name="password" type="password" placeholder="New password" />
-          {feedback}
-          <Button disabled={busy}>Save protection</Button>
-        </form>
         <section className={card}>
-          <h2 className="font-bold">Cloudflare protection</h2>
-          <p className="mt-2 text-sm text-slate-500">
-            Reject traffic that does not originate from Cloudflare&apos;s
-            published networks.
-          </p>
-          <Button
-            className="mt-4"
-            variant={data.cloudflareOnly ? "danger" : "default"}
-            onClick={() =>
-              act({ action: "cloudflare", enabled: !data.cloudflareOnly })
-            }
-          >
-            {data.cloudflareOnly
-              ? "Disable Cloudflare-only traffic"
-              : "Enable Cloudflare-only traffic"}
-          </Button>
+          <div className="flex items-start justify-between gap-4"><div className="flex gap-3"><span className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl ${data.basicAuth?.active ? "bg-emerald-50 text-emerald-600" : "bg-slate-100 text-slate-500"}`}><LockKeyhole className="h-5 w-5" /></span><div><div className="flex items-center gap-2"><h2 className="font-bold">Basic authentication</h2><span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${data.basicAuth?.active ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>{data.basicAuth?.active ? "Enabled" : "Disabled"}</span></div><p className="mt-1 text-sm text-slate-500">Require a username and password before serving the site.</p>{data.basicAuth?.active && <p className="mt-2 text-xs text-slate-400">User: {data.basicAuth.username}</p>}</div></div><Button variant="outline" size="sm" onClick={() => setOpenForm("basic-auth")}>Configure</Button></div>
+          {openForm === "basic-auth" && <FormModal title="Basic authentication" onClose={() => setOpenForm(null)}><form className="space-y-4" onSubmit={(event) => { submit("basic-auth", event); setOpenForm(null); }}><label className="flex items-center gap-3 rounded-xl border border-slate-200 p-4 text-sm font-medium"><input name="active" type="checkbox" value="true" defaultChecked={data.basicAuth?.active} className="h-4 w-4" />Enable password protection</label><div><Label>User name</Label><Input name="username" defaultValue={data.basicAuth?.username} required /></div><div><Label>New password</Label><Input name="password" type="password" placeholder={data.basicAuth?.active ? "Leave blank to keep current password" : "Enter a strong password"} /></div>{feedback}<div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={() => setOpenForm(null)}>Cancel</Button><Button disabled={busy}>Save protection</Button></div></form></FormModal>}
         </section>
+        <section className={card}>
+          <div className="flex items-start justify-between gap-4"><div className="flex gap-3"><span className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl ${data.cloudflareOnly ? "bg-blue-50 text-blue-600" : "bg-slate-100 text-slate-500"}`}><Cloud className="h-5 w-5" /></span><div><div className="flex items-center gap-2"><h2 className="font-bold">Cloudflare-only traffic</h2><span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${data.cloudflareOnly ? "bg-blue-50 text-blue-700" : "bg-slate-100 text-slate-500"}`}>{data.cloudflareOnly ? "Enabled" : "Disabled"}</span></div><p className="mt-1 text-sm text-slate-500">Reject requests that do not originate from Cloudflare&apos;s published networks.</p></div></div><button type="button" role="switch" aria-checked={Boolean(data.cloudflareOnly)} disabled={busy} onClick={() => act({ action: "cloudflare", enabled: !data.cloudflareOnly })} className={`relative h-7 w-12 shrink-0 rounded-full transition-colors ${data.cloudflareOnly ? "bg-panel-600" : "bg-slate-300"}`}><span className={`absolute left-1 top-1 h-5 w-5 rounded-full bg-white shadow transition-transform ${data.cloudflareOnly ? "translate-x-5" : "translate-x-0"}`} /></button></div>
+        </section>
+        <div className="md:col-span-2">{feedback}</div>
       </div>
     );
 
@@ -356,7 +335,7 @@ export function SiteSectionManager({
           </div>
           {data.keyPair?.exists ? <div className="mt-5 grid gap-4 lg:grid-cols-2">
             <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4"><div className="mb-2 flex items-center justify-between"><Label>Public key</Label><Button type="button" size="sm" variant="outline" onClick={async () => { await navigator.clipboard.writeText(data.keyPair?.publicKey ?? ""); toast.success("Public key copied"); }}><Copy className="h-4 w-4" /> Copy</Button></div><code className="block break-all rounded-lg bg-white p-3 text-xs leading-5 text-slate-700">{data.keyPair.publicKey}</code><p className="mt-2 break-all text-xs text-slate-400">{data.keyPair.fingerprint}</p></div>
-            <div className="rounded-xl border border-amber-200/70 bg-amber-50/50 p-4"><div className="mb-2 flex items-center gap-2"><EyeOff className="h-4 w-4 text-amber-600" /><Label>Private key</Label></div><pre className="overflow-hidden whitespace-pre-wrap rounded-lg bg-slate-900 p-3 text-xs leading-5 text-slate-400">{data.keyPair.privateKeyMasked}</pre><p className="mt-2 text-xs text-amber-700">Private key material is intentionally never sent to the browser.</p></div>
+            <div className="rounded-xl border border-amber-200/70 bg-amber-50/50 p-4"><div className="mb-2 flex items-center gap-2"><EyeOff className="h-4 w-4 text-amber-600" /><Label>Private key preview</Label></div><pre className="overflow-hidden whitespace-pre-wrap rounded-lg bg-slate-900 p-3 text-xs leading-5 text-slate-400">{data.keyPair.privateKeyMasked}</pre><p className="mt-2 text-xs text-amber-700">Only the opening and closing lines are shown. The complete private key is never sent to the browser.</p></div>
           </div> : <div className="mt-5 rounded-xl border border-dashed border-slate-300 bg-slate-50/50 p-6 text-center text-sm text-slate-500">No deployment key has been generated for <b>{data.primary}</b>.</div>}
         </section>
         <section className={card}>
@@ -375,8 +354,8 @@ export function SiteSectionManager({
               </button>
             </div>
           ))}
-          {openForm === "ssh" && <form
-            className="mt-4 space-y-3"
+          {openForm === "ssh" && <FormModal title="Add SSH user" onClose={() => setOpenForm(null)}><form
+            className="space-y-3"
             onSubmit={(e) => { submit("add-ssh", e); setOpenForm(null); }}
           >
             <Input name="username" placeholder="SSH user" required />
@@ -394,7 +373,7 @@ export function SiteSectionManager({
             <Button>
               <Plus className="h-4 w-4" /> Add SSH user
             </Button>
-          </form>}
+          </form></FormModal>}
         </section>
         <section className={card}>
           <div className="mb-3 flex items-center justify-between gap-3"><h2 className="font-bold">FTP users</h2><Button variant="outline" size="sm" onClick={() => setOpenForm(openForm === "ftp" ? null : "ftp")}><Plus className="h-4 w-4" /> Add user</Button></div>
@@ -417,8 +396,8 @@ export function SiteSectionManager({
               </button>
             </div>
           ))}
-          {openForm === "ftp" && <form
-            className="mt-4 space-y-3"
+          {openForm === "ftp" && <FormModal title="Add FTP user" onClose={() => setOpenForm(null)}><form
+            className="space-y-3"
             onSubmit={(e) => { submit("add-ftp", e); setOpenForm(null); }}
           >
             <Input name="username" placeholder="FTP user" required />
@@ -428,11 +407,11 @@ export function SiteSectionManager({
               placeholder="Password"
               required
             />
-            <Input name="homeDirectory" placeholder="Home directory" />
+            <Input name="homeDirectory" placeholder="Home directory" defaultValue={`/home/${data.primary ?? ""}`} />
             <Button>
               <Plus className="h-4 w-4" /> Add FTP user
             </Button>
-          </form>}
+          </form></FormModal>}
           {feedback}
         </section>
       </div>
@@ -443,7 +422,7 @@ export function SiteSectionManager({
 
   if (section === "cron-jobs")
     return (
-      <div className={`grid gap-5 ${openForm === "cron" ? "lg:grid-cols-[1fr_360px]" : ""}`}>
+      <div className="grid gap-5">
         <section className={card}>
           <div className="mb-4 flex items-center justify-between gap-3"><h2 className="font-bold">Scheduled jobs</h2><Button size="sm" onClick={() => setOpenForm(openForm === "cron" ? null : "cron")}><Plus className="h-4 w-4" /> Add cron job</Button></div>
           {((data.items as CronItem[]) ?? []).map((job) => (
@@ -458,22 +437,30 @@ export function SiteSectionManager({
             </div>
           ))}
         </section>
-        {openForm === "cron" && <form
-          className={`${card} space-y-4`}
+        {openForm === "cron" && <FormModal title="Add cron job" onClose={() => setOpenForm(null)}><form
+          className="space-y-4"
           onSubmit={(e) => { submit("add", e); setOpenForm(null); }}
         >
           <h2 className="font-bold">Add cron job</h2>
-          <Input name="schedule" placeholder="*/5 * * * *" required />
-          <Input
+          <div><Label>Schedule</Label><Input name="schedule" defaultValue="*/5 * * * *" placeholder="*/5 * * * *" required /></div>
+          <div className="flex flex-wrap gap-2"><span className="w-full text-xs font-medium text-slate-500">Quick schedules</span>{[["Every 5 minutes", "*/5 * * * *"], ["Hourly", "0 * * * *"], ["Daily at midnight", "0 0 * * *"], ["Weekly", "0 0 * * 0"]].map(([label, value]) => <button key={value} type="button" className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium hover:bg-panel-50" onClick={(event) => { const form = event.currentTarget.closest("form"); const input = form?.elements.namedItem("schedule") as HTMLInputElement | null; if (input) input.value = value; }}>{label}</button>)}</div>
+          <textarea
             name="command"
             placeholder="php artisan schedule:run"
+            className="min-h-24 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none ring-panel-500 focus:ring-2"
             required
           />
+          <p className="-mt-2 text-xs text-slate-500">Enter one command per line. Commands run in order and stop if one fails.</p>
+          <div className="grid gap-2"><span className="text-xs font-medium text-slate-500">Command templates</span>{[
+            ["Laravel scheduler", `cd ${data.sitePath ?? "site"} && php artisan schedule:run`],
+            ["WordPress cron", `cd ${data.sitePath ?? "site"} && wp cron event run --due-now`],
+            ["Node.js task", `cd ${data.sitePath ?? "site"} && npm run cron`],
+          ].map(([label, command]) => <button key={label} type="button" className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-left text-sm hover:border-panel-300 hover:bg-panel-50" onClick={(event) => { const form = event.currentTarget.closest("form"); const input = form?.elements.namedItem("command") as HTMLTextAreaElement | null; if (input) input.value = command; }}><b className="block text-xs text-slate-700">{label}</b><code className="mt-1 block truncate text-xs text-slate-500">{command}</code></button>)}</div>
           {feedback}
           <Button>
             <Plus className="h-4 w-4" /> Add job
           </Button>
-        </form>}
+        </form></FormModal>}
       </div>
     );
 
@@ -487,20 +474,26 @@ export function SiteSectionManager({
           {((data.items as string[]) ?? []).map((name) => (
             <div
               key={name}
-              className="group flex items-center justify-between rounded-xl border border-slate-200/60 bg-white/50 p-4 transition-all hover:bg-white hover:shadow-sm"
+              className="group flex cursor-pointer items-center justify-between rounded-xl border border-slate-200/60 bg-white/50 p-4 transition-all hover:bg-white hover:shadow-sm"
+              onClick={() => void readLog(name)}
             >
-              <code>{name}</code>
+              <div><code>{name}</code><p className="mt-1 text-xs text-slate-400">Click to inspect recent entries</p></div>
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => act({ action: "clear", name })}
+                onClick={(event) => { event.stopPropagation(); void act({ action: "clear", name }); }}
               >
                 Clear log
               </Button>
             </div>
           ))}
         </div>
+        {logViewer && createPortal(<div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/40 p-4 backdrop-blur-sm" onMouseDown={(event) => { if (event.target === event.currentTarget) setLogViewer(null); }}><div className="flex max-h-[calc(100vh-2rem)] w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"><div className="flex items-center justify-between border-b px-5 py-4"><div><h3 className="font-bold">{logViewer.name}</h3><p className="text-xs text-slate-500">{logViewer.truncated ? "Showing the most recent 500 KB" : "Complete log"}</p></div><Button variant="ghost" size="icon" onClick={() => setLogViewer(null)}><X className="h-5 w-5" /></Button></div><pre className="min-h-[50vh] flex-1 overflow-auto bg-slate-950 p-5 font-mono text-xs leading-5 text-slate-200">{logViewer.content || "This log is empty."}</pre></div></div>, document.body)}
       </section>
     );
   return null;
+}
+
+function FormModal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+  return createPortal(<div className="fixed inset-0 z-[80] flex items-center justify-center overflow-y-auto bg-slate-950/40 p-4 backdrop-blur-sm" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="my-auto w-full max-w-2xl overflow-hidden rounded-2xl bg-white shadow-2xl"><div className="flex items-center justify-between border-b border-slate-100 px-6 py-5"><div><h2 className="text-lg font-bold text-ink">{title}</h2><p className="mt-0.5 text-sm text-slate-500">Review the details before continuing.</p></div><Button type="button" variant="ghost" size="icon" onClick={onClose}><X className="h-5 w-5" /></Button></div><div className="p-6">{children}</div></div></div>, document.body);
 }

@@ -52,12 +52,14 @@ export class LiveCloudPanelClient implements CloudPanelClient {
       child.on("close", (code, signal) => {
         clearTimeout(timeout);
         if (code === 0) resolve(stdout);
-        else reject(new AppError(
-          signal === "SIGKILL" ? "REQUEST_TIMEOUT" : "CLOUDPANEL_UNAVAILABLE",
-          signal === "SIGKILL" ? "CloudPanel CLI took too long to respond." :
-            (/already exists|duplicate/i.test(stderr) ? "A website with this domain already exists." : "CloudPanel CLI command failed."),
-          signal === "SIGKILL" ? 504 : 503,
-        ));
+        else {
+          const cliOutput = `${stdout}\n${stderr}`;
+          const message = signal === "SIGKILL" ? "CloudPanel CLI took too long to respond."
+            : /already exists|duplicate|already in use/i.test(cliOutput) ? "That name is already in use."
+            : /database(Name|UserName)|constraint|not valid|validation/i.test(cliOutput) ? "Use 2–50 characters, starting with a letter and containing only letters, numbers, and hyphens."
+            : "CloudPanel could not complete the operation. Check the submitted values and try again.";
+          reject(new AppError(signal === "SIGKILL" ? "REQUEST_TIMEOUT" : "CLOUDPANEL_UNAVAILABLE", message, signal === "SIGKILL" ? 504 : 422));
+        }
       });
     });
   }
