@@ -98,9 +98,9 @@ export function SiteSettings({
   }
 
   return (
-    <div className="mx-auto max-w-4xl space-y-5">
+    <div className="w-full space-y-5">
       <div>
-        <h2 className="text-2xl font-bold tracking-tight text-ink">Settings</h2>
+        <h2 className="text-2xl font-bold tracking-tight text-ink drop-shadow-sm">Settings</h2>
         <p className="mt-1 text-sm text-slate-500">
           {site.application || site.type} · Site user:{" "}
           {site.siteUser || "not available"}
@@ -109,9 +109,9 @@ export function SiteSettings({
       <form
         ref={formRef}
         onSubmit={save}
-        className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-card"
+        className="overflow-hidden rounded-2xl border border-white/40 bg-white/60 backdrop-blur-md shadow-card transition-all hover:shadow-card-hover animate-fade-in"
       >
-        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 bg-slate-50/60 px-5 py-4 sm:px-6">
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200/50 bg-slate-50/40 px-5 py-4 sm:px-6">
           <div>
             <h3 className="font-bold">Website configuration</h3>
             <p className="mt-1 text-sm text-slate-500">
@@ -119,35 +119,37 @@ export function SiteSettings({
             </p>
           </div>
           {user.canCreateSites && (
-            <kbd className="rounded-md border bg-white px-2 py-1 text-xs text-slate-500">
-              Ctrl/⌘ + S
+            <kbd className="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-500 shadow-sm flex items-center gap-1">
+              <span className="opacity-70">Ctrl/⌘</span> <span>S</span>
             </kbd>
           )}
         </div>
         <div className="grid gap-5 p-5 sm:grid-cols-2 sm:p-6">
           <div>
-            <Label htmlFor="rootDirectory">Root directory</Label>
+            <Label htmlFor="rootDirectory" className="font-medium text-slate-700">Root directory</Label>
             <Input
               id="rootDirectory"
               name="rootDirectory"
               defaultValue={site.rootDirectory}
               disabled={!user.canCreateSites}
+              className="mt-1.5 transition-all focus:ring-2 focus:ring-panel-500/50 bg-white/70"
             />
           </div>
           {["php", "nodejs", "python"].includes(site.type ?? "") && (
             <div>
-              <Label htmlFor="runtimeVersion">Runtime version</Label>
+              <Label htmlFor="runtimeVersion" className="font-medium text-slate-700">Runtime version</Label>
               <Input
                 id="runtimeVersion"
                 name="runtimeVersion"
                 defaultValue={site.runtimeVersion}
                 disabled={!user.canCreateSites}
+                className="mt-1.5 transition-all focus:ring-2 focus:ring-panel-500/50 bg-white/70"
               />
             </div>
           )}
           {["nodejs", "python"].includes(site.type ?? "") && (
             <div>
-              <Label htmlFor="appPort">Application port</Label>
+              <Label htmlFor="appPort" className="font-medium text-slate-700">Application port</Label>
               <Input
                 id="appPort"
                 name="appPort"
@@ -156,17 +158,19 @@ export function SiteSettings({
                 max={65535}
                 defaultValue={site.appPort}
                 disabled={!user.canCreateSites}
+                className="mt-1.5 transition-all focus:ring-2 focus:ring-panel-500/50 bg-white/70"
               />
             </div>
           )}
           {site.type === "reverse-proxy" && (
             <div>
-              <Label htmlFor="reverseProxyUrl">Reverse proxy URL</Label>
+              <Label htmlFor="reverseProxyUrl" className="font-medium text-slate-700">Reverse proxy URL</Label>
               <Input
                 id="reverseProxyUrl"
                 name="reverseProxyUrl"
                 defaultValue={site.reverseProxyUrl}
                 disabled={!user.canCreateSites}
+                className="mt-1.5 transition-all focus:ring-2 focus:ring-panel-500/50 bg-white/70"
               />
             </div>
           )}
@@ -188,8 +192,8 @@ export function SiteSettings({
           )}
         </div>
         {user.canCreateSites && (
-          <div className="flex justify-end border-t border-slate-100 bg-slate-50/60 px-5 py-4 sm:px-6">
-            <Button type="submit" disabled={busy}>
+          <div className="flex justify-end border-t border-slate-200/50 bg-slate-50/40 px-5 py-4 sm:px-6">
+            <Button type="submit" disabled={busy} className="shadow-sm hover:shadow transition-all duration-200 hover:-translate-y-0.5">
               {busy ? (
                 <LoaderCircle className="h-4 w-4 animate-spin" />
               ) : (
@@ -201,7 +205,7 @@ export function SiteSettings({
         )}
       </form>
       {user.canCreateSites && (
-        <section className="flex flex-col gap-4 rounded-2xl border border-red-200 bg-red-50/40 p-5 sm:flex-row sm:items-center sm:justify-between sm:p-6">
+        <section className="flex flex-col gap-4 rounded-2xl border border-red-200/60 bg-gradient-to-br from-red-50/50 to-white/50 backdrop-blur-sm p-5 sm:flex-row sm:items-center sm:justify-between sm:p-6 shadow-sm">
           <div>
             <h3 className="font-bold text-red-700">Delete website</h3>
             <p className="mt-1 text-sm text-slate-600">

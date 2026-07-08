@@ -50,7 +50,7 @@ export default async function SiteSectionPage({
     section,
   );
   return (
-    <div className="mx-auto max-w-6xl space-y-5">
+    <div className="w-full space-y-5">
       <div>
         <h2 className="text-2xl font-bold tracking-tight text-ink">
           {titles[section]}

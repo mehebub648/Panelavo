@@ -258,6 +258,7 @@ export class LiveCloudPanelClient implements CloudPanelClient {
       });
       if (!result.ok)
         throw new AppError("SITE_UPDATE_FAILED", "CloudPanel could not apply the change.", 502);
+      if (result.data !== undefined) return result.data;
     }
     return this.getSiteSection(session, domain, section);
   }

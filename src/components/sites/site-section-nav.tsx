@@ -31,8 +31,8 @@ export function SiteSectionNav({ domain }: { domain: string }) {
   const pathname = usePathname();
   const base = `/sites/${encodeURIComponent(domain)}`;
   return (
-    <div className="-mx-4 overflow-x-auto border-b border-slate-200 px-4 sm:-mx-8 sm:px-8">
-      <nav className="flex min-w-max gap-1" aria-label={`${domain} tools`}>
+    <div className="-mx-4 overflow-x-auto px-4 sm:-mx-8 sm:px-8 pb-1">
+      <nav className="flex min-w-max gap-2 p-1 rounded-2xl bg-slate-100/50 backdrop-blur-sm border border-slate-200/60" aria-label={`${domain} tools`}>
         {sections.map(([path, label, Icon]) => {
           const href = `${base}/${path}`;
           const active = pathname === href;
@@ -42,13 +42,13 @@ export function SiteSectionNav({ domain }: { domain: string }) {
               href={href}
               aria-current={active ? "page" : undefined}
               className={cn(
-                "relative flex h-12 items-center gap-2 rounded-t-lg px-3 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-panel-500",
+                "relative flex h-10 items-center gap-2 rounded-xl px-4 text-sm font-medium transition-all duration-200 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-panel-500",
                 active
-                  ? "bg-white text-panel-700 after:absolute after:inset-x-2 after:bottom-0 after:h-0.5 after:rounded-full after:bg-panel-600"
-                  : "text-slate-500 hover:bg-white/70 hover:text-slate-900",
+                  ? "bg-white text-panel-700 shadow-sm ring-1 ring-slate-200/50"
+                  : "text-slate-500 hover:bg-slate-200/50 hover:text-slate-900",
               )}
             >
-              <Icon className="h-4 w-4" />
+              <Icon className={cn("h-4 w-4 transition-colors", active ? "text-panel-600" : "text-slate-400")} />
               {label}
             </Link>
           );

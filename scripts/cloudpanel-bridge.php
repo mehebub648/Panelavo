@@ -103,7 +103,6 @@ function siteModel(Site $site): array
         Site::TYPE_REVERSE_PROXY => [new ReverseProxySiteModel(), ReverseProxySiteUpdater::class],
         default => [new StaticSiteModel(), StaticSiteUpdater::class],
     };
-    $model->setType($site->getType());
     $model->setDomainName($site->getDomainName());
     $model->setUser($site->getUser());
     $model->setRootDirectory($site->getRootDirectory());
@@ -126,6 +125,88 @@ function siteModel(Site $site): array
     if ($model instanceof PythonSiteModel) $model->setPythonSettings($site->getPythonSettings());
     if ($model instanceof ReverseProxySiteModel) $model->setReverseProxyUrl($site->getReverseProxyUrl());
     return [$model, new $updater($model)];
+}
+
+function fileManagerBase(Site $site): string
+{
+    $base = realpath('/home/' . $site->getUser());
+    if (!$base || !is_dir($base)) respond(['ok' => false, 'code' => 'SITE_NOT_FOUND']);
+    return $base;
+}
+
+function safeFileManagerPath(string $base, string $relative, bool $mustExist = true): string
+{
+    $relative = trim(str_replace('\\', '/', $relative), '/');
+    if ($relative === '') return $base;
+    foreach (explode('/', $relative) as $part) {
+        if ($part === '' || $part === '.' || $part === '..') respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+    }
+    $path = $base . '/' . $relative;
+    if ($mustExist) {
+        $real = realpath($path);
+        if (!$real || ($real !== $base && !str_starts_with($real, $base . '/'))) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+        return $real;
+    }
+    $parent = realpath(dirname($path));
+    if (!$parent || ($parent !== $base && !str_starts_with($parent, $base . '/'))) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+    return $path;
+}
+
+function fileManagerListing(Site $site, ?string $relative = null): array
+{
+    $base = fileManagerBase($site);
+    $relative ??= 'htdocs/' . trim($site->getRootDirectory(), '/');
+    $directory = safeFileManagerPath($base, $relative);
+    if (!is_dir($directory)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+    $items = [];
+    foreach (scandir($directory) ?: [] as $name) {
+        if ($name === '.' || $name === '..') continue;
+        $path = $directory . '/' . $name;
+        $items[] = [
+            'name' => $name,
+            'type' => is_dir($path) ? 'directory' : 'file',
+            'size' => is_file($path) ? (filesize($path) ?: 0) : 0,
+            'modified' => gmdate(DATE_ATOM, filemtime($path) ?: time()),
+            'permissions' => substr(sprintf('%o', fileperms($path)), -4),
+        ];
+    }
+    usort($items, fn($a, $b) => $a['type'] === $b['type'] ? strcasecmp($a['name'], $b['name']) : ($a['type'] === 'directory' ? -1 : 1));
+    return ['path' => $base, 'relativePath' => trim($relative, '/'), 'items' => $items];
+}
+
+function deleteTree(string $path): void
+{
+    if (is_link($path) || is_file($path)) { unlink($path); return; }
+    foreach (scandir($path) ?: [] as $name) if ($name !== '.' && $name !== '..') deleteTree($path . '/' . $name);
+    rmdir($path);
+}
+
+function copyTree(string $source, string $destination): void
+{
+    if (is_link($source) || is_file($source)) { if (!copy($source, $destination)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']); return; }
+    if (!mkdir($destination, fileperms($source) & 0777)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+    foreach (scandir($source) ?: [] as $name) if ($name !== '.' && $name !== '..') copyTree($source . '/' . $name, $destination . '/' . $name);
+}
+
+function addToZip(ZipArchive $zip, string $path, string $archivePath): void
+{
+    if (is_link($path) || is_file($path)) { $zip->addFile($path, $archivePath); return; }
+    $zip->addEmptyDir($archivePath);
+    foreach (scandir($path) ?: [] as $name) {
+        if ($name !== '.' && $name !== '..') addToZip($zip, $path . '/' . $name, $archivePath . '/' . $name);
+    }
+}
+
+function siteKeyPair(Site $site): array
+{
+    $key = '/home/' . $site->getUser() . '/.ssh/id_ed25519';
+    $public = is_file($key . '.pub') ? trim((string) file_get_contents($key . '.pub')) : '';
+    return [
+        'exists' => is_file($key) && $public !== '',
+        'publicKey' => $public,
+        'privateKeyMasked' => is_file($key) ? "-----BEGIN OPENSSH PRIVATE KEY-----\n••••••••••••••••••••••••\n-----END OPENSSH PRIVATE KEY-----" : '',
+        'fingerprint' => $public !== '' ? trim((string) shell_exec('/usr/bin/ssh-keygen -lf ' . escapeshellarg($key . '.pub') . ' 2>/dev/null')) : '',
+    ];
 }
 
 try {
@@ -203,8 +284,9 @@ try {
                     'primary' => $site->getUser(),
                     'ssh' => array_map(fn($item) => $item->getUserName(), $site->getSshUsers()->toArray()),
                     'ftp' => array_map(fn($item) => ['username' => $item->getUserName(), 'home' => $item->getHomeDirectory()], $site->getFtpUsers()->toArray()),
+                    'keyPair' => siteKeyPair($site),
                 ],
-                'file-manager' => ['path' => '/home/' . $site->getUser() . '/htdocs/' . $site->getRootDirectory(), 'items' => array_values(array_filter(scandir('/home/' . $site->getUser() . '/htdocs/' . $site->getRootDirectory()) ?: [], fn($name) => !in_array($name, ['.', '..'], true)))],
+                'file-manager' => fileManagerListing($site, null),
                 'cron-jobs' => ['items' => array_map(fn($item) => ['id' => (string) $item->getId(), 'schedule' => $item->getSchedule(), 'command' => $item->getCommand(), 'expression' => $item->getCrontabExpression()], $site->getCronJobs()->toArray())],
                 'logs' => (function () use ($site) {
                     $base = '/home/' . $site->getUser() . '/logs';
@@ -221,9 +303,26 @@ try {
             $section = (string) ($input['section'] ?? '');
             $operation = $input['operation'] ?? [];
             $action = (string) ($operation['action'] ?? '');
-            [$model, $updater] = siteModel($site);
+            $model = $updater = null;
+            if (!in_array($section, ['file-manager', 'logs'], true) && !($section === 'users' && $action === 'generate-keypair')) {
+                [$model, $updater] = siteModel($site);
+            }
 
-            if ($section === 'vhost' && $action === 'save') {
+            if ($section === 'users' && $action === 'generate-keypair') {
+                $home = '/home/' . $site->getUser();
+                $ssh = $home . '/.ssh';
+                $key = $ssh . '/id_ed25519';
+                if (!is_dir($ssh) && !mkdir($ssh, 0700, true)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                if (!is_file($key)) {
+                    $process = proc_open(['/usr/bin/ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-C', $site->getUser() . '@' . $site->getDomainName(), '-f', $key], [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+                    if (!is_resource($process)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                    fclose($pipes[0]); stream_get_contents($pipes[1]); fclose($pipes[1]); stream_get_contents($pipes[2]); fclose($pipes[2]);
+                    if (proc_close($process) !== 0) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                }
+                chmod($ssh, 0700); chmod($key, 0600); chmod($key . '.pub', 0644);
+                chown($ssh, $site->getUser()); chgrp($ssh, $site->getUser()); chown($key, $site->getUser()); chgrp($key, $site->getUser()); chown($key . '.pub', $site->getUser()); chgrp($key . '.pub', $site->getUser());
+                respond(['ok' => true, 'data' => ['keyPair' => siteKeyPair($site)]]);
+            } elseif ($section === 'vhost' && $action === 'save') {
                 $content = (string) ($operation['content'] ?? '');
                 if (strlen($content) > 500000) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
                 $site->setVhostTemplate($content);
@@ -280,17 +379,71 @@ try {
                 $entity = $manager->getRepository(CronJob::class)->find((int) $operation['id']);
                 if ($entity && $entity->getSite()->getId() === $site->getId()) { $site->removeCronJob($entity); $manager->remove($entity); $updater->updateUserCrontab(); }
             } elseif ($section === 'file-manager') {
-                $base = realpath('/home/' . $site->getUser() . '/htdocs/' . $site->getRootDirectory());
-                $name = basename((string) ($operation['name'] ?? ''));
-                if (!$base || !$name || $name !== (string) ($operation['name'] ?? '')) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
-                $path = $base . '/' . $name;
-                if ($action === 'new-file') file_put_contents($path, (string) ($operation['content'] ?? ''));
-                elseif ($action === 'new-folder') mkdir($path, 0770);
+                $base = fileManagerBase($site);
+                $relative = trim((string) ($operation['path'] ?? ''), '/');
+                if ($action === 'list') respond(['ok' => true, 'data' => fileManagerListing($site, $relative)]);
+                if ($action === 'read') {
+                    $path = safeFileManagerPath($base, $relative);
+                    if (!is_file($path) || filesize($path) > 5 * 1024 * 1024) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                    $content = file_get_contents($path);
+                    if (($operation['encoding'] ?? '') === 'base64') $content = base64_encode($content ?: '');
+                    respond(['ok' => true, 'data' => ['content' => $content ?: '']]);
+                }
+                if ($action === 'paste') {
+                    $directory = safeFileManagerPath($base, $relative);
+                    $sourceRelative = trim((string) ($operation['source'] ?? ''), '/');
+                    $source = safeFileManagerPath($base, $sourceRelative);
+                    $destination = safeFileManagerPath($base, ($relative ? $relative . '/' : '') . basename($source), false);
+                    if (!is_dir($directory) || file_exists($destination) || $source === $destination || str_starts_with($destination . '/', $source . '/')) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                    if (($operation['mode'] ?? '') === 'cut') { if (!rename($source, $destination)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']); }
+                    else copyTree($source, $destination);
+                    respond(['ok' => true, 'data' => fileManagerListing($site, $relative)]);
+                }
+                $directory = safeFileManagerPath($base, $relative);
+                $name = (string) ($operation['name'] ?? '');
+                if (!is_dir($directory) || $name === '' || basename($name) !== $name || in_array($name, ['.', '..'], true)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                $path = safeFileManagerPath($base, ($relative ? $relative . '/' : '') . $name, false);
+                if ($action === 'new-file' && !file_exists($path)) file_put_contents($path, '');
+                elseif ($action === 'new-folder' && !file_exists($path)) mkdir($path, 0770);
+                elseif ($action === 'upload' && !is_dir($path)) {
+                    $decoded = base64_decode((string) ($operation['content'] ?? ''), true);
+                    if ($decoded === false) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                    file_put_contents($path, $decoded);
+                }
                 elseif ($action === 'save-file' && is_file($path)) file_put_contents($path, (string) ($operation['content'] ?? ''));
-                elseif ($action === 'delete' && is_file($path)) unlink($path);
-                elseif ($action === 'delete' && is_dir($path)) rmdir($path);
+                elseif ($action === 'rename' && file_exists($path)) {
+                    $newName = (string) ($operation['newName'] ?? '');
+                    if ($newName === '' || basename($newName) !== $newName) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                    $destination = safeFileManagerPath($base, ($relative ? $relative . '/' : '') . $newName, false);
+                    if (file_exists($destination) || !rename($path, $destination)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                } elseif ($action === 'duplicate' && file_exists($path)) {
+                    $copyName = pathinfo($name, PATHINFO_FILENAME) . '-copy' . (pathinfo($name, PATHINFO_EXTENSION) ? '.' . pathinfo($name, PATHINFO_EXTENSION) : '');
+                    $destination = safeFileManagerPath($base, ($relative ? $relative . '/' : '') . $copyName, false);
+                    if (file_exists($destination) || is_dir($path) || !copy($path, $destination)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                } elseif ($action === 'chmod' && file_exists($path)) {
+                    $mode = (string) ($operation['mode'] ?? '');
+                    if (!preg_match('/^[0-7]{3,4}$/', $mode) || !chmod($path, octdec($mode))) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                } elseif ($action === 'compress' && file_exists($path)) {
+                    $archiveName = (string) ($operation['archiveName'] ?? ($name . '.zip'));
+                    if (!str_ends_with(strtolower($archiveName), '.zip') || basename($archiveName) !== $archiveName) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                    $destination = safeFileManagerPath($base, ($relative ? $relative . '/' : '') . $archiveName, false);
+                    if (file_exists($destination)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                    $zip = new ZipArchive();
+                    if ($zip->open($destination, ZipArchive::CREATE | ZipArchive::EXCL) !== true) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                    addToZip($zip, $path, $name); $zip->close();
+                } elseif ($action === 'extract' && is_file($path) && str_ends_with(strtolower($name), '.zip')) {
+                    $zip = new ZipArchive();
+                    if ($zip->open($path) !== true) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                    for ($index = 0; $index < $zip->numFiles; $index++) {
+                        $entry = str_replace('\\', '/', (string) $zip->getNameIndex($index));
+                        if ($entry === '' || str_starts_with($entry, '/') || in_array('..', explode('/', $entry), true)) { $zip->close(); respond(['ok' => false, 'code' => 'INVALID_REQUEST']); }
+                    }
+                    if (!$zip->extractTo($directory)) { $zip->close(); respond(['ok' => false, 'code' => 'INVALID_REQUEST']); }
+                    $zip->close();
+                } elseif ($action === 'delete' && file_exists($path)) deleteTree($path);
                 else respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
                 if (file_exists($path)) { chown($path, $site->getUser()); chgrp($path, $site->getUser()); }
+                respond(['ok' => true, 'data' => fileManagerListing($site, $relative)]);
             } elseif ($section === 'logs' && $action === 'clear') {
                 $base = realpath('/home/' . $site->getUser() . '/logs');
                 $name = ltrim((string) ($operation['name'] ?? ''), '/');
@@ -359,5 +512,6 @@ try {
             respond(['ok' => false, 'code' => 'INVALID_ACTION'], 2);
     }
 } catch (Throwable $error) {
+    error_log('CloudPanel bridge: ' . $error::class . ': ' . $error->getMessage());
     respond(['ok' => false, 'code' => 'BRIDGE_FAILED'], 1);
 }
