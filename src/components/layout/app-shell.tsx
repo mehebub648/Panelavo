@@ -21,7 +21,12 @@ export function AppShell({
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
-  const title = pathname === "/sites/new" ? "Add website" : "Websites";
+  const title =
+    pathname === "/sites/new"
+      ? "Add website"
+      : pathname.split("/").length > 3
+        ? "Website workspace"
+        : "Websites";
   const nav = [
     { href: "/sites", label: "Websites", icon: Globe2 },
     ...(user.canCreateSites
@@ -118,7 +123,9 @@ export function AppShell({
                 {title}
               </h1>
               <p className="mt-0.5 hidden text-xs text-slate-400 sm:block">
-                Manage your CloudPanel websites
+                {title === "Website workspace"
+                  ? "Configure and maintain your website"
+                  : "Manage your CloudPanel websites"}
               </p>
             </div>
           </div>
