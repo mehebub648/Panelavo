@@ -50,7 +50,7 @@ export function DomainManager() {
 
   useEffect(() => {
     void load();
-  }, [load]);
+  }, []);
 
   async function select(zone: Zone) {
     setSelected(zone);

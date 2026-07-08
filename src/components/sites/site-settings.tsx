@@ -145,7 +145,7 @@ export function SiteSettings({
             zoneId: dnsStatus.zoneId,
             credentialId: dnsStatus.credentialId,
             replace,
-            proxied: true, // we can default to proxied
+            proxied: false, // user requested one click dns point to not be proxied
           }),
         });
         const result = await response.json();

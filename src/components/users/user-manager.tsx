@@ -264,6 +264,10 @@ function AddUserForm({ close, act, sites, busy }: { close: () => void, act: (bod
         className="flex flex-col h-full"
         onSubmit={async (event) => {
           event.preventDefault();
+          if (role !== "admin" && selectedSites.length === 0) {
+            toast.error("Please assign at least one site to this user.");
+            return;
+          }
           const form = new FormData(event.currentTarget);
           const body = Object.fromEntries(form);
           body.sites = selectedSites.join(",");
