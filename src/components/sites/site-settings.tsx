@@ -2,12 +2,21 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { LoaderCircle, Save, Trash2 } from "lucide-react";
+import { Globe, LoaderCircle, Save, Trash2, CheckCircle2, AlertTriangle, ArrowRightCircle } from "lucide-react";
 import { toast } from "sonner";
 import type { CloudPanelSite, CloudPanelUser } from "@/types/cloudpanel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+
+type DnsStatus = {
+  pointed: boolean;
+  ip: string | null;
+  serverIp: string;
+  zoneId: string | null;
+  credentialId: string | null;
+};
 
 export function SiteSettings({
   initialSite,
@@ -22,6 +31,10 @@ export function SiteSettings({
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
   const formRef = useRef<HTMLFormElement>(null);
+  const [confirmAction, setConfirmAction] = useState<{ title: string; message: string; onConfirm: () => void } | null>(null);
+
+  const [dnsStatus, setDnsStatus] = useState<DnsStatus | null>(null);
+  const [busyDns, setBusyDns] = useState(true);
 
   useEffect(() => {
     function shortcut(event: KeyboardEvent) {
@@ -33,6 +46,23 @@ export function SiteSettings({
     document.addEventListener("keydown", shortcut);
     return () => document.removeEventListener("keydown", shortcut);
   }, []);
+
+  useEffect(() => {
+    async function checkDns() {
+      setBusyDns(true);
+      try {
+        const result = await fetch(`/api/sites/${encodeURIComponent(site.domain)}/dns`).then((r) => r.json());
+        if (result.success) {
+          setDnsStatus(result.data);
+        }
+      } catch (e) {
+        // ignore
+      } finally {
+        setBusyDns(false);
+      }
+    }
+    void checkDns();
+  }, [site.domain]);
 
   async function save(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -72,28 +102,76 @@ export function SiteSettings({
     }
   }
 
-  async function remove() {
-    if (!window.confirm(`Permanently delete ${site.domain} and its files?`))
-      return;
-    setBusy(true);
-    setError("");
-    try {
-      const response = await fetch(
-        `/api/sites/${encodeURIComponent(site.domain)}`,
-        {
-          method: "DELETE",
+  function remove() {
+    setConfirmAction({
+      title: "Delete website",
+      message: `Permanently delete ${site.domain} and its files? This action cannot be undone.`,
+      onConfirm: async () => {
+        setConfirmAction(null);
+        setBusy(true);
+        setError("");
+        try {
+          const response = await fetch(
+            `/api/sites/${encodeURIComponent(site.domain)}`,
+            {
+              method: "DELETE",
+              headers: { "content-type": "application/json" },
+              body: "{}",
+            },
+          );
+          const result = await response.json();
+          if (!result.success)
+            throw new Error(result.error?.message || "Deletion failed.");
+          router.replace("/sites");
+          router.refresh();
+        } catch (reason) {
+          setError(reason instanceof Error ? reason.message : "Deletion failed.");
+          setBusy(false);
+        }
+      }
+    });
+  }
+
+  function pointDns() {
+    if (!dnsStatus?.zoneId || !dnsStatus?.credentialId) return;
+
+    const doPoint = async (replace = false) => {
+      setBusyDns(true);
+      try {
+        const response = await fetch(`/api/sites/${encodeURIComponent(site.domain)}/dns`, {
+          method: "POST",
           headers: { "content-type": "application/json" },
-          body: "{}",
-        },
-      );
-      const result = await response.json();
-      if (!result.success)
-        throw new Error(result.error?.message || "Deletion failed.");
-      router.replace("/sites");
-      router.refresh();
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Deletion failed.");
-      setBusy(false);
+          body: JSON.stringify({
+            zoneId: dnsStatus.zoneId,
+            credentialId: dnsStatus.credentialId,
+            replace,
+            proxied: true, // we can default to proxied
+          }),
+        });
+        const result = await response.json();
+        if (!result.success) {
+          throw new Error(result.error?.message || "Failed to update DNS");
+        }
+        toast.success("DNS record updated successfully");
+        setDnsStatus({ ...dnsStatus, pointed: true, ip: dnsStatus.serverIp });
+      } catch (e: unknown) {
+        toast.error(e instanceof Error ? e.message : "Failed to update DNS");
+      } finally {
+        setBusyDns(false);
+      }
+    };
+
+    if (dnsStatus.ip && dnsStatus.ip !== dnsStatus.serverIp) {
+      setConfirmAction({
+        title: "Replace DNS Record",
+        message: `An A record already points to ${dnsStatus.ip}. Do you want to replace it to point to this server (${dnsStatus.serverIp})?`,
+        onConfirm: () => {
+          setConfirmAction(null);
+          void doPoint(true);
+        }
+      });
+    } else {
+      void doPoint(false);
     }
   }
 
@@ -106,6 +184,55 @@ export function SiteSettings({
           {site.siteUser || "not available"}
         </p>
       </div>
+
+      <div className="overflow-hidden rounded-2xl border border-white/40 bg-white/60 backdrop-blur-md shadow-card transition-all hover:shadow-card-hover animate-fade-in">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200/50 bg-slate-50/40 px-5 py-4 sm:px-6">
+          <div className="flex items-center gap-3">
+            <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-blue-50 text-blue-600">
+              <Globe className="h-5 w-5" />
+            </span>
+            <div>
+              <h3 className="font-bold">DNS Status</h3>
+              <p className="mt-0.5 text-sm text-slate-500">
+                Check if your domain points to this server.
+              </p>
+            </div>
+          </div>
+        </div>
+        <div className="p-5 sm:p-6">
+          {busyDns ? (
+            <div className="flex items-center gap-2 text-sm text-slate-500">
+              <LoaderCircle className="h-4 w-4 animate-spin" /> Checking DNS records...
+            </div>
+          ) : !dnsStatus ? (
+            <div className="text-sm text-slate-500">Unable to check DNS status.</div>
+          ) : dnsStatus.pointed ? (
+            <div className="flex items-center gap-2 text-sm font-medium text-emerald-600 bg-emerald-50 px-3 py-2 rounded-lg w-fit border border-emerald-100">
+              <CheckCircle2 className="h-5 w-5" /> Domain points to this server ({dnsStatus.serverIp})
+            </div>
+          ) : (
+            <div className="flex flex-col sm:flex-row sm:items-center gap-4 text-sm bg-amber-50 p-4 rounded-xl border border-amber-200">
+              <div className="flex-1 flex gap-3">
+                <AlertTriangle className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-semibold text-amber-800">Domain is not pointed to this server</p>
+                  <p className="text-amber-700/80 mt-1">
+                    {dnsStatus.ip 
+                      ? `Currently pointing to ${dnsStatus.ip}, but server IP is ${dnsStatus.serverIp}.`
+                      : "No valid A/AAAA record found."}
+                  </p>
+                </div>
+              </div>
+              {dnsStatus.zoneId && (
+                <Button onClick={pointDns} className="shrink-0 shadow-sm" variant="outline">
+                  <ArrowRightCircle className="mr-2 h-4 w-4" /> Point to this server
+                </Button>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
       <form
         ref={formRef}
         onSubmit={save}
@@ -222,6 +349,15 @@ export function SiteSettings({
             <Trash2 className="h-4 w-4" /> Delete website
           </Button>
         </section>
+      )}
+
+      {confirmAction && (
+        <ConfirmDialog
+          title={confirmAction.title}
+          message={confirmAction.message}
+          onConfirm={confirmAction.onConfirm}
+          onCancel={() => setConfirmAction(null)}
+        />
       )}
     </div>
   );

@@ -10,6 +10,9 @@ export interface SessionRecord {
   expiresAt: number;
 }
 
+import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { join } from "node:path";
+
 const globalSessions = globalThis as typeof globalThis & {
   __panelSessions?: Map<string, SessionRecord>;
 };
@@ -17,6 +20,25 @@ const sessions = (globalSessions.__panelSessions ??= new Map<
   string,
   SessionRecord
 >());
+const SESSION_FILE = join(process.cwd(), ".data", "sessions.json");
+
+async function loadSessions(): Promise<Map<string, SessionRecord>> {
+  if (sessions.size > 0) return sessions;
+  try {
+    const data = await readFile(SESSION_FILE, "utf8");
+    const parsed = JSON.parse(data);
+    for (const [key, value] of Object.entries(parsed)) {
+      sessions.set(key, value as SessionRecord);
+    }
+  } catch {}
+  return sessions;
+}
+
+async function saveSessions() {
+  await mkdir(join(process.cwd(), ".data"), { recursive: true });
+  await writeFile(SESSION_FILE, JSON.stringify(Object.fromEntries(sessions)), "utf8");
+}
+
 const developmentSecret = randomBytes(32).toString("hex");
 
 function maxAge() {

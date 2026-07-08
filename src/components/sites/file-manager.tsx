@@ -11,6 +11,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { CodeEditor, languageForFile } from "@/components/ui/code-editor";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 
 export type FileManagerItem = {
   name: string; type: "file" | "directory"; size: number; modified: string; permissions?: string;
@@ -41,6 +42,7 @@ export function FileManager({ domain, initialData }: { domain: string; initialDa
   const [selected, setSelected] = useState<string | null>(null);
   const [menu, setMenu] = useState<null | { x: number; y: number; item: FileManagerItem }>(null);
   const [clipboard, setClipboard] = useState<null | { source: string; mode: "copy" | "cut" }>(null);
+  const [confirmAction, setConfirmAction] = useState<{ title: string; message: string; onConfirm: () => void } | null>(null);
   const uploadRef = useRef<HTMLInputElement>(null);
   const current = data.relativePath ?? "";
   const items = useMemo(() => (data.items ?? []).filter((item) => item.name.toLowerCase().includes(search.toLowerCase())), [data.items, search]);
@@ -81,8 +83,14 @@ export function FileManager({ domain, initialData }: { domain: string; initialDa
     const anchor = document.createElement("a"); anchor.href = url; anchor.download = item.name; anchor.click(); URL.revokeObjectURL(url);
   }
   async function remove(item: FileManagerItem) {
-    if (!confirm(`Delete ${item.name}${item.type === "directory" ? " and everything inside it" : ""}?`)) return;
-    await request({ action: "delete", path: current, name: item.name }, "Deleted");
+    setConfirmAction({
+      title: "Delete item",
+      message: `Are you sure you want to delete ${item.name}${item.type === "directory" ? " and everything inside it" : ""}?`,
+      onConfirm: async () => {
+        setConfirmAction(null);
+        await request({ action: "delete", path: current, name: item.name }, "Deleted");
+      }
+    });
   }
   async function upload(files: FileList | null) {
     if (!files) return;
@@ -149,6 +157,15 @@ export function FileManager({ domain, initialData }: { domain: string; initialDa
       {modal.kind === "edit" ? <><input type="hidden" name="content" value={modal.content ?? ""} /><CodeEditor value={modal.content ?? ""} onChange={(content) => setModal((currentModal) => currentModal?.kind === "edit" ? { ...currentModal, content } : currentModal)} language={languageForFile(modal.name ?? "")} height="60vh" ariaLabel={`Edit ${modal.name}`} /></> : <><Input name="name" defaultValue={modal.kind === "rename" ? modal.name : modal.value ?? ""} placeholder={modal.kind === "permissions" ? "0755" : modal.kind === "folder" ? "Folder name" : "File name"} pattern={modal.kind === "permissions" ? "[0-7]{3,4}" : undefined} autoFocus required />{modal.kind === "permissions" && <p className="mt-2 text-xs text-slate-500">Use an octal mode such as 0644 for files or 0755 for folders.</p>}</>}
       <div className="mt-5 flex justify-end gap-2"><Button type="button" variant="outline" onClick={() => setModal(null)}>Cancel</Button><Button disabled={busy || (modal.kind === "edit" && modal.content === modal.originalContent)}>{busy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}{modal.kind === "edit" ? "Save changes" : modal.kind === "rename" ? "Rename" : modal.kind === "permissions" ? "Apply" : modal.kind === "compress" ? "Compress" : "Create"}</Button></div>
     </form></div>, document.body)}
+    
+    {confirmAction && (
+      <ConfirmDialog
+        title={confirmAction.title}
+        message={confirmAction.message}
+        onConfirm={confirmAction.onConfirm}
+        onCancel={() => setConfirmAction(null)}
+      />
+    )}
   </section>;
 }
 

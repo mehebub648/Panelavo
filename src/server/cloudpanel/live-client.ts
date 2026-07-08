@@ -35,10 +35,10 @@ export class LiveCloudPanelClient implements CloudPanelClient {
       let stdout = "";
       let stderr = "";
       const collectStdout = (chunk: Buffer) => {
-        if (stdout.length < 64_000) stdout += chunk.toString("utf8");
+        if (stdout.length < 5_000_000) stdout += chunk.toString("utf8");
       };
       const collectStderr = (chunk: Buffer) => {
-        if (stderr.length < 64_000) stderr += chunk.toString("utf8");
+        if (stderr.length < 500_000) stderr += chunk.toString("utf8");
       };
       child.stdout.on("data", collectStdout);
       child.stderr.on("data", collectStderr);
@@ -70,6 +70,11 @@ export class LiveCloudPanelClient implements CloudPanelClient {
       input: JSON.stringify(input),
     });
     try {
+      const jsonStart = output.indexOf('{');
+      const jsonEnd = output.lastIndexOf('}');
+      if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd >= jsonStart) {
+        return JSON.parse(output.slice(jsonStart, jsonEnd + 1)) as BridgeResult;
+      }
       return JSON.parse(output.trim()) as BridgeResult;
     } catch {
       throw new AppError("CLOUDPANEL_UNAVAILABLE", "CloudPanel CLI returned invalid data.", 503);
