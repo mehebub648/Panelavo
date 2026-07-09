@@ -222,6 +222,16 @@ function siteRootPath(Site $site): string
     return rtrim('/home/' . $site->getUser() . '/htdocs/' . trim($site->getRootDirectory(), '/'), '/');
 }
 
+// Latest nvm-managed Node.js bin directory under a home, if any. CloudPanel
+// installs Node.js per site user through nvm, so node/npm are not on the
+// system PATH.
+function nodeBinPath(string $home): string
+{
+    $candidates = glob($home . '/.nvm/versions/node/*/bin') ?: [];
+    usort($candidates, 'strnatcmp');
+    return $candidates ? (string) end($candidates) : '';
+}
+
 // Runs an allow-listed maintenance command inside the site root as the site
 // user, through env(1) so PATH/HOME survive sudo's environment reset.
 function runSiteCommand(Site $site, array $args, int $timeout = 300, bool $asRoot = false): array
@@ -229,7 +239,8 @@ function runSiteCommand(Site $site, array $args, int $timeout = 300, bool $asRoo
     $cwd = realpath(siteRootPath($site));
     if (!$cwd) respond(['ok' => false, 'code' => 'SITE_NOT_FOUND']);
     $home = $asRoot ? '/root' : '/home/' . $site->getUser();
-    $env = ['/usr/bin/env', 'PATH=/usr/local/bin:/usr/bin:/bin', 'HOME=' . $home];
+    $nodeBin = nodeBinPath($home);
+    $env = ['/usr/bin/env', 'PATH=' . ($nodeBin ? $nodeBin . ':' : '') . '/usr/local/bin:/usr/bin:/bin', 'HOME=' . $home];
     $command = array_merge(
         ['/usr/bin/timeout', '--signal=KILL', (string) $timeout],
         $asRoot ? $env : array_merge(['/usr/bin/sudo', '-n', '-u', $site->getUser(), '--'], $env),
@@ -440,7 +451,8 @@ function serverInfo(): array
         ['Redis', 'redis-server --version'],
         ['ProFTPD', 'proftpd --version'],
     ] as [$name, $command]) {
-        $version = softwareVersion('env PATH=/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin ' . $command);
+        $nodeBin = nodeBinPath('/root');
+        $version = softwareVersion('env PATH=' . ($nodeBin ? $nodeBin . ':' : '') . '/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin ' . $command);
         if ($version !== '') $software[] = ['name' => $name, 'version' => $version];
     }
     return [
