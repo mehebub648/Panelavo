@@ -40,7 +40,7 @@ async function save(store: Store) {
   await writeFile(tmp, JSON.stringify({ iv: iv.toString("base64"), tag: cipher.getAuthTag().toString("base64"), data: data.toString("base64") }), { mode: 0o600 });
   await rename(tmp, file);
 }
-async function cf<T>(token: string, path: string, init?: RequestInit): Promise<T> {
+export async function cf<T>(token: string, path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`https://api.cloudflare.com/client/v4${path}`, { ...init, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...init?.headers }, signal: AbortSignal.timeout(12_000) });
   const body = await response.json() as { success: boolean; result: T; errors?: { message: string }[] };
   if (!response.ok || !body.success) throw new AppError("INVALID_REQUEST", body.errors?.[0]?.message || "Cloudflare rejected the request.", response.status === 401 || response.status === 403 ? 403 : 502);

@@ -333,6 +333,11 @@ export function SiteSettings({
                 disabled={!user.canCreateSites}
                 className="mt-1.5 transition-all focus:ring-2 focus:ring-panel-500/50 bg-white/70"
               />
+              <p className="mt-1.5 text-xs text-slate-400">
+                For panel-created sites the port is the reserved site id — pick a
+                free port inside a category range (20000–29999) to move the
+                reservation. The system domain keeps its original id.
+              </p>
             </div>
           )}
           {(site.type === "reverse-proxy" || site.type === "docker") && (

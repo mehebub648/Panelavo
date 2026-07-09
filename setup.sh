@@ -16,6 +16,9 @@
 #
 # Optional environment overrides:
 #   PANEL_DOMAIN=panel.example.com   site domain (default panel.<ip>.nip.io)
+#   PANEL_BASE_DOMAIN=example.com    base domain for site subdomains
+#                                    (site-<id>.<ip>.<base>); editable later
+#                                    on the panel Settings page
 #   ADMIN_USER=admin                 CloudPanel admin username
 #   ADMIN_PASSWORD=...               CloudPanel admin password (default random)
 #   ADMIN_EMAIL=...                  CloudPanel admin e-mail
@@ -86,6 +89,16 @@ if [ -t 0 ]; then
     read -r -p "${LOG_PREFIX} Panel domain [${DEFAULT_DOMAIN}]: " PANEL_DOMAIN_INPUT
     PANEL_DOMAIN="${PANEL_DOMAIN_INPUT:-$DEFAULT_DOMAIN}"
   fi
+  if [ -z "${PANEL_BASE_DOMAIN:-}" ]; then
+    # Websites get system subdomains like site-20001.<ip>.<base domain>. If the
+    # panel domain follows the panel.<ip>.<base> convention, suggest that base.
+    case "${PANEL_DOMAIN}" in
+      "panel.${SERVER_IP}."*) DEFAULT_BASE_DOMAIN="${PANEL_DOMAIN#panel.${SERVER_IP}.}" ;;
+      *) DEFAULT_BASE_DOMAIN="" ;;
+    esac
+    read -r -p "${LOG_PREFIX} Base domain for site subdomains${DEFAULT_BASE_DOMAIN:+ [${DEFAULT_BASE_DOMAIN}]}: " PANEL_BASE_DOMAIN_INPUT
+    PANEL_BASE_DOMAIN="${PANEL_BASE_DOMAIN_INPUT:-$DEFAULT_BASE_DOMAIN}"
+  fi
   if [ -z "${ADMIN_USER:-}" ]; then
     read -r -p "${LOG_PREFIX} CloudPanel admin username [admin]: " ADMIN_USER_INPUT
     ADMIN_USER="${ADMIN_USER_INPUT:-admin}"
@@ -102,6 +115,8 @@ if [ -t 0 ]; then
   fi
 fi
 PANEL_DOMAIN="${PANEL_DOMAIN:-$DEFAULT_DOMAIN}"
+PANEL_BASE_DOMAIN="${PANEL_BASE_DOMAIN:-}"
+[ -n "${PANEL_BASE_DOMAIN}" ] || warn "No base domain set — configure one on the panel Settings page before creating websites."
 ADMIN_USER="${ADMIN_USER:-admin}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@${PANEL_DOMAIN}}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 16)!Aa1}"
@@ -224,6 +239,7 @@ SESSION_SECRET=$(openssl rand -base64 48 | tr -d '\n')
 CREDENTIALS_ENCRYPTION_KEY=$(openssl rand -base64 48 | tr -d '\n')
 SESSION_MAX_AGE_SECONDS=3600
 CLOUDPANEL_MODE=live
+${PANEL_BASE_DOMAIN:+PANEL_BASE_DOMAIN=${PANEL_BASE_DOMAIN}}
 EOF
 fi
 mkdir -p "${SITE_ROOT}/.data"

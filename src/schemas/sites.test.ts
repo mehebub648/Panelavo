@@ -3,17 +3,20 @@ import { createSiteSchema, normalizeDomain } from "./sites";
 
 const shared = {
   type: "static" as const,
-  domain: "example.com",
-  siteUser: "example",
+  category: "client",
   siteUserPassword: "LongPassword!123",
 };
 
 describe("site validation", () => {
-  it("normalizes a safe domain", () => {
+  it("normalizes safe alias domains", () => {
     expect(normalizeDomain(" HTTPS://Example.COM. ")).toBe("example.com");
     expect(
-      createSiteSchema.parse({ ...shared, domain: "Example.COM" }).domain,
-    ).toBe("example.com");
+      createSiteSchema.parse({ ...shared, aliases: ["Example.COM"] }).aliases,
+    ).toEqual(["example.com"]);
+  });
+
+  it("defaults to no aliases", () => {
+    expect(createSiteSchema.parse(shared).aliases).toEqual([]);
   });
 
   it.each([
@@ -24,24 +27,36 @@ describe("site validation", () => {
     "*.example.com",
     "example.com\n--flag",
     "example.com;id",
-  ])('rejects unsafe domain "%s"', (domain) => {
-    expect(createSiteSchema.safeParse({ ...shared, domain }).success).toBe(
-      false,
-    );
-  });
-
-  it("rejects raw command fields", () => {
+  ])('rejects unsafe alias domain "%s"', (alias) => {
     expect(
-      createSiteSchema.safeParse({ ...shared, command: "id" }).success,
+      createSiteSchema.safeParse({ ...shared, aliases: [alias] }).success,
     ).toBe(false);
   });
 
-  it("validates application ports", () => {
-    const input = { ...shared, type: "nodejs", nodeVersion: "22", appPort: 22 };
-    expect(createSiteSchema.safeParse(input).success).toBe(false);
+  it("rejects raw command fields and unknown categories", () => {
     expect(
-      createSiteSchema.safeParse({ ...input, appPort: 3000 }).success,
-    ).toBe(true);
+      createSiteSchema.safeParse({ ...shared, command: "id" }).success,
+    ).toBe(false);
+    expect(
+      createSiteSchema.safeParse({ ...shared, category: "x; rm -rf /" }).success,
+    ).toBe(false);
+  });
+
+  it("no longer accepts caller-chosen domains, users, or ports", () => {
+    expect(
+      createSiteSchema.safeParse({ ...shared, domain: "example.com" }).success,
+    ).toBe(false);
+    expect(
+      createSiteSchema.safeParse({ ...shared, siteUser: "hacker" }).success,
+    ).toBe(false);
+    expect(
+      createSiteSchema.safeParse({
+        ...shared,
+        type: "nodejs",
+        nodeVersion: "22",
+        appPort: 3000,
+      }).success,
+    ).toBe(false);
   });
 
   it.each([

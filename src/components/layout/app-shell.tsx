@@ -4,7 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { Activity, Cloud, Globe2, Info, LogOut, Menu, UserRound, Users, X } from "lucide-react";
+import { Activity, Cloud, Globe2, Info, LogOut, Menu, Settings, UserRound, Users, X } from "lucide-react";
 import type { CloudPanelUser } from "@/types/cloudpanel";
 import { Brand } from "@/components/brand";
 import { Button } from "@/components/ui/button";
@@ -24,6 +24,8 @@ export function AppShell({
   const title =
     pathname === "/domains"
       ? "Domains & DNS"
+      : pathname === "/settings"
+        ? "Panel settings"
       : pathname === "/users"
         ? "User management"
         : pathname === "/resources"
@@ -44,6 +46,7 @@ export function AppShell({
     ...(elevated ? [{ href: "/resources", label: "Resources", icon: Activity }] : []),
     ...(elevated ? [{ href: "/information", label: "Information", icon: Info }] : []),
     ...(user.panelRole === "super-admin" ? [{ href: "/users", label: "Users", icon: Users }] : []),
+    ...(user.panelRole === "super-admin" ? [{ href: "/settings", label: "Settings", icon: Settings }] : []),
   ];
   async function logout() {
     setLoggingOut(true);

@@ -8,6 +8,7 @@ import {
   Database,
   Files,
   GitBranch,
+  Globe2,
   KeyRound,
   Settings,
   ShieldCheck,
@@ -19,6 +20,7 @@ import { cn } from "@/lib/utils";
 
 const sections = [
   ["settings", "Settings", Settings],
+  ["domains", "Domains", Globe2],
   ["actions", "Actions", Zap],
   ["vhost", "Vhost", Code2],
   ["databases", "Databases", Database],

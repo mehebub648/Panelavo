@@ -2,12 +2,14 @@ import { notFound } from "next/navigation";
 import { requireUser } from "@/server/auth/require-user";
 import { getCloudPanelClient } from "@/server/cloudpanel";
 import { SiteSettings } from "@/components/sites/site-settings";
+import { DomainsManager } from "@/components/sites/domains-manager";
 import { SiteSectionManager } from "@/components/sites/site-section-manager";
 import { GitManager } from "@/components/sites/git-manager";
 import { ActionsManager } from "@/components/sites/actions-manager";
 
 const titles: Record<string, string> = {
   settings: "Settings",
+  domains: "Domains",
   actions: "Actions",
   vhost: "Vhost",
   databases: "Databases",
@@ -21,6 +23,7 @@ const titles: Record<string, string> = {
 };
 const descriptions: Record<string, string> = {
   settings: "Runtime, document root, and core website configuration.",
+  domains: "System domain, your own domains, DNS, and SSL for this website.",
   actions: "One-click maintenance commands: install, build, run, and inspect.",
   vhost: "Review and update the NGINX configuration for this website.",
   databases: "Create databases and manage their associated users.",
@@ -50,6 +53,21 @@ export default async function SiteSectionPage({
     if (!site) notFound();
     return <SiteSettings initialSite={site} user={session.user} />;
   }
+  if (section === "domains")
+    return (
+      <div className="w-full space-y-5">
+        <div>
+          <h2 className="text-2xl font-bold tracking-tight text-ink">Domains</h2>
+          <p className="mt-1 text-sm text-slate-500">{descriptions.domains}</p>
+        </div>
+        <DomainsManager
+          domain={domain}
+          canWrite={
+            session.user.canCreateSites || session.user.panelRole === "admin"
+          }
+        />
+      </div>
+    );
   const data = await getCloudPanelClient().getSiteSection(
     session.record.cloudPanel,
     domain,

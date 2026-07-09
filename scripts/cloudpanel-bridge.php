@@ -226,6 +226,53 @@ function siteRootPath(Site $site): string
     return rtrim('/home/' . $site->getUser() . '/htdocs/' . trim($site->getRootDirectory(), '/'), '/');
 }
 
+// Rewrites a vhost template so every server block serves the given alias
+// domains next to the original server_name, optionally blocking the system
+// domain itself (error or redirect to a customer domain). All injections are
+// marker-tagged, so re-running with a new configuration is idempotent:
+//   server_name {{orig}} alias1 alias2; #panel:orig={{orig}}
+//   #panel:block:start ... #panel:block:end
+// ACME challenge requests stay reachable while blocking, so certificates for
+// the system domain keep renewing.
+function applyDomainConfig(string $template, array $aliases, string $block, string $systemDomain, string $redirectTo): string
+{
+    $stripped = [];
+    $skipping = false;
+    foreach (preg_split('/\R/', $template) as $line) {
+        if (str_contains($line, '#panel:block:start')) { $skipping = true; continue; }
+        if (str_contains($line, '#panel:block:end')) { $skipping = false; continue; }
+        if ($skipping) continue;
+        if (preg_match('/^(\s*)server_name\s+[^;]*;\s*#panel:orig=(.*)$/', $line, $m)) {
+            $line = $m[1] . 'server_name ' . trim($m[2]) . ';';
+        }
+        $stripped[] = $line;
+    }
+    $result = [];
+    foreach ($stripped as $line) {
+        if (!preg_match('/^(\s*)server_name\s+([^;]+);\s*$/', $line, $m)) {
+            $result[] = $line;
+            continue;
+        }
+        $indent = $m[1];
+        $orig = trim($m[2]);
+        $result[] = $aliases
+            ? $indent . 'server_name ' . $orig . ' ' . implode(' ', $aliases) . '; #panel:orig=' . $orig
+            : $line;
+        if ($block !== 'none') {
+            $action = $block === 'redirect' && $redirectTo !== ''
+                ? 'return 301 https://' . $redirectTo . '$request_uri;'
+                : 'return 403;';
+            $result[] = $indent . '#panel:block:start';
+            $result[] = $indent . 'set $panel_block "";';
+            $result[] = $indent . 'if ($host = "' . $systemDomain . '") { set $panel_block "1"; }';
+            $result[] = $indent . 'if ($request_uri ~ "^/\.well-known/acme-challenge/") { set $panel_block ""; }';
+            $result[] = $indent . 'if ($panel_block = "1") { ' . $action . ' }';
+            $result[] = $indent . '#panel:block:end';
+        }
+    }
+    return implode("\n", $result);
+}
+
 // Latest nvm-managed Node.js bin directory under a home, if any. CloudPanel
 // installs Node.js per site user through nvm, so node/npm are not on the
 // system PATH.
@@ -734,6 +781,23 @@ try {
             } elseif ($section === 'vhost' && $action === 'save') {
                 $content = (string) ($operation['content'] ?? '');
                 if (strlen($content) > 500000) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                $site->setVhostTemplate($content);
+                $model->setVhostTemplate($content);
+                $updater->updateNginxVhostWithRollback();
+            } elseif ($section === 'domains' && $action === 'sync') {
+                // Alias domains + system-subdomain block mode, driven by the
+                // panel's site-meta store (the Node side is the source of truth).
+                $domainPattern = '/^(?=.{1,253}$)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$/';
+                $aliases = array_values(array_unique(array_map('strtolower', array_map('strval', (array) ($operation['aliases'] ?? [])))));
+                if (count($aliases) > 10) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                foreach ($aliases as $alias) {
+                    if (!preg_match($domainPattern, $alias) || $alias === $site->getDomainName()) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                }
+                $block = (string) ($operation['block'] ?? 'none');
+                if (!in_array($block, ['none', 'error', 'redirect'], true)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                $redirectTo = strtolower((string) ($operation['redirectTo'] ?? ''));
+                if ($block === 'redirect' && (!preg_match($domainPattern, $redirectTo) || $redirectTo === $site->getDomainName())) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                $content = applyDomainConfig((string) $site->getVhostTemplate(), $aliases, $block, $site->getDomainName(), $redirectTo);
                 $site->setVhostTemplate($content);
                 $model->setVhostTemplate($content);
                 $updater->updateNginxVhostWithRollback();

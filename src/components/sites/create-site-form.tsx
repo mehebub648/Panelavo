@@ -1,13 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
   ArrowRight,
   Braces,
-  Cloud,
   AlertTriangle,
   Check,
   Clipboard,
@@ -16,10 +15,13 @@ import {
   Eye,
   EyeOff,
   FileCode2,
+  Globe2,
   LoaderCircle,
   Network,
+  Plus,
   RotateCcw,
   Server,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 import type { SiteCreationOptions, SiteType } from "@/types/cloudpanel";
@@ -82,58 +84,61 @@ function makePassword() {
   return Array.from(bytes, (byte) => chars[byte % chars.length]).join("");
 }
 
+type Category = {
+  id: string;
+  label: string;
+  start: number;
+  end: number;
+  nextId: number | null;
+};
 type Values = {
-  domain: string;
-  siteUser: string;
   siteUserPassword: string;
   phpVersion: string;
   vhostTemplate: string;
   nodeVersion: string;
   pythonVersion: string;
-  appPort: string;
   reverseProxyUrl: string;
 };
-type CloudflareZone = { id: string; name: string; credentialId: string; credentialLabel: string };
 const initial: Values = {
-  domain: "",
-  siteUser: "",
   siteUserPassword: "",
   phpVersion: "",
   vhostTemplate: "",
   nodeVersion: "",
   pythonVersion: "",
-  appPort: "3000",
   reverseProxyUrl: "http://127.0.0.1:8000",
 };
 
 export function CreateSiteForm() {
   const router = useRouter();
   const [options, setOptions] = useState<SiteCreationOptions | null>(null);
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [baseDomain, setBaseDomain] = useState("");
+  const [serverIp, setServerIp] = useState("");
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [type, setType] = useState<SiteType | null>(null);
+  const [category, setCategory] = useState<Category | null>(null);
+  const [aliases, setAliases] = useState<string[]>([]);
+  const [aliasDraft, setAliasDraft] = useState("");
   const [values, setValues] = useState(initial);
   const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
-  const [zones, setZones] = useState<CloudflareZone[]>([]);
-  const [domainMode, setDomainMode] = useState<"cloudflare" | "custom">("cloudflare");
-  const [selectedZone, setSelectedZone] = useState<CloudflareZone | null>(null);
-  const [subdomain, setSubdomain] = useState("");
-  const [existingRecord, setExistingRecord] = useState<{ content: string } | null>(null);
-  const [replaceRecord, setReplaceRecord] = useState(false);
+
   useEffect(() => {
     (async () => {
       try {
-        const [result, zoneResult] = await Promise.all([fetch("/api/sites/options", { cache: "no-store" }).then((r) => r.json()), fetch("/api/cloudflare/zones", { cache: "no-store" }).then((r) => r.json())]);
+        const result = await fetch("/api/sites/options", { cache: "no-store" }).then((r) => r.json());
         if (!result.success)
           throw new Error(
             result.error?.message || "Options could not be loaded.",
           );
         const next = result.data.options as SiteCreationOptions;
-        if (zoneResult.success) { setZones(zoneResult.data.zones); if (!zoneResult.data.zones.length) setDomainMode("custom"); }
         setOptions(next);
+        setCategories(result.data.categories as Category[]);
+        setBaseDomain(result.data.baseDomain as string);
+        setServerIp(result.data.serverIp as string);
         setValues((current) => ({
           ...current,
           phpVersion: next.phpVersions[0] || "",
@@ -157,6 +162,11 @@ export function CreateSiteForm() {
     [type],
   );
   const SelectedIcon = selected?.icon;
+  const previewId = category?.nextId ?? null;
+  const previewDomain =
+    previewId && serverIp && baseDomain
+      ? `site-${previewId}.${serverIp}.${baseDomain}`
+      : null;
   function change(key: keyof Values, value: string) {
     setValues((current) => ({ ...current, [key]: value }));
   }
@@ -171,39 +181,26 @@ export function CreateSiteForm() {
     toast.success("Password copied");
     setTimeout(() => setCopied(false), 1400);
   }
-  function domainBlur() {
-    const domain = normalizeDomain(values.domain);
-    setValues((current) => ({
-      ...current,
-      domain,
-      siteUser:
-        current.siteUser ||
-        domain
-          .split(".")[0]
-          .replace(/[^a-z0-9-]/g, "")
-          .slice(0, 28),
-    }));
+  function addAlias() {
+    const alias = normalizeDomain(aliasDraft);
+    if (!alias) return;
+    if (!/^(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$/.test(alias)) {
+      toast.error("Enter a valid domain, such as example.com.");
+      return;
+    }
+    setAliases((current) => (current.includes(alias) ? current : [...current, alias]));
+    setAliasDraft("");
   }
-  async function checkRecord(domain: string, zone = selectedZone) {
-    if (!zone || !domain) { setExistingRecord(null); return; }
-    const result = await fetch(`/api/cloudflare/check?credentialId=${encodeURIComponent(zone.credentialId)}&zoneId=${encodeURIComponent(zone.id)}&name=${encodeURIComponent(domain)}`).then((r) => r.json());
-    if (result.success) setExistingRecord(result.data.record);
-  }
-  function chooseZone(value: string) {
-    const zone = zones.find((item) => `${item.credentialId}:${item.id}` === value) ?? null; setSelectedZone(zone); setSubdomain(""); setExistingRecord(null);
-    if (zone) { change("domain", zone.name); void checkRecord(zone.name, zone); }
-  }
-  function changeSubdomain(value: string) { const clean = value.toLowerCase().replace(/[^a-z0-9-]/g, ""); setSubdomain(clean); if (selectedZone) { const domain = clean ? `${clean}.${selectedZone.name}` : selectedZone.name; change("domain", domain); } }
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (!type) return;
+    if (!type || !category) return;
     setBusy(true);
     setError("");
     const shared = {
       type,
-      domain: values.domain,
-      siteUser: values.siteUser,
+      category: category.id,
+      aliases,
       siteUserPassword: values.siteUserPassword,
     };
     const body =
@@ -214,34 +211,25 @@ export function CreateSiteForm() {
             vhostTemplate: values.vhostTemplate,
           }
         : type === "nodejs"
-          ? {
-              ...shared,
-              nodeVersion: values.nodeVersion,
-              appPort: Number(values.appPort),
-            }
+          ? { ...shared, nodeVersion: values.nodeVersion }
           : type === "python"
-            ? {
-                ...shared,
-                pythonVersion: values.pythonVersion,
-                appPort: Number(values.appPort),
-              }
+            ? { ...shared, pythonVersion: values.pythonVersion }
             : type === "reverse-proxy"
               ? { ...shared, reverseProxyUrl: values.reverseProxyUrl }
-              : type === "docker"
-                ? { ...shared, appPort: Number(values.appPort) }
-                : shared;
-    const requestBody = domainMode === "cloudflare" && selectedZone ? { ...body, dns: { credentialId: selectedZone.credentialId, zoneId: selectedZone.id, replace: replaceRecord, proxied: false } } : body;
+              : shared;
     try {
       const response = await fetch("/api/sites", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(requestBody),
+        body: JSON.stringify(body),
       });
       const result = await response.json();
       if (!result.success)
         throw new Error(
           result.error?.message || "The website could not be created.",
         );
+      for (const warning of (result.data.warnings as string[] | undefined) ?? [])
+        toast.warning(warning, { duration: 12000 });
       setValues(initial);
       router.push(
         `/sites?created=${encodeURIComponent(result.data.site.domain)}`,
@@ -292,7 +280,8 @@ export function CreateSiteForm() {
             Create a website
           </h2>
           <p className="mt-1 text-sm text-slate-500">
-            Choose a site type, then add its CloudPanel configuration.
+            Choose a site type, pick a project category, and optionally attach
+            your own domains.
           </p>
         </div>
         <div className="hidden items-center gap-3 text-xs font-semibold sm:flex">
@@ -319,6 +308,19 @@ export function CreateSiteForm() {
           </span>
         </div>
       </div>
+      {!baseDomain && (
+        <div className="mb-5 flex items-start gap-2 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+          <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
+          <span>
+            No base domain is configured, so system subdomains cannot be
+            generated. Ask a super administrator to set one on the{" "}
+            <Link href="/settings" className="font-semibold underline">
+              Settings page
+            </Link>
+            .
+          </span>
+        </div>
+      )}
       {!type ? (
         <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-card sm:p-7">
           <div className="mb-5">
@@ -388,9 +390,111 @@ export function CreateSiteForm() {
           </div>
           <div className="grid gap-x-6 gap-y-5 p-5 sm:grid-cols-2 sm:p-7">
             <div className="sm:col-span-2">
-              <div className="mb-3 flex gap-2"><button type="button" onClick={() => setDomainMode("cloudflare")} disabled={!zones.length} className={`rounded-lg border px-3 py-2 text-sm font-medium ${domainMode === "cloudflare" ? "border-panel-400 bg-panel-50 text-panel-700" : "border-slate-200"}`}><Cloud className="mr-2 inline h-4 w-4" />Cloudflare domain</button><button type="button" onClick={() => { setDomainMode("custom"); setSelectedZone(null); setExistingRecord(null); }} className={`rounded-lg border px-3 py-2 text-sm font-medium ${domainMode === "custom" ? "border-panel-400 bg-panel-50 text-panel-700" : "border-slate-200"}`}>Custom domain</button></div>
-              {domainMode === "cloudflare" ? <div className="grid gap-3 sm:grid-cols-2"><div><Label>Cloudflare zone</Label><Select value={selectedZone ? `${selectedZone.credentialId}:${selectedZone.id}` : ""} onChange={(e) => chooseZone(e.target.value)} required><option value="">Select a zone…</option>{zones.map((zone) => <option key={`${zone.credentialId}:${zone.id}`} value={`${zone.credentialId}:${zone.id}`}>{zone.name} · {zone.credentialLabel}</option>)}</Select></div><div><Label htmlFor="subdomain">Subdomain (optional)</Label><Input id="subdomain" value={subdomain} onChange={(e) => changeSubdomain(e.target.value)} onBlur={() => void checkRecord(values.domain)} placeholder="www, app, api…" disabled={!selectedZone} /></div><div className="sm:col-span-2 rounded-xl bg-slate-50 px-4 py-3 text-sm"><span className="text-slate-500">Website domain:</span> <b>{values.domain || "Select a zone"}</b><p className="mt-1 text-xs text-slate-500">An A record will be created automatically for this server.</p></div></div> : <><Label htmlFor="domain">Domain name</Label><Input id="domain" value={values.domain} onChange={(e) => change("domain", e.target.value)} onBlur={domainBlur} placeholder="example.com" autoComplete="off" required /><p className="mt-1.5 text-xs text-slate-400">Any domain is allowed; Cloudflare is not required.</p></>}
-              {existingRecord && <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800"><div className="flex gap-2"><AlertTriangle className="h-5 w-5 shrink-0" /><div><b>An A record already exists</b><p className="mt-1">{values.domain} currently points to {existingRecord.content}.</p><label className="mt-3 flex items-center gap-2 font-medium"><input type="checkbox" checked={replaceRecord} onChange={(e) => setReplaceRecord(e.target.checked)} />Replace it with this server&apos;s IP</label></div></div></div>}
+              <Label htmlFor="category">Project category</Label>
+              <Select
+                id="category"
+                value={category?.id ?? ""}
+                onChange={(event) =>
+                  setCategory(
+                    categories.find((item) => item.id === event.target.value) ??
+                      null,
+                  )
+                }
+                required
+              >
+                <option value="">Select a category…</option>
+                {categories.map((item) => (
+                  <option
+                    key={item.id}
+                    value={item.id}
+                    disabled={item.nextId === null}
+                  >
+                    {item.label} ({item.start}–{item.end}
+                    {item.nextId === null ? " · full" : ""})
+                  </option>
+                ))}
+              </Select>
+              <div className="mt-3 rounded-xl bg-slate-50 px-4 py-3 text-sm">
+                {category && previewDomain ? (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <Globe2 className="h-4 w-4 shrink-0 text-panel-600" />
+                      <span className="text-slate-500">System domain:</span>{" "}
+                      <b className="break-all">{previewDomain}</b>
+                    </div>
+                    <p className="mt-1 text-xs text-slate-500">
+                      Site id <b>{previewId}</b> · site user{" "}
+                      <b>site-{previewId}</b>
+                      {type && ["nodejs", "python", "docker"].includes(type)
+                        ? ` · application port ${previewId}`
+                        : ""}{" "}
+                      — reserved automatically from this category. A DNS record
+                      is created for the system domain when Cloudflare is
+                      configured in Settings.
+                    </p>
+                  </>
+                ) : (
+                  <span className="text-slate-500">
+                    The next free id in the category becomes the site id, its
+                    port, the site user (site-&lt;id&gt;), and the system
+                    subdomain.
+                  </span>
+                )}
+              </div>
+            </div>
+            <div className="sm:col-span-2">
+              <Label htmlFor="alias">Your domains (optional)</Label>
+              <div className="flex gap-2">
+                <Input
+                  id="alias"
+                  value={aliasDraft}
+                  onChange={(event) => setAliasDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      addAlias();
+                    }
+                  }}
+                  placeholder="example.com"
+                  autoComplete="off"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={addAlias}
+                  disabled={!aliasDraft.trim()}
+                >
+                  <Plus className="h-4 w-4" /> Add
+                </Button>
+              </div>
+              {aliases.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {aliases.map((alias) => (
+                    <span
+                      key={alias}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-sm font-medium text-slate-700"
+                    >
+                      {alias}
+                      <button
+                        type="button"
+                        aria-label={`Remove ${alias}`}
+                        onClick={() =>
+                          setAliases((current) =>
+                            current.filter((item) => item !== alias),
+                          )
+                        }
+                        className="text-slate-400 hover:text-red-600"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <p className="mt-1.5 text-xs text-slate-400">
+                These become alias domains of the website. You can add, remove,
+                and secure them later from the site&apos;s Domains tab.
+              </p>
             </div>
             {type === "php" && (
               <>
@@ -427,62 +531,58 @@ export function CreateSiteForm() {
               </>
             )}
             {type === "nodejs" && (
-              <>
-                <div>
-                  <Label htmlFor="nodeVersion">Node.js version</Label>
-                  <Select
-                    id="nodeVersion"
-                    value={values.nodeVersion}
-                    onChange={(e) => change("nodeVersion", e.target.value)}
-                    required
-                  >
-                    {options?.nodeVersions.map((version) => (
-                      <option key={version} value={version}>
-                        Node.js {version}
-                      </option>
-                    ))}
-                  </Select>
-                </div>
-                <PortField
-                  value={values.appPort}
-                  onChange={(value) => change("appPort", value)}
-                />
-              </>
+              <div>
+                <Label htmlFor="nodeVersion">Node.js version</Label>
+                <Select
+                  id="nodeVersion"
+                  value={values.nodeVersion}
+                  onChange={(e) => change("nodeVersion", e.target.value)}
+                  required
+                >
+                  {options?.nodeVersions.map((version) => (
+                    <option key={version} value={version}>
+                      Node.js {version}
+                    </option>
+                  ))}
+                </Select>
+                <p className="mt-1.5 text-xs text-slate-400">
+                  Your app must listen on the reserved port
+                  {previewId ? ` (${previewId})` : ""}.
+                </p>
+              </div>
             )}
             {type === "python" && (
-              <>
-                <div>
-                  <Label htmlFor="pythonVersion">Python version</Label>
-                  <Select
-                    id="pythonVersion"
-                    value={values.pythonVersion}
-                    onChange={(e) => change("pythonVersion", e.target.value)}
-                    required
-                  >
-                    {options?.pythonVersions.map((version) => (
-                      <option key={version} value={version}>
-                        Python {version}
-                      </option>
-                    ))}
-                  </Select>
-                </div>
-                <PortField
-                  value={values.appPort}
-                  onChange={(value) => change("appPort", value)}
-                />
-              </>
+              <div>
+                <Label htmlFor="pythonVersion">Python version</Label>
+                <Select
+                  id="pythonVersion"
+                  value={values.pythonVersion}
+                  onChange={(e) => change("pythonVersion", e.target.value)}
+                  required
+                >
+                  {options?.pythonVersions.map((version) => (
+                    <option key={version} value={version}>
+                      Python {version}
+                    </option>
+                  ))}
+                </Select>
+                <p className="mt-1.5 text-xs text-slate-400">
+                  Your app must listen on the reserved port
+                  {previewId ? ` (${previewId})` : ""}.
+                </p>
+              </div>
             )}
             {type === "docker" && (
               <div className="sm:col-span-2">
-                <PortField
-                  value={values.appPort}
-                  onChange={(value) => change("appPort", value)}
-                />
-                <p className="mt-2 rounded-xl bg-sky-50 px-4 py-3 text-xs leading-5 text-sky-800">
-                  NGINX will proxy this domain to <b>http://127.0.0.1:{values.appPort || "…"}</b>.
-                  Publish your container on that port (for example{" "}
-                  <code className="rounded bg-white/70 px-1 py-0.5">docker run -p {values.appPort || "3000"}:80 …</code>{" "}
-                  or a compose file), then use the site&apos;s Actions tab to manage it.
+                <p className="rounded-xl bg-sky-50 px-4 py-3 text-xs leading-5 text-sky-800">
+                  NGINX will proxy this website to{" "}
+                  <b>http://127.0.0.1:{previewId ?? "<site id>"}</b>. Publish
+                  your container on that port (for example{" "}
+                  <code className="rounded bg-white/70 px-1 py-0.5">
+                    docker run -p {previewId ?? 20000}:80 …
+                  </code>{" "}
+                  or a compose file), then use the site&apos;s Actions tab to
+                  manage it.
                 </p>
               </div>
             )}
@@ -502,20 +602,7 @@ export function CreateSiteForm() {
                 </p>
               </div>
             )}
-            <div>
-              <Label htmlFor="siteUser">Site user</Label>
-              <Input
-                id="siteUser"
-                value={values.siteUser}
-                onChange={(e) =>
-                  change("siteUser", e.target.value.toLowerCase())
-                }
-                placeholder="example"
-                autoComplete="off"
-                required
-              />
-            </div>
-            <div>
+            <div className="sm:col-span-2">
               <Label htmlFor="sitePassword">Site user password</Label>
               <div className="flex gap-2">
                 <div className="relative flex-1">
@@ -570,6 +657,10 @@ export function CreateSiteForm() {
                   </Button>
                 )}
               </div>
+              <p className="mt-1.5 text-xs text-slate-400">
+                Password for the site&apos;s system user (site-
+                {previewId ?? "<id>"}) — used for SSH and SFTP.
+              </p>
             </div>
             {error && (
               <div
@@ -590,7 +681,7 @@ export function CreateSiteForm() {
             <Button type="button" variant="ghost" asChild>
               <Link href="/sites">Cancel</Link>
             </Button>
-            <Button type="submit" disabled={busy}>
+            <Button type="submit" disabled={busy || !category || !baseDomain}>
               {busy ? (
                 <>
                   <LoaderCircle className="h-4 w-4 animate-spin" />
@@ -606,32 +697,6 @@ export function CreateSiteForm() {
           </div>
         </form>
       )}
-    </div>
-  );
-}
-
-function PortField({
-  value,
-  onChange,
-}: {
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  return (
-    <div>
-      <Label htmlFor="appPort">Application port</Label>
-      <Input
-        id="appPort"
-        type="number"
-        min={1024}
-        max={65535}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        required
-      />
-      <p className="mt-1.5 text-xs text-slate-400">
-        Use a port from 1024 to 65535.
-      </p>
     </div>
   );
 }

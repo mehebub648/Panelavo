@@ -77,6 +77,24 @@ Create permission is derived from CloudPanel's Admin and Site Manager roles. Unk
 
 The bridge loads sites through CloudPanel's own Doctrine entities. Admins and Site Managers receive all sites; restricted users receive only their assigned collection.
 
+### Site identity: categories, ids, and domains
+
+The panel — not the user — chooses each website's primary domain. On creation the user picks a **project category**; the next free id in that category's range becomes the site id, the application port, and the site user:
+
+| Category                   |    Port range |
+| -------------------------- | ------------: |
+| Client projects            | `20000–20999` |
+| Personal projects          | `21000–21999` |
+| Business/SaaS projects     | `22000–22999` |
+| Relatives/Friends projects | `23000–23999` |
+| Demo/Preview projects      | `24000–24999` |
+| Internal tools             | `25000–25999` |
+| Reserved/Future            | `26000–29999` |
+
+A site with id `23223` is created as `site-23223.<server-ip>.<base domain>` with site user `site-23223` listening on port `23223`. The base domain is set at install time (`PANEL_BASE_DOMAIN`, prompted by `setup.sh`) and editable on the Settings page; changes apply to future sites. Reservations live in `.data/site-meta.json`; the port is movable from the site's Settings tab.
+
+Customer-entered domains are **aliases**: the Domains tab (and the create form) adds them to the vhost `server_name`, points DNS through the panel-wide Cloudflare token when it manages the zone, and issues Let's Encrypt certificates covering selected domains. The system subdomain can be blocked (403) or redirected to an alias — ACME challenge paths stay reachable so renewals keep working.
+
 ### Site creation
 
 CloudPanel does not document a public REST API for site creation. Version 2.5.4’s documented `clpctl` operations are used through the installed root-owned `/usr/bin/clpctlWrapper`. The Node process calls `/usr/bin/sudo` with an argument array, `shell: false`, a fixed per-type operation map, validation, a 90-second timeout, bounded output, and generic errors. There is no generic command endpoint and no browser-supplied CLI operation.

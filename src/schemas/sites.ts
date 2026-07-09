@@ -6,7 +6,7 @@ export function normalizeDomain(value: string) {
   return input.replace(/\.$/, "");
 }
 
-const domainValue = z
+export const domainValue = z
   .string()
   .transform(normalizeDomain)
   .superRefine((domain, ctx) => {
@@ -34,12 +34,6 @@ const domainValue = z
     }
   });
 
-const siteUser = z
-  .string()
-  .trim()
-  .min(3)
-  .max(32)
-  .regex(/^[a-z][a-z0-9-]*$/, "Use lowercase letters, numbers, and hyphens.");
 const password = z
   .string()
   .min(12, "Use at least 12 characters.")
@@ -54,7 +48,21 @@ const runtime = z
   .min(1)
   .max(32)
   .regex(/^[a-zA-Z0-9._-]+$/);
-const shared = { domain: domainValue, siteUser, siteUserPassword: password };
+// The panel derives the primary (system) domain, site user, and application
+// port from the reserved site id — the user only picks a category and,
+// optionally, their own customer-facing domains, which become aliases.
+const categoryId = z
+  .string()
+  .trim()
+  .min(1)
+  .max(32)
+  .regex(/^[a-z][a-z0-9-]*$/);
+export const aliasList = z.array(domainValue).max(10).default([]);
+const shared = {
+  category: categoryId,
+  aliases: aliasList,
+  siteUserPassword: password,
+};
 
 const proxyUrl = z
   .string()
@@ -104,7 +112,6 @@ export const createSiteSchema = z.discriminatedUnion("type", [
       type: z.literal("nodejs"),
       ...shared,
       nodeVersion: runtime,
-      appPort: z.coerce.number().int().min(1024).max(65535),
     })
     .strict(),
   z.object({ type: z.literal("static"), ...shared }).strict(),
@@ -113,7 +120,6 @@ export const createSiteSchema = z.discriminatedUnion("type", [
       type: z.literal("python"),
       ...shared,
       pythonVersion: runtime,
-      appPort: z.coerce.number().int().min(1024).max(65535),
     })
     .strict(),
   z
@@ -123,13 +129,7 @@ export const createSiteSchema = z.discriminatedUnion("type", [
       reverseProxyUrl: proxyUrl,
     })
     .strict(),
-  z
-    .object({
-      type: z.literal("docker"),
-      ...shared,
-      appPort: z.coerce.number().int().min(1024).max(65535),
-    })
-    .strict(),
+  z.object({ type: z.literal("docker"), ...shared }).strict(),
 ]);
 
 export type ValidCreateSiteInput = z.infer<typeof createSiteSchema>;
