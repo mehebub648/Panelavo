@@ -3,15 +3,15 @@ import { z } from "zod";
 import { requireUser } from "@/server/auth/require-user";
 import { AppError } from "@/server/cloudpanel/errors";
 import { fail, ok } from "@/server/http";
+import {
+  resolveDnsStatus,
+  systemWildcardDomain,
+  systemWildcardProbe,
+} from "@/server/network/dns";
+import { getServerPublicIp } from "@/server/network/server-ip";
 import { audit } from "@/server/security/log";
 import { assertWriteRequest } from "@/server/security/request";
-import {
-  clearPanelCloudflareToken,
-  getPanelSettings,
-  panelZoneFor,
-  setBaseDomain,
-  setPanelCloudflareToken,
-} from "@/server/settings/store";
+import { getPanelSettings, setBaseDomain } from "@/server/settings/store";
 import { SITE_CATEGORIES } from "@/server/sites/site-meta";
 import { normalizeDomain } from "@/schemas/sites";
 
@@ -26,10 +26,20 @@ export async function GET() {
   try {
     await requireSuperAdmin();
     const settings = await getPanelSettings();
-    const zone = settings.baseDomain && settings.cloudflare.configured
-      ? await panelZoneFor(settings.baseDomain)
-      : null;
-    return ok({ settings, zone, categories: SITE_CATEGORIES });
+    const serverIp = await getServerPublicIp();
+    const probeName = settings.baseDomain
+      ? systemWildcardProbe(serverIp, settings.baseDomain)
+      : "";
+    const [dns] = probeName ? await resolveDnsStatus([probeName], serverIp) : [null];
+    return ok({
+      settings,
+      dns,
+      serverIp,
+      wildcardDomain: settings.baseDomain
+        ? systemWildcardDomain(serverIp, settings.baseDomain)
+        : "",
+      categories: SITE_CATEGORIES,
+    });
   } catch (error) {
     return fail(error);
   }
@@ -48,8 +58,6 @@ const updateSchema = z
         "Enter a valid domain, such as example.com.",
       )
       .optional(),
-    cloudflareToken: z.string().trim().min(20).max(300).optional(),
-    clearCloudflareToken: z.boolean().optional(),
   })
   .strict();
 
@@ -59,14 +67,21 @@ export async function PATCH(request: NextRequest) {
     const session = await requireSuperAdmin();
     const input = updateSchema.parse(await request.json());
     if (input.baseDomain !== undefined) await setBaseDomain(input.baseDomain);
-    if (input.cloudflareToken) await setPanelCloudflareToken(input.cloudflareToken);
-    if (input.clearCloudflareToken) await clearPanelCloudflareToken();
     audit("settings.update", "success", { user: session.user.username });
     const settings = await getPanelSettings();
-    const zone = settings.baseDomain && settings.cloudflare.configured
-      ? await panelZoneFor(settings.baseDomain)
-      : null;
-    return ok({ settings, zone });
+    const serverIp = await getServerPublicIp();
+    const probeName = settings.baseDomain
+      ? systemWildcardProbe(serverIp, settings.baseDomain)
+      : "";
+    const [dns] = probeName ? await resolveDnsStatus([probeName], serverIp) : [null];
+    return ok({
+      settings,
+      dns,
+      serverIp,
+      wildcardDomain: settings.baseDomain
+        ? systemWildcardDomain(serverIp, settings.baseDomain)
+        : "",
+    });
   } catch (error) {
     audit("settings.update", "failure", {});
     return fail(error);
