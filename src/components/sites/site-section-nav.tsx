@@ -13,11 +13,13 @@ import {
   ShieldCheck,
   TerminalSquare,
   UsersRound,
+  Zap,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const sections = [
   ["settings", "Settings", Settings],
+  ["actions", "Actions", Zap],
   ["vhost", "Vhost", Code2],
   ["databases", "Databases", Database],
   ["certificates", "SSL/TLS", KeyRound],

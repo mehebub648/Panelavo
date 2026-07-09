@@ -129,7 +129,7 @@ function accountFor(session: CloudPanelSession) {
 }
 
 const options: SiteCreationOptions = {
-  allowedTypes: ["php", "nodejs", "static", "python", "reverse-proxy"],
+  allowedTypes: ["php", "nodejs", "static", "python", "reverse-proxy", "docker"],
   phpVersions: ["8.5", "8.4", "8.3", "8.2", "8.1"],
   nodeVersions: ["24", "22", "20", "18"],
   pythonVersions: ["3.12"],
@@ -309,6 +309,34 @@ export class MockCloudPanelClient implements CloudPanelClient {
 
   async getSiteSection(session: CloudPanelSession, domain: string, section: string) {
     accountFor(session);
+    if (section === "actions") {
+      const site = sites.find((item) => item.domain === domain);
+      return {
+        type: site?.type ?? "nodejs",
+        path: `/home/${site?.siteUser ?? "demo"}/htdocs/${domain}`,
+        processName: domain,
+        hasPackageJson: site?.type === "nodejs",
+        scripts:
+          site?.type === "nodejs"
+            ? [
+                { name: "dev", command: "next dev" },
+                { name: "build", command: "next build" },
+                { name: "start", command: "next start" },
+              ]
+            : [],
+        hasComposer: site?.type === "php",
+        hasArtisan: false,
+        hasRequirements: site?.type === "python",
+        hasCompose: site?.type === "docker",
+        hasEcosystem: false,
+        pm2Available: true,
+        dockerAvailable: true,
+        pm2:
+          site?.type === "nodejs"
+            ? [{ name: domain, status: "online", cpu: 0.4, memory: 96_000_000, restarts: 2 }]
+            : [],
+      };
+    }
     return { section, domain, items: [] };
   }
 
@@ -319,7 +347,70 @@ export class MockCloudPanelClient implements CloudPanelClient {
     input: Record<string, unknown>,
   ) {
     accountFor(session);
+    if (section === "actions") {
+      const base = (await this.getSiteSection(session, domain, section)) as Record<string, unknown>;
+      return {
+        ...base,
+        run: {
+          command: String(input.command ?? ""),
+          display: `${String(input.command ?? "")}${input.script ? ` ${String(input.script)}` : ""}`,
+          exitCode: 0,
+          timedOut: false,
+          output: "Demo mode: the command was accepted but not executed.",
+        },
+      };
+    }
     return { domain, section, input, items: [] };
+  }
+
+  async getServerResources(session: CloudPanelSession) {
+    const account = accountFor(session);
+    if (!account.user.canCreateSites)
+      throw new AppError("FORBIDDEN", "Server resources are available to administrators only.", 403);
+    const gib = 1024 ** 3;
+    return {
+      generatedAt: new Date().toISOString(),
+      uptimeSeconds: 86_400 * 12 + 3_600 * 5,
+      cpu: { cores: 4, load1: 0.42, load5: 0.36, load15: 0.31, usedPercent: 11 },
+      memory: { totalBytes: 8 * gib, usedBytes: 3.1 * gib, availableBytes: 4.9 * gib, usedPercent: 39 },
+      swap: { totalBytes: 2 * gib, usedBytes: 0.2 * gib },
+      disk: { totalBytes: 80 * gib, usedBytes: 27 * gib, availableBytes: 53 * gib, usedPercent: 34, mount: "/" },
+      users: [
+        { user: "northstar", cpuPercent: 4.2, memoryPercent: 9.1, memoryBytes: 0.7 * gib, processes: 6, diskBytes: 3.4 * gib, domains: ["northstar.studio"] },
+        { user: "harbor-api", cpuPercent: 2.4, memoryPercent: 6.3, memoryBytes: 0.5 * gib, processes: 3, diskBytes: 1.2 * gib, domains: ["api.harbor.dev"] },
+        { user: "oakfield", cpuPercent: 0.1, memoryPercent: 0.8, memoryBytes: 0.06 * gib, processes: 1, diskBytes: 0.3 * gib, domains: ["docs.oakfield.io"] },
+        { user: "mysql", cpuPercent: 1.1, memoryPercent: 8.5, memoryBytes: 0.68 * gib, processes: 1 },
+        { user: "root", cpuPercent: 0.9, memoryPercent: 4.4, memoryBytes: 0.35 * gib, processes: 42 },
+      ],
+    };
+  }
+
+  async getServerInfo(session: CloudPanelSession) {
+    const account = accountFor(session);
+    if (!account.user.canCreateSites)
+      throw new AppError("FORBIDDEN", "Server information is available to administrators only.", 403);
+    return {
+      hostname: "demo-panel",
+      os: "Ubuntu 24.04.2 LTS",
+      kernel: "6.8.0-58-generic",
+      arch: "x86_64",
+      ip: "203.0.113.10",
+      uptimeSeconds: 86_400 * 12 + 3_600 * 5,
+      cpuModel: "AMD EPYC 7543 (4 vCPU)",
+      cpuCores: 4,
+      memoryTotalBytes: 8 * 1024 ** 3,
+      diskTotalBytes: 80 * 1024 ** 3,
+      software: [
+        { name: "CloudPanel", version: "2.5.2" },
+        { name: "NGINX", version: "1.26.1" },
+        { name: "Node.js", version: "22.14.0" },
+        { name: "PHP", version: "8.4.6" },
+        { name: "MySQL", version: "8.4.4" },
+        { name: "PM2", version: "5.4.3" },
+        { name: "Git", version: "2.43.0" },
+        { name: "Docker", version: "27.5.1" },
+      ],
+    };
   }
 
   async logout() {}

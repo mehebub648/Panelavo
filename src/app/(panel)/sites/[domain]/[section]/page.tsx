@@ -4,9 +4,11 @@ import { getCloudPanelClient } from "@/server/cloudpanel";
 import { SiteSettings } from "@/components/sites/site-settings";
 import { SiteSectionManager } from "@/components/sites/site-section-manager";
 import { GitManager } from "@/components/sites/git-manager";
+import { ActionsManager } from "@/components/sites/actions-manager";
 
 const titles: Record<string, string> = {
   settings: "Settings",
+  actions: "Actions",
   vhost: "Vhost",
   databases: "Databases",
   certificates: "SSL/TLS",
@@ -19,6 +21,7 @@ const titles: Record<string, string> = {
 };
 const descriptions: Record<string, string> = {
   settings: "Runtime, document root, and core website configuration.",
+  actions: "One-click maintenance commands: install, build, run, and inspect.",
   vhost: "Review and update the NGINX configuration for this website.",
   databases: "Create databases and manage their associated users.",
   certificates: "Issue, renew, and review TLS certificates.",
@@ -53,6 +56,20 @@ export default async function SiteSectionPage({
     section,
   );
   if (section === "git") return <div className="w-full space-y-5"><div><h2 className="text-2xl font-bold tracking-tight text-ink">Git</h2><p className="mt-1 text-sm text-slate-500">{descriptions.git}</p></div><GitManager domain={domain} initialData={data as Parameters<typeof GitManager>[0]["initialData"]} /></div>;
+  if (section === "actions")
+    return (
+      <div className="w-full space-y-5">
+        <div>
+          <h2 className="text-2xl font-bold tracking-tight text-ink">Actions</h2>
+          <p className="mt-1 text-sm text-slate-500">{descriptions.actions}</p>
+        </div>
+        <ActionsManager
+          domain={domain}
+          initialData={(data ?? {}) as Parameters<typeof ActionsManager>[0]["initialData"]}
+          canRunDocker={["super-admin", "manager"].includes(session.user.panelRole ?? "")}
+        />
+      </div>
+    );
   return (
     <div className="w-full space-y-5">
       <div>

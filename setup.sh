@@ -76,10 +76,36 @@ SERVER_IP="$(curl -4 -fsS --max-time 10 https://api.ipify.org 2>/dev/null || tru
 [ -n "${SERVER_IP}" ] || die "Could not determine the server IP address."
 log "Server IP: ${SERVER_IP}"
 
-PANEL_DOMAIN="${PANEL_DOMAIN:-panel.$(echo "${SERVER_IP}" | tr '.' '-').nip.io}"
+# ---------------------------------------------------------------------------
+# 3b. Interactive configuration (domain + first CloudPanel admin)
+#     Values already provided through the environment are never asked again.
+# ---------------------------------------------------------------------------
+DEFAULT_DOMAIN="panel.$(echo "${SERVER_IP}" | tr '.' '-').nip.io"
+if [ -t 0 ]; then
+  if [ -z "${PANEL_DOMAIN:-}" ]; then
+    read -r -p "${LOG_PREFIX} Panel domain [${DEFAULT_DOMAIN}]: " PANEL_DOMAIN_INPUT
+    PANEL_DOMAIN="${PANEL_DOMAIN_INPUT:-$DEFAULT_DOMAIN}"
+  fi
+  if [ -z "${ADMIN_USER:-}" ]; then
+    read -r -p "${LOG_PREFIX} CloudPanel admin username [admin]: " ADMIN_USER_INPUT
+    ADMIN_USER="${ADMIN_USER_INPUT:-admin}"
+  fi
+  if [ -z "${ADMIN_PASSWORD:-}" ]; then
+    while true; do
+      read -r -s -p "${LOG_PREFIX} CloudPanel admin password (blank = generate): " ADMIN_PASSWORD_INPUT; echo
+      if [ -z "${ADMIN_PASSWORD_INPUT}" ]; then break; fi
+      if [ "${#ADMIN_PASSWORD_INPUT}" -lt 8 ]; then warn "Use at least 8 characters."; continue; fi
+      read -r -s -p "${LOG_PREFIX} Confirm password: " ADMIN_PASSWORD_CONFIRM; echo
+      [ "${ADMIN_PASSWORD_INPUT}" = "${ADMIN_PASSWORD_CONFIRM}" ] && { ADMIN_PASSWORD="${ADMIN_PASSWORD_INPUT}"; break; }
+      warn "Passwords did not match — try again."
+    done
+  fi
+fi
+PANEL_DOMAIN="${PANEL_DOMAIN:-$DEFAULT_DOMAIN}"
 ADMIN_USER="${ADMIN_USER:-admin}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@${PANEL_DOMAIN}}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 16)!Aa1}"
+log "Panel domain: ${PANEL_DOMAIN} — CloudPanel admin: ${ADMIN_USER}"
 
 # ---------------------------------------------------------------------------
 # 4. CloudPanel
@@ -219,11 +245,31 @@ env PATH="/usr/local/bin:${PATH}" /usr/local/bin/pm2 startup systemd -u "${SITE_
 sudo -u "${SITE_USER}" /usr/local/bin/pm2 save >/dev/null
 
 # ---------------------------------------------------------------------------
-# 11. Firewall (best effort)
+# 11. Firewall: expose the panel, hide CloudPanel's own port (8443)
+#     Set EXPOSE_CLOUDPANEL=true to keep 8443 reachable from the internet.
 # ---------------------------------------------------------------------------
-if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
-  ufw allow "${APP_PORT}/tcp" >/dev/null || true
-  log "Opened port ${APP_PORT} in ufw."
+CLOUDPANEL_PORT="8443"
+if command -v ufw >/dev/null 2>&1; then
+  if ! ufw status 2>/dev/null | grep -q "Status: active"; then
+    log "Enabling ufw (SSH, HTTP/HTTPS, and port ${APP_PORT} stay open) ..."
+    ufw allow OpenSSH >/dev/null 2>&1 || ufw allow 22/tcp >/dev/null 2>&1 || true
+    ufw allow 80/tcp >/dev/null 2>&1 || true
+    ufw allow 443/tcp >/dev/null 2>&1 || true
+    ufw --force enable >/dev/null 2>&1 || true
+  fi
+  ufw allow "${APP_PORT}/tcp" >/dev/null 2>&1 || true
+  if [ "${EXPOSE_CLOUDPANEL:-false}" != "true" ]; then
+    # Remove any existing allow rule, then explicitly deny public access.
+    ufw delete allow "${CLOUDPANEL_PORT}/tcp" >/dev/null 2>&1 || true
+    ufw deny "${CLOUDPANEL_PORT}/tcp" >/dev/null 2>&1 || true
+    log "CloudPanel port ${CLOUDPANEL_PORT} is no longer exposed publicly."
+    log "Reach CloudPanel via an SSH tunnel if ever needed: ssh -L ${CLOUDPANEL_PORT}:127.0.0.1:${CLOUDPANEL_PORT} root@${SERVER_IP}"
+  else
+    ufw allow "${CLOUDPANEL_PORT}/tcp" >/dev/null 2>&1 || true
+    warn "EXPOSE_CLOUDPANEL=true — CloudPanel stays reachable on port ${CLOUDPANEL_PORT}."
+  fi
+else
+  warn "ufw is not installed — port ${CLOUDPANEL_PORT} may still be publicly reachable. Block it in your provider firewall."
 fi
 
 # ---------------------------------------------------------------------------
@@ -243,7 +289,7 @@ cat <<EOF
 ============================================================
  Panel (primary):    http://${SERVER_IP}:${APP_PORT}
  Panel (domain):     https://${PANEL_DOMAIN}
- CloudPanel:         https://${SERVER_IP}:8443
+ CloudPanel:         https://127.0.0.1:8443 (blocked publicly; use an SSH tunnel)
 
  CloudPanel admin:   ${ADMIN_USER}
  Admin password:     ${ADMIN_PASSWORD}

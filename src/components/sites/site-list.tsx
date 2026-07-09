@@ -31,6 +31,7 @@ const typeLabels: Record<SiteType, string> = {
   static: "Static HTML",
   python: "Python",
   "reverse-proxy": "Reverse proxy",
+  docker: "Docker",
 };
 function TypeBadge({ type }: { type?: SiteType }) {
   return (

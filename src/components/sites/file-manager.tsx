@@ -107,7 +107,16 @@ export function FileManager({ domain, initialData }: { domain: string; initialDa
   }
   function showMenu(event: React.MouseEvent, item: FileManagerItem) {
     event.preventDefault(); setSelected(item.name);
-    setMenu({ x: Math.min(event.clientX, window.innerWidth - 220), y: Math.min(event.clientY, window.innerHeight - 330), item });
+    setMenu({ x: event.clientX, y: event.clientY, item });
+  }
+  // Positions the context menu once it has rendered: the menu height varies
+  // with the item type, so clamp against its real size to keep it on screen.
+  function placeMenu(node: HTMLDivElement | null) {
+    if (!node || !menu) return;
+    const rect = node.getBoundingClientRect();
+    node.style.left = `${Math.max(8, Math.min(menu.x, window.innerWidth - rect.width - 8))}px`;
+    node.style.top = `${Math.max(8, Math.min(menu.y, window.innerHeight - rect.height - 8))}px`;
+    node.style.visibility = "visible";
   }
 
   return <section className="overflow-hidden rounded-2xl border border-white/60 bg-white/70 shadow-card backdrop-blur-md">
@@ -126,7 +135,7 @@ export function FileManager({ domain, initialData }: { domain: string; initialDa
           <button onClick={() => browse("")} className="rounded p-1 hover:bg-slate-100" aria-label="User home"><Home className="h-4 w-4" /></button>
           {crumbs.map((crumb, i) => <span key={`${crumb}-${i}`} className="flex min-w-0 items-center"><ChevronRight className="h-4 w-4 text-slate-300" /><button className="max-w-40 truncate rounded px-1.5 py-1 hover:bg-slate-100" onClick={() => browse(crumbs.slice(0, i + 1).join("/"))}>{crumb}</button></span>)}
         </nav>
-        <div className="flex items-center gap-2"><div className="relative"><Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" /><Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search this folder" className="w-56 pl-9" /></div><Button variant="ghost" size="icon" onClick={() => browse(current)} aria-label="Refresh"><RefreshCw className={`h-4 w-4 ${busy ? "animate-spin" : ""}`} /></Button></div>
+        <div className="flex w-full items-center gap-2 sm:w-auto"><div className="relative flex-1 sm:flex-none"><Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" /><Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search this folder" className="w-full pl-9 sm:w-56" /></div><Button variant="ghost" size="icon" onClick={() => browse(current)} aria-label="Refresh"><RefreshCw className={`h-4 w-4 ${busy ? "animate-spin" : ""}`} /></Button></div>
       </div>
     </div>
     <div className="relative min-h-[420px] overflow-x-auto">
@@ -139,7 +148,7 @@ export function FileManager({ domain, initialData }: { domain: string; initialDa
         </tbody></table>
       {!items.length && <div className="flex flex-col items-center py-20 text-slate-400"><File className="mb-3 h-10 w-10" /><p className="font-medium">{search ? "No matching files" : "This folder is empty"}</p></div>}
     </div>
-    {menu && <div style={{ left: menu.x, top: menu.y }} className="fixed z-50 w-52 overflow-hidden rounded-xl border border-slate-200 bg-white py-1 text-sm shadow-2xl" onClick={(e) => e.stopPropagation()}>
+    {menu && createPortal(<div ref={placeMenu} style={{ left: menu.x, top: menu.y, visibility: "hidden" }} className="fixed z-[85] w-52 overflow-hidden rounded-xl border border-slate-200 bg-white py-1 text-sm shadow-2xl" onClick={(e) => e.stopPropagation()}>
       <MenuButton icon={<FolderOpen />} label="Open" onClick={() => void open(menu.item)} />
       {menu.item.type === "file" && <><MenuButton icon={<Pencil />} label="Edit" onClick={() => void open(menu.item)} /><MenuButton icon={<Download />} label="Download" onClick={() => void download(menu.item)} /></>}
       <div className="my-1 border-t" /><MenuButton icon={<Pencil />} label="Rename" onClick={() => { setModal({ kind: "rename", name: menu.item.name }); setMenu(null); }} />
@@ -151,7 +160,7 @@ export function FileManager({ domain, initialData }: { domain: string; initialDa
       {menu.item.type === "file" && menu.item.name.toLowerCase().endsWith(".zip") && <MenuButton icon={<Archive />} label="Extract here" onClick={() => void itemAction("extract", menu.item, {}, "Archive extracted")} />}
       <MenuButton icon={<KeyRound />} label="Change permissions" onClick={() => { setModal({ kind: "permissions", name: menu.item.name, value: menu.item.permissions ?? "0755" }); setMenu(null); }} />
       <div className="my-1 border-t" /><MenuButton danger icon={<Trash2 />} label="Delete" onClick={() => { setMenu(null); void remove(menu.item); }} />
-    </div>}
+    </div>, document.body)}
     {modal && createPortal(<div className="fixed inset-0 z-[80] flex items-center justify-center overflow-y-auto bg-slate-950/40 p-4 backdrop-blur-sm" onMouseDown={(e) => { if (e.target === e.currentTarget) setModal(null); }}><form className={`my-auto w-full max-h-[calc(100vh-2rem)] overflow-hidden rounded-2xl bg-white p-5 shadow-2xl ${modal.kind === "edit" ? "max-w-6xl" : "max-w-md"}`} onSubmit={async (e) => { e.preventDefault(); const form = new FormData(e.currentTarget); const name = String(form.get("name") ?? modal.name ?? ""); const content = String(form.get("content") ?? ""); let completed = true; if (modal.kind === "rename") await request({ action: "rename", path: current, name: modal.name, newName: name }, "Renamed"); else if (modal.kind === "edit") completed = Boolean(await request({ action: "save-file", path: current, name: modal.name, content }, "File saved")); else if (modal.kind === "permissions") await request({ action: "chmod", path: current, name: modal.name, mode: name }, "Permissions changed"); else if (modal.kind === "compress") await request({ action: "compress", path: current, name: modal.name, archiveName: name }, "Archive created"); else await request({ action: modal.kind === "file" ? "new-file" : "new-folder", path: current, name }, `${modal.kind === "file" ? "File" : "Folder"} created`); if (completed) setModal(null); }}>
       <div className="mb-4 flex items-center justify-between gap-4"><div><h3 className="text-lg font-bold capitalize">{modal.kind === "edit" ? `Edit ${modal.name}` : `${modal.kind} ${modal.kind === "rename" ? modal.name : ""}`}</h3>{modal.kind === "edit" && <p className={`mt-1 flex items-center gap-2 text-xs font-medium ${modal.content === modal.originalContent ? "text-emerald-600" : "text-amber-600"}`}>{busy ? <><LoaderCircle className="h-3.5 w-3.5 animate-spin" />Saving…</> : modal.content === modal.originalContent ? <><span className="h-2 w-2 rounded-full bg-emerald-500" />Saved</> : <><span className="h-2 w-2 rounded-full bg-amber-500" />Unsaved changes</>}</p>}</div><button type="button" onClick={() => setModal(null)}><X className="h-5 w-5" /></button></div>
       {modal.kind === "edit" ? <><input type="hidden" name="content" value={modal.content ?? ""} /><CodeEditor value={modal.content ?? ""} onChange={(content) => setModal((currentModal) => currentModal?.kind === "edit" ? { ...currentModal, content } : currentModal)} language={languageForFile(modal.name ?? "")} height="60vh" ariaLabel={`Edit ${modal.name}`} /></> : <><Input name="name" defaultValue={modal.kind === "rename" ? modal.name : modal.value ?? ""} placeholder={modal.kind === "permissions" ? "0755" : modal.kind === "folder" ? "Folder name" : "File name"} pattern={modal.kind === "permissions" ? "[0-7]{3,4}" : undefined} autoFocus required />{modal.kind === "permissions" && <p className="mt-2 text-xs text-slate-500">Use an octal mode such as 0644 for files or 0755 for folders.</p>}</>}

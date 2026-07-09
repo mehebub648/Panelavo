@@ -12,6 +12,7 @@ import {
   Check,
   Clipboard,
   Code2,
+  Container,
   Eye,
   EyeOff,
   FileCode2,
@@ -64,6 +65,13 @@ const types = [
     description: "Forward traffic to another service",
     icon: Network,
     color: "text-rose-600 bg-rose-50",
+  },
+  {
+    id: "docker" as const,
+    name: "Docker app",
+    description: "Serve a containerized application",
+    icon: Container,
+    color: "text-sky-600 bg-sky-50",
   },
 ];
 
@@ -219,7 +227,9 @@ export function CreateSiteForm() {
               }
             : type === "reverse-proxy"
               ? { ...shared, reverseProxyUrl: values.reverseProxyUrl }
-              : shared;
+              : type === "docker"
+                ? { ...shared, appPort: Number(values.appPort) }
+                : shared;
     const requestBody = domainMode === "cloudflare" && selectedZone ? { ...body, dns: { credentialId: selectedZone.credentialId, zoneId: selectedZone.id, replace: replaceRecord, proxied: false } } : body;
     try {
       const response = await fetch("/api/sites", {
@@ -461,6 +471,20 @@ export function CreateSiteForm() {
                   onChange={(value) => change("appPort", value)}
                 />
               </>
+            )}
+            {type === "docker" && (
+              <div className="sm:col-span-2">
+                <PortField
+                  value={values.appPort}
+                  onChange={(value) => change("appPort", value)}
+                />
+                <p className="mt-2 rounded-xl bg-sky-50 px-4 py-3 text-xs leading-5 text-sky-800">
+                  NGINX will proxy this domain to <b>http://127.0.0.1:{values.appPort || "…"}</b>.
+                  Publish your container on that port (for example{" "}
+                  <code className="rounded bg-white/70 px-1 py-0.5">docker run -p {values.appPort || "3000"}:80 …</code>{" "}
+                  or a compose file), then use the site&apos;s Actions tab to manage it.
+                </p>
+              </div>
             )}
             {type === "reverse-proxy" && (
               <div className="sm:col-span-2">

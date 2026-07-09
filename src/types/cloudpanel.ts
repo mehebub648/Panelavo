@@ -1,4 +1,10 @@
-export type SiteType = "php" | "nodejs" | "static" | "python" | "reverse-proxy";
+export type SiteType =
+  | "php"
+  | "nodejs"
+  | "static"
+  | "python"
+  | "reverse-proxy"
+  | "docker";
 
 // Panel-level role model. CloudPanel natively stores admin / site-manager /
 // user; the panel "admin" tier is a CloudPanel "user" elevated by a local
@@ -91,7 +97,51 @@ export type CreateSiteInput =
       reverseProxyUrl: string;
       siteUser: string;
       siteUserPassword: string;
+    }
+  | {
+      // Docker sites are stored in CloudPanel as reverse proxies to the
+      // published container port; the panel keeps the "docker" type in a
+      // local overlay (src/server/sites/site-type-overlay.ts).
+      type: "docker";
+      domain: string;
+      appPort: number;
+      siteUser: string;
+      siteUserPassword: string;
     };
+
+export interface ServerResourceUser {
+  user: string;
+  cpuPercent: number;
+  memoryPercent: number;
+  memoryBytes: number;
+  processes: number;
+  diskBytes?: number;
+  domains?: string[];
+}
+
+export interface ServerResources {
+  generatedAt: string;
+  uptimeSeconds: number;
+  cpu: { cores: number; load1: number; load5: number; load15: number; usedPercent: number };
+  memory: { totalBytes: number; usedBytes: number; availableBytes: number; usedPercent: number };
+  swap: { totalBytes: number; usedBytes: number };
+  disk: { totalBytes: number; usedBytes: number; availableBytes: number; usedPercent: number; mount: string };
+  users: ServerResourceUser[];
+}
+
+export interface ServerInfo {
+  hostname: string;
+  os: string;
+  kernel: string;
+  arch: string;
+  ip: string;
+  uptimeSeconds: number;
+  cpuModel: string;
+  cpuCores: number;
+  memoryTotalBytes: number;
+  diskTotalBytes: number;
+  software: { name: string; version: string }[];
+}
 
 export type CloudPanelLoginResult =
   | {
@@ -144,5 +194,7 @@ export interface CloudPanelClient {
     section: string,
     input: Record<string, unknown>,
   ): Promise<unknown>;
+  getServerResources(session: CloudPanelSession): Promise<ServerResources>;
+  getServerInfo(session: CloudPanelSession): Promise<ServerInfo>;
   logout(session: CloudPanelSession): Promise<void>;
 }

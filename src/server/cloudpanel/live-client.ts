@@ -8,6 +8,8 @@ import type {
   CloudPanelSite,
   CloudPanelUser,
   CreateSiteInput,
+  ServerInfo,
+  ServerResources,
   SiteCreationOptions,
 } from "@/types/cloudpanel";
 import { isPanelAdmin } from "@/server/auth/panel-roles";
@@ -65,10 +67,14 @@ export class LiveCloudPanelClient implements CloudPanelClient {
     });
   }
 
-  private async bridge(input: Record<string, unknown>): Promise<BridgeResult> {
+  private async bridge(
+    input: Record<string, unknown>,
+    timeout?: number,
+  ): Promise<BridgeResult> {
     const script = join(process.cwd(), "scripts", "cloudpanel-bridge.php");
     const output = await this.run("/usr/bin/php", [script], {
       input: JSON.stringify(input),
+      timeout,
     });
     try {
       const jsonStart = output.indexOf('{');
@@ -192,7 +198,7 @@ export class LiveCloudPanelClient implements CloudPanelClient {
       .map((line) => line.split("|")[1]?.trim())
       .filter((value): value is string => Boolean(value));
     return {
-      allowedTypes: ["php", "nodejs", "static", "python", "reverse-proxy"],
+      allowedTypes: ["php", "nodejs", "static", "python", "reverse-proxy", "docker"],
       phpVersions,
       nodeVersions: ["22", "20", "18", "16", "14", "12"],
       pythonVersions: ["3.12", "3.10", "3.9"],
@@ -321,6 +327,8 @@ export class LiveCloudPanelClient implements CloudPanelClient {
       if (input.subjectAlternativeName) args.push(`--subjectAlternativeName=${String(input.subjectAlternativeName)}`);
       await this.run("/usr/bin/clpctl", args, { timeout: 90_000 });
     } else {
+      // Site actions (npm install, builds, docker compose…) legitimately run
+      // for minutes; everything else stays on the short default timeout.
       const result = await this.bridge({
         action: "manage-section",
         username: this.sessionUser(session),
@@ -328,12 +336,31 @@ export class LiveCloudPanelClient implements CloudPanelClient {
         section,
         operation: input,
         panelAdmin,
-      });
+      }, section === "actions" ? 620_000 : undefined);
       if (!result.ok)
         throw new AppError("SITE_UPDATE_FAILED", "CloudPanel could not apply the change.", 502);
       if (result.data !== undefined) return result.data;
     }
     return this.getSiteSection(session, domain, section);
+  }
+
+  async getServerResources(session: CloudPanelSession) {
+    const result = await this.bridge(
+      { action: "server-resources", username: this.sessionUser(session) },
+      60_000,
+    );
+    if (!result.ok || !result.data)
+      throw new AppError("FORBIDDEN", "Server resources are available to administrators only.", 403);
+    return result.data as ServerResources;
+  }
+
+  async getServerInfo(session: CloudPanelSession) {
+    const result = await this.bridge(
+      { action: "server-info", username: this.sessionUser(session) },
+    );
+    if (!result.ok || !result.data)
+      throw new AppError("FORBIDDEN", "Server information is available to administrators only.", 403);
+    return result.data as ServerInfo;
   }
 
   async logout() {}

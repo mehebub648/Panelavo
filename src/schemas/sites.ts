@@ -123,6 +123,13 @@ export const createSiteSchema = z.discriminatedUnion("type", [
       reverseProxyUrl: proxyUrl,
     })
     .strict(),
+  z
+    .object({
+      type: z.literal("docker"),
+      ...shared,
+      appPort: z.coerce.number().int().min(1024).max(65535),
+    })
+    .strict(),
 ]);
 
 export type ValidCreateSiteInput = z.infer<typeof createSiteSchema>;

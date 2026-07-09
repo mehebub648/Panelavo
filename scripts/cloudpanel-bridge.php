@@ -217,6 +217,247 @@ function siteKeyPair(Site $site): array
     ];
 }
 
+function siteRootPath(Site $site): string
+{
+    return rtrim('/home/' . $site->getUser() . '/htdocs/' . trim($site->getRootDirectory(), '/'), '/');
+}
+
+// Runs an allow-listed maintenance command inside the site root as the site
+// user, through env(1) so PATH/HOME survive sudo's environment reset.
+function runSiteCommand(Site $site, array $args, int $timeout = 300, bool $asRoot = false): array
+{
+    $cwd = realpath(siteRootPath($site));
+    if (!$cwd) respond(['ok' => false, 'code' => 'SITE_NOT_FOUND']);
+    $home = $asRoot ? '/root' : '/home/' . $site->getUser();
+    $env = ['/usr/bin/env', 'PATH=/usr/local/bin:/usr/bin:/bin', 'HOME=' . $home];
+    $command = array_merge(
+        ['/usr/bin/timeout', '--signal=KILL', (string) $timeout],
+        $asRoot ? $env : array_merge(['/usr/bin/sudo', '-n', '-u', $site->getUser(), '--'], $env),
+        $args,
+    );
+    $process = proc_open($command, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, $cwd);
+    if (!is_resource($process)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+    fclose($pipes[0]);
+    $stdout = stream_get_contents($pipes[1]); fclose($pipes[1]);
+    $stderr = stream_get_contents($pipes[2]); fclose($pipes[2]);
+    $code = proc_close($process);
+    return [
+        'code' => $code,
+        'timedOut' => $code === 137,
+        'stdout' => substr($stdout ?: '', 0, 400000),
+        'stderr' => substr($stderr ?: '', 0, 100000),
+    ];
+}
+
+function actionsSection(Site $site): array
+{
+    $root = siteRootPath($site);
+    $scripts = [];
+    if (is_file($root . '/package.json')) {
+        $package = json_decode((string) file_get_contents($root . '/package.json'), true);
+        foreach ((is_array($package) ? ($package['scripts'] ?? []) : []) as $name => $command) {
+            if (is_string($command)) $scripts[] = ['name' => (string) $name, 'command' => $command];
+        }
+    }
+    $processes = [];
+    if (is_executable('/usr/local/bin/pm2') && is_dir($root)) {
+        $pm2 = runSiteCommand($site, ['pm2', 'jlist'], 20);
+        $start = strpos($pm2['stdout'], '[');
+        $list = $start === false ? null : json_decode(substr($pm2['stdout'], $start), true);
+        foreach (is_array($list) ? $list : [] as $proc) {
+            if (!is_array($proc)) continue;
+            $processes[] = [
+                'name' => (string) ($proc['name'] ?? ''),
+                'status' => (string) ($proc['pm2_env']['status'] ?? 'unknown'),
+                'cpu' => (float) ($proc['monit']['cpu'] ?? 0),
+                'memory' => (int) ($proc['monit']['memory'] ?? 0),
+                'restarts' => (int) ($proc['pm2_env']['restart_time'] ?? 0),
+            ];
+        }
+    }
+    return [
+        'type' => $site->getType(),
+        'path' => $root,
+        'processName' => preg_replace('/[^a-zA-Z0-9._-]/', '-', $site->getDomainName()),
+        'hasPackageJson' => is_file($root . '/package.json'),
+        'scripts' => $scripts,
+        'hasComposer' => is_file($root . '/composer.json'),
+        'hasArtisan' => is_file($root . '/artisan'),
+        'hasRequirements' => is_file($root . '/requirements.txt'),
+        'hasCompose' => is_file($root . '/docker-compose.yml') || is_file($root . '/docker-compose.yaml')
+            || is_file($root . '/compose.yml') || is_file($root . '/compose.yaml'),
+        'hasEcosystem' => is_file($root . '/ecosystem.config.js') || is_file($root . '/ecosystem.config.cjs'),
+        'pm2Available' => is_executable('/usr/local/bin/pm2'),
+        'dockerAvailable' => is_executable('/usr/bin/docker') || is_executable('/usr/local/bin/docker'),
+        'pm2' => $processes,
+    ];
+}
+
+function readMeminfo(): array
+{
+    $values = [];
+    foreach (preg_split('/\R/', (string) @file_get_contents('/proc/meminfo')) ?: [] as $line) {
+        if (preg_match('/^(\w+):\s+(\d+)\s*kB/', $line, $m)) $values[$m[1]] = (int) $m[2] * 1024;
+    }
+    return $values;
+}
+
+function cpuUsagePercent(): float
+{
+    $sample = function (): ?array {
+        $line = strtok((string) @file_get_contents('/proc/stat'), "\n");
+        if (!$line || !preg_match('/^cpu\s+(.+)$/', $line, $m)) return null;
+        $parts = array_map('intval', preg_split('/\s+/', trim($m[1])));
+        $idle = ($parts[3] ?? 0) + ($parts[4] ?? 0);
+        return [array_sum($parts), $idle];
+    };
+    $first = $sample();
+    usleep(250000);
+    $second = $sample();
+    if (!$first || !$second || $second[0] <= $first[0]) return 0.0;
+    $total = $second[0] - $first[0];
+    $idle = $second[1] - $first[1];
+    return round(max(0, min(100, (1 - $idle / max(1, $total)) * 100)), 1);
+}
+
+function serverResources($manager): array
+{
+    $load = sys_getloadavg() ?: [0, 0, 0];
+    $cores = max(1, (int) trim((string) shell_exec('nproc 2>/dev/null')));
+    $mem = readMeminfo();
+    $memTotal = $mem['MemTotal'] ?? 0;
+    $memAvailable = $mem['MemAvailable'] ?? 0;
+    $diskTotal = (float) disk_total_space('/');
+    $diskFree = (float) disk_free_space('/');
+    $uptime = (float) strtok((string) @file_get_contents('/proc/uptime'), ' ');
+
+    // Aggregate live process usage by system user.
+    $byUser = [];
+    foreach (preg_split('/\R/', (string) shell_exec('ps -eo user:32,pcpu,pmem,rss --no-headers 2>/dev/null')) ?: [] as $line) {
+        $parts = preg_split('/\s+/', trim($line));
+        if (count($parts) < 4) continue;
+        [$name, $cpu, $memPct, $rss] = $parts;
+        $byUser[$name] ??= ['user' => $name, 'cpuPercent' => 0.0, 'memoryPercent' => 0.0, 'memoryBytes' => 0, 'processes' => 0];
+        $byUser[$name]['cpuPercent'] += (float) $cpu;
+        $byUser[$name]['memoryPercent'] += (float) $memPct;
+        $byUser[$name]['memoryBytes'] += (int) $rss * 1024;
+        $byUser[$name]['processes']++;
+    }
+
+    // Site users: attach their domains and home-directory disk usage. du is
+    // expensive, so results are cached for 10 minutes.
+    $domainsByUser = [];
+    foreach ($manager->getRepository(Site::class)->findAll() as $site) {
+        $domainsByUser[$site->getUser()][] = $site->getDomainName();
+    }
+    $cacheFile = '/tmp/.clp-pro-panel-du-cache.json';
+    $cache = null;
+    if (is_file($cacheFile) && time() - (int) filemtime($cacheFile) < 600) {
+        $cache = json_decode((string) file_get_contents($cacheFile), true);
+    }
+    if (!is_array($cache)) {
+        $cache = [];
+        foreach (array_keys($domainsByUser) as $siteUser) {
+            if (!preg_match('/^[a-z_][a-z0-9._-]*$/', $siteUser)) continue;
+            $output = shell_exec('timeout 10 du -sb --one-file-system ' . escapeshellarg('/home/' . $siteUser) . ' 2>/dev/null');
+            if ($output && preg_match('/^(\d+)/', trim($output), $m)) $cache[$siteUser] = (int) $m[1];
+        }
+        @file_put_contents($cacheFile, json_encode($cache));
+    }
+    foreach ($domainsByUser as $siteUser => $domains) {
+        $byUser[$siteUser] ??= ['user' => $siteUser, 'cpuPercent' => 0.0, 'memoryPercent' => 0.0, 'memoryBytes' => 0, 'processes' => 0];
+        $byUser[$siteUser]['domains'] = $domains;
+        if (isset($cache[$siteUser])) $byUser[$siteUser]['diskBytes'] = $cache[$siteUser];
+    }
+    $users = array_values($byUser);
+    usort($users, fn($a, $b) => ($b['memoryBytes'] <=> $a['memoryBytes']));
+    foreach ($users as &$entry) {
+        $entry['cpuPercent'] = round($entry['cpuPercent'], 1);
+        $entry['memoryPercent'] = round($entry['memoryPercent'], 1);
+    }
+    unset($entry);
+
+    return [
+        'generatedAt' => gmdate(DATE_ATOM),
+        'uptimeSeconds' => (int) $uptime,
+        'cpu' => [
+            'cores' => $cores,
+            'load1' => round((float) $load[0], 2),
+            'load5' => round((float) $load[1], 2),
+            'load15' => round((float) $load[2], 2),
+            'usedPercent' => cpuUsagePercent(),
+        ],
+        'memory' => [
+            'totalBytes' => $memTotal,
+            'usedBytes' => max(0, $memTotal - $memAvailable),
+            'availableBytes' => $memAvailable,
+            'usedPercent' => $memTotal ? round(($memTotal - $memAvailable) / $memTotal * 100, 1) : 0,
+        ],
+        'swap' => [
+            'totalBytes' => $mem['SwapTotal'] ?? 0,
+            'usedBytes' => max(0, ($mem['SwapTotal'] ?? 0) - ($mem['SwapFree'] ?? 0)),
+        ],
+        'disk' => [
+            'totalBytes' => $diskTotal,
+            'usedBytes' => max(0, $diskTotal - $diskFree),
+            'availableBytes' => $diskFree,
+            'usedPercent' => $diskTotal ? round(($diskTotal - $diskFree) / $diskTotal * 100, 1) : 0,
+            'mount' => '/',
+        ],
+        'users' => array_slice($users, 0, 40),
+    ];
+}
+
+function softwareVersion(string $command, string $pattern = '/(\d+\.\d+(?:\.\d+)*)/'): string
+{
+    $output = (string) shell_exec('timeout 5 ' . $command . ' 2>&1');
+    return preg_match($pattern, $output, $m) ? $m[1] : '';
+}
+
+function serverInfo(): array
+{
+    $osRelease = @parse_ini_file('/etc/os-release');
+    $cpuModel = '';
+    foreach (preg_split('/\R/', (string) @file_get_contents('/proc/cpuinfo')) ?: [] as $line) {
+        if (preg_match('/^model name\s*:\s*(.+)$/', $line, $m)) { $cpuModel = trim($m[1]); break; }
+    }
+    $mem = readMeminfo();
+    $ip = trim((string) shell_exec("timeout 5 hostname -I 2>/dev/null | awk '{print $1}'"));
+    $software = [];
+    foreach ([
+        ['CloudPanel', 'clpctl --version'],
+        ['NGINX', 'nginx -v'],
+        ['Node.js', 'node --version'],
+        ['npm', 'npm --version'],
+        ['PM2', 'pm2 --version'],
+        ['PHP', 'php --version'],
+        ['MySQL / MariaDB', 'mysql --version'],
+        ['Git', 'git --version'],
+        ['Docker', 'docker --version'],
+        ['Docker Compose', 'docker compose version'],
+        ['Python', 'python3 --version'],
+        ['Composer', 'composer --version --no-ansi'],
+        ['Redis', 'redis-server --version'],
+        ['ProFTPD', 'proftpd --version'],
+    ] as [$name, $command]) {
+        $version = softwareVersion('env PATH=/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin ' . $command);
+        if ($version !== '') $software[] = ['name' => $name, 'version' => $version];
+    }
+    return [
+        'hostname' => (string) gethostname(),
+        'os' => (string) ($osRelease['PRETTY_NAME'] ?? php_uname('s')),
+        'kernel' => php_uname('r'),
+        'arch' => php_uname('m'),
+        'ip' => $ip,
+        'uptimeSeconds' => (int) (float) strtok((string) @file_get_contents('/proc/uptime'), ' '),
+        'cpuModel' => $cpuModel ?: 'unknown',
+        'cpuCores' => max(1, (int) trim((string) shell_exec('nproc 2>/dev/null'))),
+        'memoryTotalBytes' => $mem['MemTotal'] ?? 0,
+        'diskTotalBytes' => (float) disk_total_space('/'),
+        'software' => $software,
+    ];
+}
+
 function runGit(Site $site, array $args, bool $allowFailure = false): array
 {
     $cwd = realpath('/home/' . $site->getUser() . '/htdocs/' . $site->getRootDirectory());
@@ -314,6 +555,14 @@ try {
             if (!$user->hasSite($site)) { $user->addSite($site); $manager->flush(); }
             respond(['ok' => true]);
 
+        case 'server-resources':
+            if (!in_array($user->getRole(), [User::ROLE_ADMIN, User::ROLE_SITE_MANAGER], true)) respond(['ok' => false, 'code' => 'FORBIDDEN']);
+            respond(['ok' => true, 'data' => serverResources($manager)]);
+
+        case 'server-info':
+            if (!in_array($user->getRole(), [User::ROLE_ADMIN, User::ROLE_SITE_MANAGER], true)) respond(['ok' => false, 'code' => 'FORBIDDEN']);
+            respond(['ok' => true, 'data' => serverInfo()]);
+
         case 'site':
             respond(['ok' => true, 'site' => publicSite(authorizedSite(
                 $manager,
@@ -356,6 +605,7 @@ try {
                 ],
                 'file-manager' => fileManagerListing($site, null),
                 'git' => gitSection($site),
+                'actions' => actionsSection($site),
                 'cron-jobs' => ['sitePath' => '/home/' . $site->getUser() . '/htdocs/' . $site->getRootDirectory(), 'items' => array_map(fn($item) => ['id' => (string) $item->getId(), 'schedule' => $item->getSchedule(), 'command' => $item->getCommand(), 'expression' => $item->getCrontabExpression()], $site->getCronJobs()->toArray())],
                 'logs' => (function () use ($site) {
                     $base = '/home/' . $site->getUser() . '/logs';
@@ -375,7 +625,7 @@ try {
             $operation = $input['operation'] ?? [];
             $action = (string) ($operation['action'] ?? '');
             $model = $updater = null;
-            if (!in_array($section, ['file-manager', 'logs', 'git'], true) && !($section === 'users' && $action === 'generate-keypair')) {
+            if (!in_array($section, ['file-manager', 'logs', 'git', 'actions'], true) && !($section === 'users' && $action === 'generate-keypair')) {
                 [$model, $updater] = siteModel($site);
             }
 
@@ -384,7 +634,15 @@ try {
                 if ($ref !== '' && !preg_match('/^[A-Za-z0-9._\/-]{1,200}$/', $ref)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
                 if ($action === 'clone') {
                     $url = trim((string) ($operation['url'] ?? '')); if (!preg_match('#^(https://|git@)[^\s]+$#', $url)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
-                    $root = realpath('/home/' . $site->getUser() . '/htdocs/' . $site->getRootDirectory());
+                    // Clone into the configured site root (htdocs/<root directory>),
+                    // creating it first if CloudPanel has not materialized it yet,
+                    // so the repository always lands in the folder the vhost serves.
+                    $rootPath = siteRootPath($site);
+                    if (!is_dir($rootPath)) {
+                        if (!mkdir($rootPath, 0755, true)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                        chown($rootPath, $site->getUser()); chgrp($rootPath, $site->getUser());
+                    }
+                    $root = realpath($rootPath);
                     if (!$root || count(array_diff(scandir($root) ?: [], ['.', '..'])) > 0) respond(['ok' => false, 'code' => 'DIRECTORY_NOT_EMPTY']);
                     runGit($site, array_values(array_filter(['clone', $ref ? '--branch' : null, $ref ?: null, $url, '.'])));
                 } elseif ($action === 'init') runGit($site, ['init']);
@@ -507,6 +765,70 @@ try {
                     respond(['ok' => false, 'code' => 'CLOUDPANEL_UNAVAILABLE']);
                 }
                 exec('systemctl reload nginx 2>&1');
+            } elseif ($section === 'actions') {
+                if ($action !== 'run') respond(['ok' => false, 'code' => 'INVALID_ACTION']);
+                $command = (string) ($operation['command'] ?? '');
+                $script = (string) ($operation['script'] ?? '');
+                if ($script !== '' && !preg_match('/^[A-Za-z0-9:._-]{1,64}$/', $script)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                $root = siteRootPath($site);
+                $name = preg_replace('/[^a-zA-Z0-9._-]/', '-', $site->getDomainName());
+                $composeFile = null;
+                foreach (['docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml'] as $candidate) {
+                    if (is_file($root . '/' . $candidate)) { $composeFile = $candidate; break; }
+                }
+                $ecosystem = is_file($root . '/ecosystem.config.js') ? 'ecosystem.config.js'
+                    : (is_file($root . '/ecosystem.config.cjs') ? 'ecosystem.config.cjs' : null);
+                // Allow-listed commands only — nothing user-supplied is ever
+                // passed to a shell. Docker runs as root, so those commands are
+                // reserved for CloudPanel admins and site managers.
+                $asRoot = false;
+                $timeout = 300;
+                switch ($command) {
+                    case 'npm-install': $args = ['npm', 'install', '--no-audit', '--no-fund']; $timeout = 600; break;
+                    case 'npm-ci': $args = ['npm', 'ci', '--no-audit', '--no-fund']; $timeout = 600; break;
+                    case 'npm-run':
+                        $package = is_file($root . '/package.json') ? json_decode((string) file_get_contents($root . '/package.json'), true) : null;
+                        if ($script === '' || !is_array($package) || !isset($package['scripts'][$script])) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                        $args = ['npm', 'run', $script];
+                        $timeout = 600;
+                        break;
+                    case 'pm2-start':
+                        $args = $ecosystem ? ['pm2', 'startOrReload', $ecosystem] : ['pm2', 'start', 'npm', '--name', $name, '--', 'start'];
+                        break;
+                    case 'pm2-restart': $args = ['pm2', 'restart', 'all', '--update-env']; break;
+                    case 'pm2-stop': $args = ['pm2', 'stop', 'all']; break;
+                    case 'pm2-delete': $args = ['pm2', 'delete', 'all']; break;
+                    case 'pm2-save': $args = ['pm2', 'save', '--force']; break;
+                    case 'pm2-status': $args = ['pm2', 'status']; break;
+                    case 'pm2-logs': $args = ['pm2', 'logs', '--nostream', '--lines', '200']; $timeout = 30; break;
+                    case 'composer-install': $args = ['composer', 'install', '--no-interaction', '--no-progress']; $timeout = 600; break;
+                    case 'composer-update': $args = ['composer', 'update', '--no-interaction', '--no-progress']; $timeout = 600; break;
+                    case 'artisan-migrate': $args = ['php', 'artisan', 'migrate', '--force']; break;
+                    case 'artisan-optimize': $args = ['php', 'artisan', 'optimize:clear']; break;
+                    case 'artisan-storage-link': $args = ['php', 'artisan', 'storage:link']; break;
+                    case 'pip-install': $args = ['python3', '-m', 'pip', 'install', '--user', '-r', 'requirements.txt']; $timeout = 600; break;
+                    case 'compose-up': $asRoot = true; $args = ['docker', 'compose', 'up', '-d', '--remove-orphans']; $timeout = 600; break;
+                    case 'compose-down': $asRoot = true; $args = ['docker', 'compose', 'down']; break;
+                    case 'compose-restart': $asRoot = true; $args = ['docker', 'compose', 'restart']; break;
+                    case 'compose-pull': $asRoot = true; $args = ['docker', 'compose', 'pull']; $timeout = 600; break;
+                    case 'compose-ps': $asRoot = true; $args = ['docker', 'compose', 'ps']; $timeout = 30; break;
+                    case 'compose-logs': $asRoot = true; $args = ['docker', 'compose', 'logs', '--tail', '200', '--no-color']; $timeout = 30; break;
+                    default: respond(['ok' => false, 'code' => 'INVALID_ACTION']);
+                }
+                if ($asRoot) {
+                    if (!in_array($user->getRole(), [User::ROLE_ADMIN, User::ROLE_SITE_MANAGER], true)) respond(['ok' => false, 'code' => 'FORBIDDEN']);
+                    if (!$composeFile) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                }
+                $result = runSiteCommand($site, $args, $timeout, $asRoot);
+                respond(['ok' => true, 'data' => [
+                    'run' => [
+                        'command' => $command,
+                        'display' => implode(' ', $args),
+                        'exitCode' => $result['code'],
+                        'timedOut' => $result['timedOut'],
+                        'output' => trim($result['stdout'] . ($result['stderr'] !== '' ? "\n" . $result['stderr'] : '')),
+                    ],
+                ] + actionsSection($site)]);
             } elseif ($section === 'file-manager') {
                 $base = fileManagerBase($site);
                 $relative = trim((string) ($operation['path'] ?? ''), '/');

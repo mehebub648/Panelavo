@@ -4,10 +4,11 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Globe, LoaderCircle, Save, Trash2, CheckCircle2, AlertTriangle, ArrowRightCircle } from "lucide-react";
 import { toast } from "sonner";
-import type { CloudPanelSite, CloudPanelUser } from "@/types/cloudpanel";
+import type { CloudPanelSite, CloudPanelUser, SiteCreationOptions } from "@/types/cloudpanel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select } from "@/components/ui/select";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 
 type DnsStatus = {
@@ -35,6 +36,35 @@ export function SiteSettings({
 
   const [dnsStatus, setDnsStatus] = useState<DnsStatus | null>(null);
   const [busyDns, setBusyDns] = useState(true);
+  const [options, setOptions] = useState<SiteCreationOptions | null>(null);
+
+  const hasRuntime = ["php", "nodejs", "python"].includes(site.type ?? "");
+  // The stored value can be verbose ("Node.js 22"); the dropdown works with
+  // the bare version CloudPanel expects.
+  const currentRuntime = (site.runtimeVersion ?? "").replace(/^[^\d]*/, "");
+  const runtimeVersions =
+    site.type === "php"
+      ? options?.phpVersions
+      : site.type === "nodejs"
+        ? options?.nodeVersions
+        : site.type === "python"
+          ? options?.pythonVersions
+          : undefined;
+  const runtimeChoices = runtimeVersions
+    ? runtimeVersions.includes(currentRuntime) || !currentRuntime
+      ? runtimeVersions
+      : [currentRuntime, ...runtimeVersions]
+    : null;
+
+  useEffect(() => {
+    if (!hasRuntime || !user.canCreateSites) return;
+    fetch("/api/sites/options", { cache: "no-store" })
+      .then((response) => response.json())
+      .then((result) => {
+        if (result.success) setOptions(result.data.options as SiteCreationOptions);
+      })
+      .catch(() => undefined);
+  }, [hasRuntime, user.canCreateSites]);
 
   useEffect(() => {
     function shortcut(event: KeyboardEvent) {
@@ -77,7 +107,7 @@ export function SiteSettings({
       body.runtimeVersion = String(data.get("runtimeVersion") ?? "");
     if (["nodejs", "python"].includes(site.type ?? ""))
       body.appPort = Number(data.get("appPort"));
-    if (site.type === "reverse-proxy")
+    if (site.type === "reverse-proxy" || site.type === "docker")
       body.reverseProxyUrl = String(data.get("reverseProxyUrl") ?? "");
     try {
       const response = await fetch(
@@ -262,16 +292,32 @@ export function SiteSettings({
               className="mt-1.5 transition-all focus:ring-2 focus:ring-panel-500/50 bg-white/70"
             />
           </div>
-          {["php", "nodejs", "python"].includes(site.type ?? "") && (
+          {hasRuntime && (
             <div>
               <Label htmlFor="runtimeVersion" className="font-medium text-slate-700">Runtime version</Label>
-              <Input
-                id="runtimeVersion"
-                name="runtimeVersion"
-                defaultValue={site.runtimeVersion}
-                disabled={!user.canCreateSites}
-                className="mt-1.5 transition-all focus:ring-2 focus:ring-panel-500/50 bg-white/70"
-              />
+              {runtimeChoices ? (
+                <Select
+                  id="runtimeVersion"
+                  name="runtimeVersion"
+                  defaultValue={currentRuntime || runtimeChoices[0]}
+                  disabled={!user.canCreateSites}
+                  className="mt-1.5 bg-white/70"
+                >
+                  {runtimeChoices.map((version) => (
+                    <option key={version} value={version}>
+                      {site.type === "php" ? "PHP" : site.type === "nodejs" ? "Node.js" : "Python"} {version}
+                    </option>
+                  ))}
+                </Select>
+              ) : (
+                <Input
+                  id="runtimeVersion"
+                  name="runtimeVersion"
+                  defaultValue={currentRuntime || site.runtimeVersion}
+                  disabled={!user.canCreateSites}
+                  className="mt-1.5 transition-all focus:ring-2 focus:ring-panel-500/50 bg-white/70"
+                />
+              )}
             </div>
           )}
           {["nodejs", "python"].includes(site.type ?? "") && (
@@ -289,9 +335,11 @@ export function SiteSettings({
               />
             </div>
           )}
-          {site.type === "reverse-proxy" && (
+          {(site.type === "reverse-proxy" || site.type === "docker") && (
             <div>
-              <Label htmlFor="reverseProxyUrl" className="font-medium text-slate-700">Reverse proxy URL</Label>
+              <Label htmlFor="reverseProxyUrl" className="font-medium text-slate-700">
+                {site.type === "docker" ? "Container URL" : "Reverse proxy URL"}
+              </Label>
               <Input
                 id="reverseProxyUrl"
                 name="reverseProxyUrl"
@@ -299,6 +347,11 @@ export function SiteSettings({
                 disabled={!user.canCreateSites}
                 className="mt-1.5 transition-all focus:ring-2 focus:ring-panel-500/50 bg-white/70"
               />
+              {site.type === "docker" && (
+                <p className="mt-1.5 text-xs text-slate-400">
+                  Traffic is proxied to this address — usually the published port of your container.
+                </p>
+              )}
             </div>
           )}
           {error && (
