@@ -59,3 +59,22 @@ export async function assertDomainsPointToServer(
     409,
   );
 }
+
+let wildcardVerified = false;
+let wildcardLastChecked = 0;
+
+export async function isWildcardConfigured(serverIp: string, baseDomain: string): Promise<boolean> {
+  // If verified within the last hour, assume it's still good.
+  if (wildcardVerified && Date.now() - wildcardLastChecked < 3600_000) return true;
+  
+  // Rate limit failed checks to once every 10 seconds.
+  if (Date.now() - wildcardLastChecked < 10_000) return false;
+
+  wildcardLastChecked = Date.now();
+  const probe = systemWildcardProbe(serverIp, baseDomain);
+  const statuses = await resolveDnsStatus([probe], serverIp);
+  const pointed = statuses[0]?.pointed ?? false;
+  
+  if (pointed) wildcardVerified = true;
+  return pointed;
+}

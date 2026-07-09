@@ -93,14 +93,12 @@ if [ -t 0 ]; then
     PANEL_DOMAIN="${PANEL_DOMAIN_INPUT:-$DEFAULT_DOMAIN}"
   fi
   if [ -z "${PANEL_BASE_DOMAIN:-}" ]; then
-    # Websites get system subdomains like site-20001.<ip>.<base domain>. If the
-    # panelavo domain follows the panelavo.<ip>.<base> convention, suggest that base.
     case "${PANEL_DOMAIN}" in
       "panelavo.${SERVER_IP_SLUG}."*) DEFAULT_BASE_DOMAIN="${PANEL_DOMAIN#panelavo.${SERVER_IP_SLUG}.}" ;;
       "panelavo.${SERVER_IP}."*) DEFAULT_BASE_DOMAIN="${PANEL_DOMAIN#panelavo.${SERVER_IP}.}" ;;
-      *) DEFAULT_BASE_DOMAIN="" ;;
+      *) DEFAULT_BASE_DOMAIN="mehebub.com" ;;
     esac
-    read -r -p "${LOG_PREFIX} Base domain for site subdomains${DEFAULT_BASE_DOMAIN:+ [${DEFAULT_BASE_DOMAIN}]}: " PANEL_BASE_DOMAIN_INPUT
+    read -r -p "${LOG_PREFIX} Base domain for site subdomains [${DEFAULT_BASE_DOMAIN}]: " PANEL_BASE_DOMAIN_INPUT
     PANEL_BASE_DOMAIN="${PANEL_BASE_DOMAIN_INPUT:-$DEFAULT_BASE_DOMAIN}"
   fi
   if [ -z "${ADMIN_USER:-}" ]; then
@@ -119,8 +117,38 @@ if [ -t 0 ]; then
   fi
 fi
 PANEL_DOMAIN="${PANEL_DOMAIN:-$DEFAULT_DOMAIN}"
-PANEL_BASE_DOMAIN="${PANEL_BASE_DOMAIN:-}"
-[ -n "${PANEL_BASE_DOMAIN}" ] || warn "No base domain set — configure one on the panel Settings page before creating websites."
+PANEL_BASE_DOMAIN="${PANEL_BASE_DOMAIN:-mehebub.com}"
+
+if [ "${PANEL_BASE_DOMAIN}" = "mehebub.com" ]; then
+  log "Registering IP ${SERVER_IP} with ippointer.mehebub.com ..."
+  curl -sS -X POST https://ippointer.mehebub.com -H "Content-Type: application/json" -d "{\"ip\":\"${SERVER_IP}\"}" || warn "Failed to register IP on ippointer."
+fi
+
+if [ -n "${PANEL_BASE_DOMAIN}" ]; then
+  WILDCARD_RECORD="*.${SERVER_IP}.${PANEL_BASE_DOMAIN}"
+  WILDCARD_PROBE="site-20001.${SERVER_IP}.${PANEL_BASE_DOMAIN}"
+  
+  wildcard_points_here() {
+    local ips
+    ips="$(getent ahostsv4 "${WILDCARD_PROBE}" 2>/dev/null | awk '{print $1}' | sort -u | tr '\n' ' ')"
+    case " ${ips} " in *" ${SERVER_IP} "*) return 0 ;; *) return 1 ;; esac
+  }
+
+  log "Checking if ${WILDCARD_RECORD} points to this server (${SERVER_IP}) ..."
+  # Briefly wait for propagation in case it was just created
+  for _ in 1 2 3 4 5; do
+    if wildcard_points_here; then break; fi
+    sleep 2
+  done
+
+  if wildcard_points_here; then
+    log "Wildcard DNS looks ready: ${WILDCARD_RECORD} -> ${SERVER_IP}"
+  else
+    warn "Wildcard DNS is not pointing here yet."
+    warn "Please ensure you have an A record for ${WILDCARD_RECORD} pointing to ${SERVER_IP} at your DNS provider."
+    warn "Site creation requires this record to be active."
+  fi
+fi
 ADMIN_USER="${ADMIN_USER:-admin}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@${PANEL_DOMAIN}}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 16)!Aa1}"

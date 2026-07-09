@@ -8,7 +8,7 @@ import { fail, ok } from "@/server/http";
 import { audit } from "@/server/security/log";
 import { assertWriteRequest, rateLimit } from "@/server/security/request";
 import { getServerPublicIp } from "@/server/network/server-ip";
-import { getBaseDomain, setPanelARecord } from "@/server/settings/store";
+import { getBaseDomain } from "@/server/settings/store";
 import {
   allocateSiteId,
   getAllSiteMeta,
@@ -80,6 +80,11 @@ export async function POST(request: NextRequest) {
       new Set(input.aliases.filter((alias) => alias !== domain)),
     );
 
+    if (aliases.length > 0) {
+      const { assertDomainsPointToServer } = await import("@/server/network/dns");
+      await assertDomainsPointToServer(aliases, serverIp);
+    }
+
     const shared = { domain, siteUser, siteUserPassword: input.siteUserPassword };
     const createInput: CreateSiteInput =
       input.type === "php"
@@ -117,22 +122,12 @@ export async function POST(request: NextRequest) {
       throw error;
     }
 
-    // Best-effort automation: DNS for the system subdomain and any aliases the
-    // panel's Cloudflare token can manage, then the alias vhost sync. Failures
-    // are reported as warnings instead of rolling back the created site.
-    try {
-      const record = await setPanelARecord({ name: domain, ip: serverIp, replace: true });
-      if (!record)
-        warnings.push(
-          `No Cloudflare token covers ${baseDomain} — create an A record for ${domain} manually.`,
-        );
-    } catch (error) {
-      warnings.push(
-        `DNS record for ${domain} could not be created: ${error instanceof Error ? error.message : "unknown error"}.`,
-      );
-    }
+    // Best-effort automation: DNS for any aliases the panel's Cloudflare token
+    // can manage, then the alias vhost sync. Failures are reported as warnings
+    // instead of rolling back the created site.
     for (const alias of aliases) {
       try {
+        const { setPanelARecord } = await import("@/server/cloudflare/auto");
         const record = await setPanelARecord({ name: alias, ip: serverIp });
         if (!record)
           warnings.push(`Point ${alias} to ${serverIp} at your DNS provider, then issue SSL from the Domains tab.`);

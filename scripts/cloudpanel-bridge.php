@@ -195,14 +195,7 @@ function copyTree(string $source, string $destination): void
     foreach (scandir($source) ?: [] as $name) if ($name !== '.' && $name !== '..') copyTree($source . '/' . $name, $destination . '/' . $name);
 }
 
-function addToZip(ZipArchive $zip, string $path, string $archivePath): void
-{
-    if (is_link($path) || is_file($path)) { $zip->addFile($path, $archivePath); return; }
-    $zip->addEmptyDir($archivePath);
-    foreach (scandir($path) ?: [] as $name) {
-        if ($name !== '.' && $name !== '..') addToZip($zip, $path . '/' . $name, $archivePath . '/' . $name);
-    }
-}
+
 
 function siteKeyPair(Site $site): array
 {
@@ -1008,21 +1001,44 @@ try {
                     if (!preg_match('/^[0-7]{3,4}$/', $mode) || !chmod($path, octdec($mode))) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
                 } elseif ($action === 'compress' && file_exists($path)) {
                     $archiveName = (string) ($operation['archiveName'] ?? ($name . '.zip'));
-                    if (!str_ends_with(strtolower($archiveName), '.zip') || basename($archiveName) !== $archiveName) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                    if (!preg_match('/^.+\.(zip|7z|rar)$/i', $archiveName) || basename($archiveName) !== $archiveName) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
                     $destination = safeFileManagerPath($base, ($relative ? $relative . '/' : '') . $archiveName, false);
                     if (file_exists($destination)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
-                    $zip = new ZipArchive();
-                    if ($zip->open($destination, ZipArchive::CREATE | ZipArchive::EXCL) !== true) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
-                    addToZip($zip, $path, $name); $zip->close();
-                } elseif ($action === 'extract' && is_file($path) && str_ends_with(strtolower($name), '.zip')) {
-                    $zip = new ZipArchive();
-                    if ($zip->open($path) !== true) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
-                    for ($index = 0; $index < $zip->numFiles; $index++) {
-                        $entry = str_replace('\\', '/', (string) $zip->getNameIndex($index));
-                        if ($entry === '' || str_starts_with($entry, '/') || in_array('..', explode('/', $entry), true)) { $zip->close(); respond(['ok' => false, 'code' => 'INVALID_REQUEST']); }
+                    
+                    $ext = strtolower(pathinfo($archiveName, PATHINFO_EXTENSION));
+                    $command = [];
+                    if ($ext === 'zip') {
+                        $command = ['/usr/bin/sudo', '-u', $site->getUser(), '/usr/bin/zip', '-r', '-q', $destination, $name];
+                    } elseif ($ext === '7z') {
+                        $command = ['/usr/bin/sudo', '-u', $site->getUser(), '/usr/bin/7z', 'a', $destination, $name];
+                    } elseif ($ext === 'rar') {
+                        $command = ['/usr/bin/sudo', '-u', $site->getUser(), '/usr/bin/rar', 'a', $destination, $name];
                     }
-                    if (!$zip->extractTo($directory)) { $zip->close(); respond(['ok' => false, 'code' => 'INVALID_REQUEST']); }
-                    $zip->close();
+                    $process = proc_open($command, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, dirname($path), ['HOME' => '/home/' . $site->getUser(), 'PATH' => '/usr/local/bin:/usr/bin:/bin']);
+                    if (!is_resource($process)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                    fclose($pipes[0]); stream_get_contents($pipes[1]); fclose($pipes[1]); stream_get_contents($pipes[2]); fclose($pipes[2]);
+                    if (proc_close($process) !== 0) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+
+                } elseif ($action === 'extract' && is_file($path)) {
+                    $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+                    if (!preg_match('/^(zip|7z|rar)$/i', $ext)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                    
+                    $extractTo = trim((string) ($operation['extractTo'] ?? $relative));
+                    $targetDirectory = safeFileManagerPath($base, $extractTo);
+                    if (!is_dir($targetDirectory)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                    
+                    $command = [];
+                    if ($ext === 'zip') {
+                        $command = ['/usr/bin/sudo', '-u', $site->getUser(), '/usr/bin/unzip', '-q', '-o', $path, '-d', $targetDirectory];
+                    } elseif ($ext === '7z') {
+                        $command = ['/usr/bin/sudo', '-u', $site->getUser(), '/usr/bin/7z', 'x', '-y', '-o' . $targetDirectory, $path];
+                    } elseif ($ext === 'rar') {
+                        $command = ['/usr/bin/sudo', '-u', $site->getUser(), '/usr/bin/unrar', 'x', '-y', $path, $targetDirectory . '/'];
+                    }
+                    $process = proc_open($command, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, dirname($path), ['HOME' => '/home/' . $site->getUser(), 'PATH' => '/usr/local/bin:/usr/bin:/bin']);
+                    if (!is_resource($process)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                    fclose($pipes[0]); stream_get_contents($pipes[1]); fclose($pipes[1]); stream_get_contents($pipes[2]); fclose($pipes[2]);
+                    if (proc_close($process) !== 0) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
                 } elseif ($action === 'delete' && file_exists($path)) deleteTree($path);
                 else respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
                 if (file_exists($path)) { chown($path, $site->getUser()); chgrp($path, $site->getUser()); }

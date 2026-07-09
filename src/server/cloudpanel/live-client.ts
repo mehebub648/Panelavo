@@ -338,7 +338,7 @@ export class LiveCloudPanelClient implements CloudPanelClient {
         section,
         operation: input,
         panelAdmin,
-      }, section === "actions" ? 620_000 : undefined);
+      }, section === "actions" || section === "file-manager" ? 620_000 : undefined);
       if (!result.ok)
         throw new AppError("SITE_UPDATE_FAILED", "CloudPanel could not apply the change.", 502);
       if (result.data !== undefined) return result.data;

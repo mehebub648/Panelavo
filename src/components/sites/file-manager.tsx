@@ -13,6 +13,31 @@ import { Input } from "@/components/ui/input";
 import { CodeEditor, languageForFile } from "@/components/ui/code-editor";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 
+function BusyOverlay({ message }: { message: string }) {
+  const [progress, setProgress] = useState(0);
+  useEffect(() => {
+    setProgress(5);
+    const interval = setInterval(() => {
+      setProgress(p => p >= 95 ? 95 : p + (95 - p) * 0.15);
+    }, 300);
+    return () => clearInterval(interval);
+  }, []);
+  
+  return (
+    <div className="fixed inset-0 z-[90] grid place-items-center bg-white/65 backdrop-blur-[1px]" role="status" aria-live="polite">
+      <div className="flex w-72 flex-col gap-3 rounded-xl border border-slate-200 bg-white px-5 py-4 font-medium text-slate-700 shadow-lg">
+        <div className="flex items-center gap-3">
+          <LoaderCircle className="h-5 w-5 animate-spin text-panel-600" />
+          {message}
+        </div>
+        <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
+          <div className="h-full bg-panel-600 transition-all duration-300 ease-out" style={{ width: `${progress}%` }} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export type FileManagerItem = {
   name: string; type: "file" | "directory"; size: number; modified: string; permissions?: string;
 };
@@ -36,9 +61,9 @@ function formatModified(value: string) {
 
 export function FileManager({ domain, initialData }: { domain: string; initialData: FileManagerData }) {
   const [data, setData] = useState(initialData);
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<string | false>(false);
   const [search, setSearch] = useState("");
-  const [modal, setModal] = useState<null | { kind: "file" | "folder" | "rename" | "edit" | "permissions" | "compress"; name?: string; content?: string; originalContent?: string; value?: string }>(null);
+  const [modal, setModal] = useState<null | { kind: "file" | "folder" | "rename" | "edit" | "permissions" | "compress" | "extract"; name?: string; content?: string; originalContent?: string; value?: string }>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [menu, setMenu] = useState<null | { x: number; y: number; item: FileManagerItem }>(null);
   const [clipboard, setClipboard] = useState<null | { source: string; mode: "copy" | "cut" }>(null);
@@ -53,8 +78,8 @@ export function FileManager({ domain, initialData }: { domain: string; initialDa
     return () => { window.removeEventListener("click", close); window.removeEventListener("blur", close); };
   }, []);
 
-  async function request(input: Record<string, unknown>, success?: string) {
-    setBusy(true);
+  async function request(input: Record<string, unknown>, success?: string, loadingMessage?: string) {
+    setBusy(loadingMessage || "Working…");
     try {
       const response = await fetch(`/api/sites/${encodeURIComponent(domain)}/sections/file-manager`, {
         method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input),
@@ -139,9 +164,7 @@ export function FileManager({ domain, initialData }: { domain: string; initialDa
       </div>
     </div>
     <div className="relative min-h-[420px] overflow-x-auto">
-      {busy && createPortal(<div className="fixed inset-0 z-[90] grid place-items-center bg-white/65 backdrop-blur-[1px]" role="status" aria-live="polite">
-        <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 font-medium text-slate-700 shadow-lg"><LoaderCircle className="h-5 w-5 animate-spin text-panel-600" />Loading files…</div>
-      </div>, document.body)}
+      {busy && createPortal(<BusyOverlay message={busy} />, document.body)}
       <table className="w-full select-none text-left text-sm"><thead className="border-b bg-slate-50/70 text-xs uppercase tracking-wide text-slate-500"><tr><th className="px-5 py-3 font-semibold">Name</th><th className="hidden px-4 py-3 font-semibold sm:table-cell">Size</th><th className="hidden px-4 py-3 font-semibold lg:table-cell">Permissions</th><th className="hidden px-4 py-3 font-semibold md:table-cell">Modified</th></tr></thead>
         <tbody className="divide-y divide-slate-100">{current && <tr className="cursor-default hover:bg-panel-50/40" onDoubleClick={() => browse(crumbs.slice(0, -1).join("/"))}><td className="px-5 py-3" colSpan={4}><div className="flex items-center gap-3 font-medium"><Folder className="h-5 w-5 fill-slate-100 text-slate-400" />..</div></td></tr>}
           {items.map((item) => <tr key={item.name} onClick={() => setSelected(item.name)} onDoubleClick={() => void open(item)} onContextMenu={(event) => showMenu(event, item)} className={`cursor-default ${selected === item.name ? "bg-panel-50 ring-1 ring-inset ring-panel-200" : "hover:bg-panel-50/40"}`}><td className="px-5 py-3"><div className="flex max-w-md items-center gap-3 font-medium text-ink"><span className="rounded-lg bg-slate-100 p-2">{item.type === "directory" ? <Folder className="h-5 w-5 fill-amber-100 text-amber-500" /> : <FileCode2 className="h-5 w-5 text-panel-600" />}</span><span className="truncate">{item.name}</span></div></td><td className="hidden px-4 py-3 text-slate-500 sm:table-cell">{item.type === "directory" ? "—" : formatSize(item.size)}</td><td className="hidden px-4 py-3 font-mono text-xs text-slate-500 lg:table-cell">{item.permissions ?? "—"}</td><td className="hidden px-4 py-3 text-slate-500 md:table-cell">{formatModified(item.modified)}</td></tr>)}
@@ -156,15 +179,19 @@ export function FileManager({ domain, initialData }: { domain: string; initialDa
       <MenuButton icon={<Scissors />} label="Cut" onClick={() => { setClipboard({ source: [current, menu.item.name].filter(Boolean).join("/"), mode: "cut" }); setMenu(null); toast.success("Ready to move"); }} />
       {clipboard && menu.item.type === "directory" && <MenuButton icon={<Copy />} label="Paste into folder" onClick={async () => { await request({ action: "paste", path: [current, menu.item.name].filter(Boolean).join("/"), source: clipboard.source, mode: clipboard.mode }, "Pasted"); if (clipboard.mode === "cut") setClipboard(null); setMenu(null); }} />}
       {menu.item.type === "file" && <MenuButton icon={<Copy />} label="Duplicate" onClick={() => void itemAction("duplicate", menu.item, {}, "Duplicated")} />}
-      <MenuButton icon={<Archive />} label="Compress to ZIP" onClick={() => { setModal({ kind: "compress", name: menu.item.name, value: `${menu.item.name}.zip` }); setMenu(null); }} />
-      {menu.item.type === "file" && menu.item.name.toLowerCase().endsWith(".zip") && <MenuButton icon={<Archive />} label="Extract here" onClick={() => void itemAction("extract", menu.item, {}, "Archive extracted")} />}
+      <MenuButton icon={<Archive />} label="Compress" onClick={() => { setModal({ kind: "compress", name: menu.item.name, value: `${menu.item.name}.zip` }); setMenu(null); }} />
+      {menu.item.type === "file" && /.*\.(zip|7z|rar)$/i.test(menu.item.name) && <MenuButton icon={<Archive />} label="Extract" onClick={() => { setModal({ kind: "extract", name: menu.item.name, value: current || "." }); setMenu(null); }} />}
       <MenuButton icon={<KeyRound />} label="Change permissions" onClick={() => { setModal({ kind: "permissions", name: menu.item.name, value: menu.item.permissions ?? "0755" }); setMenu(null); }} />
       <div className="my-1 border-t" /><MenuButton danger icon={<Trash2 />} label="Delete" onClick={() => { setMenu(null); void remove(menu.item); }} />
     </div>, document.body)}
-    {modal && createPortal(<div className="fixed inset-0 z-[80] flex items-center justify-center overflow-y-auto bg-slate-950/40 p-4 backdrop-blur-sm" onMouseDown={(e) => { if (e.target === e.currentTarget) setModal(null); }}><form className={`my-auto w-full max-h-[calc(100vh-2rem)] overflow-hidden rounded-2xl bg-white p-5 shadow-2xl ${modal.kind === "edit" ? "max-w-6xl" : "max-w-md"}`} onSubmit={async (e) => { e.preventDefault(); const form = new FormData(e.currentTarget); const name = String(form.get("name") ?? modal.name ?? ""); const content = String(form.get("content") ?? ""); let completed = true; if (modal.kind === "rename") await request({ action: "rename", path: current, name: modal.name, newName: name }, "Renamed"); else if (modal.kind === "edit") completed = Boolean(await request({ action: "save-file", path: current, name: modal.name, content }, "File saved")); else if (modal.kind === "permissions") await request({ action: "chmod", path: current, name: modal.name, mode: name }, "Permissions changed"); else if (modal.kind === "compress") await request({ action: "compress", path: current, name: modal.name, archiveName: name }, "Archive created"); else await request({ action: modal.kind === "file" ? "new-file" : "new-folder", path: current, name }, `${modal.kind === "file" ? "File" : "Folder"} created`); if (completed) setModal(null); }}>
-      <div className="mb-4 flex items-center justify-between gap-4"><div><h3 className="text-lg font-bold capitalize">{modal.kind === "edit" ? `Edit ${modal.name}` : `${modal.kind} ${modal.kind === "rename" ? modal.name : ""}`}</h3>{modal.kind === "edit" && <p className={`mt-1 flex items-center gap-2 text-xs font-medium ${modal.content === modal.originalContent ? "text-emerald-600" : "text-amber-600"}`}>{busy ? <><LoaderCircle className="h-3.5 w-3.5 animate-spin" />Saving…</> : modal.content === modal.originalContent ? <><span className="h-2 w-2 rounded-full bg-emerald-500" />Saved</> : <><span className="h-2 w-2 rounded-full bg-amber-500" />Unsaved changes</>}</p>}</div><button type="button" onClick={() => setModal(null)}><X className="h-5 w-5" /></button></div>
-      {modal.kind === "edit" ? <><input type="hidden" name="content" value={modal.content ?? ""} /><CodeEditor value={modal.content ?? ""} onChange={(content) => setModal((currentModal) => currentModal?.kind === "edit" ? { ...currentModal, content } : currentModal)} language={languageForFile(modal.name ?? "")} height="60vh" ariaLabel={`Edit ${modal.name}`} /></> : <><Input name="name" defaultValue={modal.kind === "rename" ? modal.name : modal.value ?? ""} placeholder={modal.kind === "permissions" ? "0755" : modal.kind === "folder" ? "Folder name" : "File name"} pattern={modal.kind === "permissions" ? "[0-7]{3,4}" : undefined} autoFocus required />{modal.kind === "permissions" && <p className="mt-2 text-xs text-slate-500">Use an octal mode such as 0644 for files or 0755 for folders.</p>}</>}
-      <div className="mt-5 flex justify-end gap-2"><Button type="button" variant="outline" onClick={() => setModal(null)}>Cancel</Button><Button disabled={busy || (modal.kind === "edit" && modal.content === modal.originalContent)}>{busy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}{modal.kind === "edit" ? "Save changes" : modal.kind === "rename" ? "Rename" : modal.kind === "permissions" ? "Apply" : modal.kind === "compress" ? "Compress" : "Create"}</Button></div>
+    {modal && createPortal(<div className="fixed inset-0 z-[80] flex items-center justify-center overflow-y-auto bg-slate-950/40 p-4 backdrop-blur-sm" onMouseDown={(e) => { if (e.target === e.currentTarget) setModal(null); }}><form className={`my-auto w-full max-h-[calc(100vh-2rem)] overflow-hidden rounded-2xl bg-white p-5 shadow-2xl ${modal.kind === "edit" ? "max-w-6xl" : "max-w-md"}`} onSubmit={async (e) => { e.preventDefault(); const form = new FormData(e.currentTarget); const name = String(form.get("name") ?? modal.name ?? ""); const content = String(form.get("content") ?? ""); let completed = true; if (modal.kind === "rename") await request({ action: "rename", path: current, name: modal.name, newName: name }, "Renamed"); else if (modal.kind === "edit") completed = Boolean(await request({ action: "save-file", path: current, name: modal.name, content }, "File saved", "Saving file…")); else if (modal.kind === "permissions") await request({ action: "chmod", path: current, name: modal.name, mode: name }, "Permissions changed"); else if (modal.kind === "compress") await request({ action: "compress", path: current, name: modal.name, archiveName: name }, "Archive created", "Compressing archive…"); else if (modal.kind === "extract") await request({ action: "extract", path: current, name: modal.name, extractTo: name }, "Archive extracted", "Extracting files…"); else await request({ action: modal.kind === "file" ? "new-file" : "new-folder", path: current, name }, `${modal.kind === "file" ? "File" : "Folder"} created`); if (completed) setModal(null); }}>
+      <div className="mb-4 flex items-center justify-between gap-4"><div><h3 className="text-lg font-bold capitalize">{modal.kind === "edit" ? `Edit ${modal.name}` : `${modal.kind} ${modal.kind === "rename" || modal.kind === "extract" || modal.kind === "compress" ? modal.name : ""}`}</h3>{modal.kind === "edit" && <p className={`mt-1 flex items-center gap-2 text-xs font-medium ${modal.content === modal.originalContent ? "text-emerald-600" : "text-amber-600"}`}>{busy ? <><LoaderCircle className="h-3.5 w-3.5 animate-spin" />Saving…</> : modal.content === modal.originalContent ? <><span className="h-2 w-2 rounded-full bg-emerald-500" />Saved</> : <><span className="h-2 w-2 rounded-full bg-amber-500" />Unsaved changes</>}</p>}</div><button type="button" onClick={() => setModal(null)}><X className="h-5 w-5" /></button></div>
+      {modal.kind === "edit" ? <><input type="hidden" name="content" value={modal.content ?? ""} /><CodeEditor value={modal.content ?? ""} onChange={(content) => setModal((currentModal) => currentModal?.kind === "edit" ? { ...currentModal, content } : currentModal)} language={languageForFile(modal.name ?? "")} height="60vh" ariaLabel={`Edit ${modal.name}`} /></> : <><Input name="name" defaultValue={modal.kind === "rename" ? modal.name : modal.value ?? ""} placeholder={modal.kind === "permissions" ? "0755" : modal.kind === "folder" ? "Folder name" : modal.kind === "extract" ? "Destination folder (e.g. . or .. or public)" : "File name"} pattern={modal.kind === "permissions" ? "[0-7]{3,4}" : undefined} autoFocus required />
+        {modal.kind === "permissions" && <p className="mt-2 text-xs text-slate-500">Use an octal mode such as 0644 for files or 0755 for folders.</p>}
+        {modal.kind === "compress" && <p className="mt-2 text-xs text-slate-500">Supported formats: .zip, .7z, .rar</p>}
+        {modal.kind === "extract" && <p className="mt-2 text-xs text-slate-500">Enter "." for the current folder, ".." for the parent, or a specific folder path.</p>}
+      </>}
+      <div className="mt-5 flex justify-end gap-2"><Button type="button" variant="outline" onClick={() => setModal(null)}>Cancel</Button><Button disabled={!!busy || (modal.kind === "edit" && modal.content === modal.originalContent)}>{busy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}{modal.kind === "edit" ? "Save changes" : modal.kind === "rename" ? "Rename" : modal.kind === "permissions" ? "Apply" : modal.kind === "compress" ? "Compress" : modal.kind === "extract" ? "Extract" : "Create"}</Button></div>
     </form></div>, document.body)}
     
     {confirmAction && (

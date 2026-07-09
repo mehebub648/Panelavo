@@ -8,7 +8,7 @@ import { fail, ok } from "@/server/http";
 import { audit } from "@/server/security/log";
 import { assertWriteRequest } from "@/server/security/request";
 import { getServerPublicIp } from "@/server/network/server-ip";
-import { setPanelARecord, deletePanelARecord } from "@/server/settings/store";
+import { setPanelARecord, deletePanelARecord } from "@/server/cloudflare/auto";
 import { getSiteMeta, setSiteMeta, type SiteMeta } from "@/server/sites/site-meta";
 import { domainValue } from "@/schemas/sites";
 import { certAlternativeNames } from "@/lib/domains";
@@ -116,6 +116,10 @@ export async function POST(request: NextRequest, context: Context) {
     if (input.action === "add-alias") {
       if (input.domain === decodedDomain)
         throw new AppError("INVALID_REQUEST", "The system domain is already served.", 400);
+      
+      const { assertDomainsPointToServer } = await import("@/server/network/dns");
+      await assertDomainsPointToServer([input.domain], serverIp);
+
       if (!meta.aliases.includes(input.domain)) meta.aliases.push(input.domain);
       // The vhost is the part that must not silently fail; update meta only
       // after the web server accepted the new alias.
