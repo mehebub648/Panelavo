@@ -3,17 +3,13 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  CalendarClock,
   Code2,
   Database,
   Files,
   GitBranch,
   Globe2,
-  KeyRound,
   Settings,
   ShieldCheck,
-  TerminalSquare,
-  UsersRound,
   Zap,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -21,17 +17,19 @@ import { cn } from "@/lib/utils";
 const sections = [
   ["settings", "Settings", Settings],
   ["domains", "Domains", Globe2],
-  ["actions", "Actions", Zap],
+  ["actions", "Operations", Zap],
   ["vhost", "Vhost", Code2],
   ["databases", "Databases", Database],
-  ["certificates", "SSL/TLS", KeyRound],
   ["security", "Security", ShieldCheck],
-  ["users", "SSH/FTP", UsersRound],
   ["file-manager", "Files", Files],
   ["git", "Git", GitBranch],
-  ["cron-jobs", "Cron jobs", CalendarClock],
-  ["logs", "Logs", TerminalSquare],
 ] as const;
+
+const sectionGroups: Record<string, readonly string[]> = {
+  domains: ["domains", "certificates"],
+  actions: ["actions", "cron-jobs", "logs"],
+  security: ["security", "users"],
+};
 
 export function SiteSectionNav({ domain }: { domain: string }) {
   const pathname = usePathname();
@@ -41,7 +39,9 @@ export function SiteSectionNav({ domain }: { domain: string }) {
       <nav className="flex min-w-max gap-2 p-1 rounded-2xl bg-slate-100/50 backdrop-blur-sm border border-slate-200/60" aria-label={`${domain} tools`}>
         {sections.map(([path, label, Icon]) => {
           const href = `${base}/${path}`;
-          const active = pathname === href;
+          const active = (sectionGroups[path] ?? [path]).some(
+            (section) => pathname === `${base}/${section}`,
+          );
           return (
             <Link
               key={path}

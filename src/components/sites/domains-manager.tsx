@@ -395,7 +395,7 @@ export function DomainsManager({
             </Button>
           )}
           <p className="text-xs text-slate-400">
-            Existing certificates are listed under the SSL/TLS tab. Issuing can take up
+            Installed certificates are shown below on this page. Issuing can take up
             to a minute.
           </p>
         </div>
