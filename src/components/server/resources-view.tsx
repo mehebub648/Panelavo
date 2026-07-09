@@ -48,6 +48,37 @@ function Gauge({ percent, className }: { percent: number; className?: string }) 
   );
 }
 
+const round1 = (n: number) => Math.round(n * 10) / 10;
+
+// One table cell showing a raw value plus the two shares the user asked for:
+// the slice of what's currently used, and the slice of total capacity. The
+// gauge fills against capacity (share of total), so a full bar means the box
+// is actually saturated — not merely that this row leads the others.
+function UsageCell({
+  primary,
+  shareOfUsed,
+  shareOfAvail,
+}: {
+  primary: string;
+  shareOfUsed: number;
+  shareOfAvail: number;
+}) {
+  return (
+    <div className="w-32 space-y-1.5 sm:w-40">
+      <p className="text-xs font-medium text-slate-600">{primary}</p>
+      <Gauge percent={shareOfAvail} />
+      <div className="flex items-center justify-between text-[10px] leading-none text-slate-400">
+        <span>
+          <b className="font-semibold text-slate-600">{round1(shareOfUsed)}%</b> of used
+        </span>
+        <span>
+          <b className="font-semibold text-slate-600">{round1(shareOfAvail)}%</b> of total
+        </span>
+      </div>
+    </div>
+  );
+}
+
 // Lightweight SVG area chart over the sampled history (values are 0–100%).
 function HistoryChart({
   points,
@@ -193,6 +224,17 @@ export function ResourcesView({
   const maxCpu = Math.max(1, ...data.users.map((entry) => entry.cpuPercent));
   const maxMemory = Math.max(1, ...data.users.map((entry) => entry.memoryBytes));
   const maxDisk = Math.max(1, ...data.users.map((entry) => entry.diskBytes ?? 0));
+
+  // Denominators for the two per-row shares. "Used" totals are the sum across
+  // listed users (so a row's share is its slice of the attributed pie);
+  // "capacity" totals are the machine's full headroom for that resource. CPU is
+  // in ps per-core units, so full capacity is cores × 100.
+  const cpuUsedTotal = Math.max(1, data.users.reduce((sum, e) => sum + e.cpuPercent, 0));
+  const cpuCapacity = Math.max(1, data.cpu.cores * 100);
+  const memUsedTotal = Math.max(1, data.users.reduce((sum, e) => sum + e.memoryBytes, 0));
+  const memCapacity = Math.max(1, data.memory.totalBytes);
+  const diskUsedTotal = Math.max(1, data.users.reduce((sum, e) => sum + (e.diskBytes ?? 0), 0));
+  const diskCapacity = Math.max(1, data.disk.totalBytes);
 
   const metricConfig: Record<Metric, {
     title: string;
@@ -365,6 +407,13 @@ export function ResourcesView({
                 <th className="px-4 py-3 font-semibold">Disk</th>
                 <th className="px-4 py-3 text-right font-semibold">Processes</th>
               </tr>
+              <tr>
+                <th className="px-5 pb-2 font-normal normal-case tracking-normal text-[10px] text-slate-400"></th>
+                <th className="px-4 pb-2 font-normal normal-case tracking-normal text-[10px] text-slate-400" colSpan={3}>
+                  bar &amp; right value = share of total capacity · left value = share of currently-used
+                </th>
+                <th className="px-4 pb-2"></th>
+              </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {data.users.map((entry) => (
@@ -386,25 +435,26 @@ export function ResourcesView({
                     </div>
                   </td>
                   <td className="px-4 py-3">
-                    <div className="w-28 sm:w-36">
-                      <p className="mb-1 text-xs font-medium text-slate-600">{entry.cpuPercent}%</p>
-                      <Gauge percent={(entry.cpuPercent / maxCpu) * 100} />
-                    </div>
+                    <UsageCell
+                      primary={`${entry.cpuPercent}%`}
+                      shareOfUsed={(entry.cpuPercent / cpuUsedTotal) * 100}
+                      shareOfAvail={(entry.cpuPercent / cpuCapacity) * 100}
+                    />
                   </td>
                   <td className="px-4 py-3">
-                    <div className="w-28 sm:w-36">
-                      <p className="mb-1 text-xs font-medium text-slate-600">
-                        {formatBytes(entry.memoryBytes)} · {entry.memoryPercent}%
-                      </p>
-                      <Gauge percent={(entry.memoryBytes / maxMemory) * 100} />
-                    </div>
+                    <UsageCell
+                      primary={formatBytes(entry.memoryBytes)}
+                      shareOfUsed={(entry.memoryBytes / memUsedTotal) * 100}
+                      shareOfAvail={(entry.memoryBytes / memCapacity) * 100}
+                    />
                   </td>
                   <td className="px-4 py-3">
                     {entry.diskBytes !== undefined ? (
-                      <div className="w-28 sm:w-36">
-                        <p className="mb-1 text-xs font-medium text-slate-600">{formatBytes(entry.diskBytes)}</p>
-                        <Gauge percent={(entry.diskBytes / maxDisk) * 100} />
-                      </div>
+                      <UsageCell
+                        primary={formatBytes(entry.diskBytes)}
+                        shareOfUsed={(entry.diskBytes / diskUsedTotal) * 100}
+                        shareOfAvail={(entry.diskBytes / diskCapacity) * 100}
+                      />
                     ) : (
                       <span className="text-xs text-slate-400">—</span>
                     )}
