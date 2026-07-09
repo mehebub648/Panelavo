@@ -34,7 +34,7 @@ export function AppShell({
   const nav = [
     { href: "/sites", label: "Websites", icon: Globe2 },
     { href: "/domains", label: "Domains", icon: Cloud },
-    ...(user.role === "admin" ? [{ href: "/users", label: "Users", icon: Users }] : []),
+    ...(user.panelRole === "super-admin" ? [{ href: "/users", label: "Users", icon: Users }] : []),
   ];
   async function logout() {
     setLoggingOut(true);
@@ -85,7 +85,7 @@ export function AppShell({
               {user.displayName || user.username}
             </p>
             <p className="truncate text-xs capitalize text-slate-400">
-              {user.role?.replace("-", " ") || "CloudPanel user"}
+              {user.panelRole?.replace("-", " ") || "CloudPanel user"}
             </p>
           </div>
         </div>
@@ -140,7 +140,7 @@ export function AppShell({
                     {user.username}
                   </span>
                   <span className="block text-xs capitalize text-slate-400">
-                    {user.role?.replace("-", " ") || "CloudPanel user"}
+                    {user.panelRole?.replace("-", " ") || "CloudPanel user"}
                   </span>
                 </span>
                 <span className="grid h-9 w-9 place-items-center rounded-full bg-panel-100 text-panel-700">

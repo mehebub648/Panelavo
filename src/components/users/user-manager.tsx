@@ -67,7 +67,7 @@ export function UserManager({
         <div>
           <h2 className="text-3xl font-bold tracking-tight text-slate-900">User Management</h2>
           <p className="mt-2 text-slate-500 max-w-2xl leading-relaxed">
-            Manage CloudPanel administrators, site managers, and end users. Assign specific site access and control permissions.
+            Manage super admins, managers, admins, and users. Admins create their own websites and only see sites assigned to them or created by them.
           </p>
         </div>
         <Button onClick={() => setOpen(true)} className="shadow-sm">
@@ -124,18 +124,20 @@ export function UserManager({
                   <td className="px-6 py-4">
                     <div className="flex flex-col gap-1.5 items-start">
                       <span className={`inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium ${
-                        user.role === 'admin' ? 'bg-purple-50 text-purple-700 ring-1 ring-purple-600/20' : 
-                        user.role === 'site-manager' ? 'bg-blue-50 text-blue-700 ring-1 ring-blue-600/20' : 
+                        user.panelRole === 'super-admin' ? 'bg-purple-50 text-purple-700 ring-1 ring-purple-600/20' : 
+                        user.panelRole === 'manager' ? 'bg-blue-50 text-blue-700 ring-1 ring-blue-600/20' : 
+                        user.panelRole === 'admin' ? 'bg-amber-50 text-amber-700 ring-1 ring-amber-600/20' : 
                         'bg-slate-100 text-slate-700 ring-1 ring-slate-500/20'
                       }`}>
-                        {user.role === 'admin' && <ShieldAlert className="h-3 w-3" />}
-                        {user.role === 'site-manager' && <Shield className="h-3 w-3" />}
-                        {user.role === 'user' && <UserRound className="h-3 w-3" />}
-                        <span className="capitalize">{(user.role || '').replace('-', ' ')}</span>
+                        {user.panelRole === 'super-admin' && <ShieldAlert className="h-3 w-3" />}
+                        {user.panelRole === 'manager' && <Shield className="h-3 w-3" />}
+                        {user.panelRole === 'admin' && <Shield className="h-3 w-3" />}
+                        {user.panelRole === 'user' && <UserRound className="h-3 w-3" />}
+                        <span className="capitalize">{(user.panelRole || '').replace('-', ' ')}</span>
                       </span>
                       <span className="text-xs text-slate-500 flex items-center gap-1">
                         <Globe className="h-3 w-3" />
-                        {user.sites?.length ? `${user.sites.length} assigned sites` : user.role === "admin" ? "All sites (Admin)" : "No sites assigned"}
+                        {user.panelRole === 'super-admin' || user.panelRole === 'manager' ? 'All sites' : user.sites?.length ? `${user.sites.length} assigned sites${user.panelRole === 'admin' ? ' + own' : ''}` : user.panelRole === 'admin' ? 'Own created sites' : 'No sites assigned'}
                       </span>
                     </div>
                   </td>
@@ -265,7 +267,7 @@ function AddUserForm({ close, act, sites, busy }: { close: () => void, act: (bod
         className="flex flex-col h-full"
         onSubmit={async (event) => {
           event.preventDefault();
-          if (role !== "admin" && selectedSites.length === 0) {
+          if (role === "user" && selectedSites.length === 0) {
             toast.error("Please assign at least one site to this user.");
             return;
           }
@@ -361,13 +363,14 @@ function AddUserForm({ close, act, sites, busy }: { close: () => void, act: (bod
                    onChange={e => setRole(e.target.value)}
                    className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-panel-500/50"
                  >
-                   <option value="user">User (Restricted)</option>
-                   <option value="site-manager">Site Manager (Can manage assigned sites)</option>
-                   <option value="admin">Administrator (Full Access)</option>
+                   <option value="user">User (Assigned sites only)</option>
+                   <option value="admin">Admin (Creates own websites + assigned sites)</option>
+                   <option value="manager">Manager (All sites, no user management)</option>
+                   <option value="super-admin">Super Admin (Full access)</option>
                  </select>
                </div>
                
-               {role !== 'admin' && (
+               {(role === 'user' || role === 'admin') && (
                  <div className="space-y-3 pt-2 border-t border-slate-100">
                    <Label>Assigned Sites</Label>
                    <div className="max-h-48 overflow-y-auto rounded-lg border bg-slate-50 p-2 space-y-1">
@@ -406,7 +409,7 @@ function AddUserForm({ close, act, sites, busy }: { close: () => void, act: (bod
 }
 
 function EditUserForm({ user, close, act, sites, busy }: { user: CloudPanelUser, close: () => void, act: (body: Record<string, unknown>) => Promise<boolean>, sites: string[], busy: boolean }) {
-  const [role, setRole] = useState(user.role || "user");
+  const [role, setRole] = useState<string>(user.panelRole || "user");
   const [selectedSites, setSelectedSites] = useState<string[]>(user.sites || []);
   const [status, setStatus] = useState(user.status !== false);
 
@@ -440,16 +443,17 @@ function EditUserForm({ user, close, act, sites, busy }: { user: CloudPanelUser,
                  <select
                    name="role"
                    value={role}
-                   onChange={e => setRole(e.target.value as "admin" | "site-manager" | "user")}
+                   onChange={e => setRole(e.target.value)}
                    className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-panel-500/50"
                  >
-                   <option value="user">User (Restricted)</option>
-                   <option value="site-manager">Site Manager (Can manage assigned sites)</option>
-                   <option value="admin">Administrator (Full Access)</option>
+                   <option value="user">User (Assigned sites only)</option>
+                   <option value="admin">Admin (Creates own websites + assigned sites)</option>
+                   <option value="manager">Manager (All sites, no user management)</option>
+                   <option value="super-admin">Super Admin (Full access)</option>
                  </select>
                </div>
                
-               {role !== 'admin' && (
+               {(role === 'user' || role === 'admin') && (
                  <div className="space-y-3 pt-2 border-t border-slate-100">
                    <Label>Assigned Sites</Label>
                    <div className="max-h-48 overflow-y-auto rounded-lg border bg-slate-50 p-2 space-y-1">

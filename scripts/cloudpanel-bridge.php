@@ -304,6 +304,16 @@ try {
             if ($role === User::ROLE_USER) foreach (($operation['sites'] ?? []) as $domain) { $assigned = $manager->getRepository(Site::class)->findOneBy(['domainName' => (string) $domain]); if ($assigned) $target->addSite($assigned); }
             $manager->flush(); respond(['ok' => true]);
 
+        case 'assign-site':
+            // Attach a site to the caller's collection. Used by the panel
+            // right after a panel-admin (CloudPanel role "user" with the local
+            // overlay) creates a site, so their restricted site list includes
+            // everything they created. The Node caller enforces who may ask.
+            $site = $manager->getRepository(Site::class)->findOneBy(['domainName' => (string) ($input['domain'] ?? '')]);
+            if (!$site instanceof Site) respond(['ok' => false, 'code' => 'SITE_NOT_FOUND']);
+            if (!$user->hasSite($site)) { $user->addSite($site); $manager->flush(); }
+            respond(['ok' => true]);
+
         case 'site':
             respond(['ok' => true, 'site' => publicSite(authorizedSite(
                 $manager,
@@ -358,7 +368,9 @@ try {
 
         case 'manage-section':
             $site = authorizedSite($manager, $user, (string) ($input['domain'] ?? ''));
-            if (!in_array($user->getRole(), [User::ROLE_ADMIN, User::ROLE_SITE_MANAGER], true)) respond(['ok' => false, 'code' => 'FORBIDDEN']);
+            // panelAdmin is set by the trusted Node caller for overlay admins;
+            // authorizedSite() above already proved the site is assigned to them.
+            if (!in_array($user->getRole(), [User::ROLE_ADMIN, User::ROLE_SITE_MANAGER], true) && empty($input['panelAdmin'])) respond(['ok' => false, 'code' => 'FORBIDDEN']);
             $section = (string) ($input['section'] ?? '');
             $operation = $input['operation'] ?? [];
             $action = (string) ($operation['action'] ?? '');
@@ -585,7 +597,7 @@ try {
 
         case 'update-site':
             $site = authorizedSite($manager, $user, (string) ($input['domain'] ?? ''));
-            if (!in_array($user->getRole(), [User::ROLE_ADMIN, User::ROLE_SITE_MANAGER], true)) {
+            if (!in_array($user->getRole(), [User::ROLE_ADMIN, User::ROLE_SITE_MANAGER], true) && empty($input['panelAdmin'])) {
                 respond(['ok' => false, 'code' => 'FORBIDDEN']);
             }
             [$model, $updater] = siteModel($site);

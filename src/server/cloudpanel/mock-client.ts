@@ -8,6 +8,7 @@ import type {
   CreateSiteInput,
   SiteCreationOptions,
 } from "@/types/cloudpanel";
+import { isPanelAdmin } from "@/server/auth/panel-roles";
 import { AppError } from "./errors";
 
 type MockAccount = {
@@ -197,9 +198,17 @@ export class MockCloudPanelClient implements CloudPanelClient {
   async listUsers(session: CloudPanelSession) { const account = accountFor(session); if (account.user.role !== "admin") throw new AppError("FORBIDDEN", "Administrators only.", 403); return Object.values(accounts).map((entry) => entry.user); }
   async manageUser(session: CloudPanelSession) { const account = accountFor(session); if (account.user.role !== "admin") throw new AppError("FORBIDDEN", "Administrators only.", 403); }
 
+  // Mirrors the live client: overlay panel-admins may create sites and manage
+  // the ones assigned to them, even though their raw CloudPanel role is "user".
+  private async canWrite(account: MockAccount, siteId?: string) {
+    if (account.user.canCreateSites) return true;
+    if (!(await isPanelAdmin(account.user.username))) return false;
+    return siteId === undefined || account.siteIds.includes(siteId);
+  }
+
   async getSiteCreationOptions(session: CloudPanelSession) {
     const account = accountFor(session);
-    if (!account.user.canCreateSites)
+    if (!(await this.canWrite(account)))
       throw new AppError(
         "FORBIDDEN",
         "You do not have permission to create websites.",
@@ -210,7 +219,7 @@ export class MockCloudPanelClient implements CloudPanelClient {
 
   async createSite(session: CloudPanelSession, input: CreateSiteInput) {
     const account = accountFor(session);
-    if (!account.user.canCreateSites)
+    if (!(await this.canWrite(account)))
       throw new AppError(
         "FORBIDDEN",
         "You do not have permission to create websites.",
@@ -274,21 +283,28 @@ export class MockCloudPanelClient implements CloudPanelClient {
     input: Partial<CloudPanelSite>,
   ) {
     const account = accountFor(session);
-    if (!account.user.canCreateSites)
-      throw new AppError("FORBIDDEN", "You do not have permission to modify websites.", 403);
     const site = sites.find((item) => item.domain === domain);
     if (!site) throw new AppError("SITE_NOT_FOUND", "Website not found.", 404);
+    if (!(await this.canWrite(account, site.id)))
+      throw new AppError("FORBIDDEN", "You do not have permission to modify websites.", 403);
     Object.assign(site, input);
     return structuredClone(site);
   }
 
   async deleteSite(session: CloudPanelSession, domain: string) {
     const account = accountFor(session);
-    if (!account.user.canCreateSites)
-      throw new AppError("FORBIDDEN", "You do not have permission to delete websites.", 403);
     const index = sites.findIndex((item) => item.domain === domain);
     if (index < 0) throw new AppError("SITE_NOT_FOUND", "Website not found.", 404);
+    if (!(await this.canWrite(account, sites[index].id)))
+      throw new AppError("FORBIDDEN", "You do not have permission to delete websites.", 403);
     sites.splice(index, 1);
+  }
+
+  async assignSite(session: CloudPanelSession, domain: string) {
+    const account = accountFor(session);
+    const site = sites.find((item) => item.domain === domain);
+    if (!site) throw new AppError("SITE_NOT_FOUND", "Website not found.", 404);
+    if (!account.siteIds.includes(site.id)) account.siteIds.push(site.id);
   }
 
   async getSiteSection(session: CloudPanelSession, domain: string, section: string) {

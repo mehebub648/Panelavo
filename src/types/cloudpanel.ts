@@ -1,10 +1,20 @@
 export type SiteType = "php" | "nodejs" | "static" | "python" | "reverse-proxy";
 
+// Panel-level role model. CloudPanel natively stores admin / site-manager /
+// user; the panel "admin" tier is a CloudPanel "user" elevated by a local
+// overlay (see src/server/auth/panel-roles.ts):
+//   super-admin — CloudPanel admin: everything, including user management.
+//   manager     — CloudPanel site-manager: everything except user management.
+//   admin       — creates sites; sees only assigned sites + sites they created.
+//   user        — assigned sites only, read/manage nothing beyond them.
+export type PanelRole = "super-admin" | "manager" | "admin" | "user";
+
 export interface CloudPanelUser {
   id: string;
   username: string;
   displayName?: string;
   role?: "admin" | "site-manager" | "user" | "unknown";
+  panelRole?: PanelRole;
   canCreateSites: boolean;
   email?: string;
   status?: boolean;
@@ -122,6 +132,7 @@ export interface CloudPanelClient {
     },
   ): Promise<CloudPanelSite>;
   deleteSite(session: CloudPanelSession, domain: string): Promise<void>;
+  assignSite(session: CloudPanelSession, domain: string): Promise<void>;
   getSiteSection(
     session: CloudPanelSession,
     domain: string,

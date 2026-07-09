@@ -48,6 +48,10 @@ export async function POST(request: NextRequest) {
       session.record.cloudPanel,
       input,
     );
+    // Panel admins are restricted CloudPanel users: assign the new site to
+    // them immediately so it appears in (and stays limited to) their own list.
+    if (session.user.panelRole === "admin")
+      await getCloudPanelClient().assignSite(session.record.cloudPanel, input.domain);
     if (raw.dns?.credentialId && raw.dns?.zoneId) {
       try {
         const forwarded = request.headers.get("x-forwarded-host")?.split(":")[0];

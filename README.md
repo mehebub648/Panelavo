@@ -2,6 +2,29 @@
 
 A small, modern Next.js frontend for an existing CloudPanel installation. CloudPanel remains the source of truth for accounts, passwords, MFA, roles, site assignments, runtime support, and server-side permissions. This application creates no user database and communicates locally through CloudPanel's CLI and a read-only Symfony CLI bridge. It never accesses or scrapes the CloudPanel portal.
 
+## One-command server setup
+
+On a fresh Debian 11/12/13 or Ubuntu 22.04/24.04/26.04 server, clone (or upload) this repository and run:
+
+```bash
+sudo bash setup.sh
+```
+
+The script detects the OS, installs CloudPanel if it is missing, creates the initial CloudPanel admin, installs nvm + the latest Node.js for root, installs a shared PM2 into `/usr/local` usable by every user, creates a CloudPanel Node.js site owned by the system user `clp-pro`, deploys and builds this app inside it, and hosts it with PM2 (with systemd persistence across reboots). When it finishes it prints the panel URL (`http://<server-ip>:10443`) and the generated credentials. Overrides: `PANEL_DOMAIN`, `ADMIN_USER`, `ADMIN_PASSWORD`, `ADMIN_EMAIL`, `DB_ENGINE` — e.g. `sudo PANEL_DOMAIN=panel.example.com bash setup.sh`. The script is idempotent: re-running skips everything that already exists.
+
+## Roles
+
+The panel exposes four roles on top of CloudPanel's three native ones:
+
+| Panel role    | Backed by CloudPanel | Capabilities                                                                                   |
+| ------------- | -------------------- | ---------------------------------------------------------------------------------------------- |
+| Super Admin   | `admin`              | Everything, including user management.                                                          |
+| Manager       | `site-manager`       | All sites and site creation — everything except user management.                               |
+| Admin         | `user` + local flag  | Creates websites; sees and manages only sites assigned to them plus sites they created.        |
+| User          | `user`               | Sees only assigned sites; cannot create or manage anything else.                                |
+
+The "Admin" tier is stored as a CloudPanel `user` plus an entry in `.data/panel-roles.json`, so CloudPanel itself keeps restricting their site list. Sites an Admin creates are automatically assigned to them; other users' sites stay invisible to them. Role changes and deletes made from the Users page keep the overlay in sync.
+
 ## Stack
 
 Next.js App Router, strict TypeScript, Tailwind CSS, shadcn-style local UI components, Lucide, Zod, pnpm, ESLint, Prettier, and Vitest.

@@ -10,6 +10,7 @@ import type {
   CreateSiteInput,
   SiteCreationOptions,
 } from "@/types/cloudpanel";
+import { isPanelAdmin } from "@/server/auth/panel-roles";
 import { AppError } from "./errors";
 
 type BridgeResult = {
@@ -87,6 +88,22 @@ export class LiveCloudPanelClient implements CloudPanelClient {
     return session.usernameHint;
   }
 
+  // Site-write access: CloudPanel admins and site managers everywhere; panel
+  // admins (overlay) only on sites assigned to them (which includes every site
+  // they created, because creation auto-assigns).
+  private async requireSiteAccess(session: CloudPanelSession, domain?: string) {
+    const user = await this.getCurrentUser(session);
+    if (user.canCreateSites) return { user, panelAdmin: false };
+    if (!(await isPanelAdmin(user.username)))
+      throw new AppError("FORBIDDEN", "You do not have permission to modify websites.", 403);
+    if (domain !== undefined) {
+      const sites = await this.listSites(session);
+      if (!sites.some((site) => site.domain === domain))
+        throw new AppError("SITE_NOT_FOUND", "Website not found.", 404);
+    }
+    return { user, panelAdmin: true };
+  }
+
   async login(input: { username: string; password: string }): Promise<CloudPanelLoginResult> {
     const result = await this.bridge({ action: "login", ...input });
     if (!result.ok || !result.user)
@@ -136,7 +153,25 @@ export class LiveCloudPanelClient implements CloudPanelClient {
   async manageUser(session: CloudPanelSession, input: Record<string, unknown>) {
     const current = await this.getCurrentUser(session); if (current.role !== "admin") throw new AppError("FORBIDDEN", "Users are available to administrators only.", 403);
     const action = String(input.action ?? "");
-    if (action === "add") await this.run("/usr/bin/clpctl", ["user:add", `--userName=${String(input.username)}`, `--email=${String(input.email)}`, `--firstName=${String(input.firstName)}`, `--lastName=${String(input.lastName)}`, `--password=${String(input.password)}`, `--role=${String(input.role)}`, `--sites=${String(input.sites ?? "")}`, "--timezone=UTC", "--status=1"], { timeout: 90_000 });
+    if (action === "add") {
+      let sites = String(input.sites ?? "");
+      // clpctl refuses `--role=user --sites=` (a restricted user must be
+      // created with at least one site), but panel admins legitimately start
+      // with none — they create their own. Borrow an existing site for the
+      // add call, then clear the assignment through the bridge.
+      const placeholder = String(input.role) === "user" && sites === "";
+      if (placeholder) {
+        const all = await this.listSites(session);
+        if (!all.length)
+          throw new AppError("INVALID_REQUEST", "Create at least one website before adding restricted users.", 400);
+        sites = all[0].domain;
+      }
+      await this.run("/usr/bin/clpctl", ["user:add", `--userName=${String(input.username)}`, `--email=${String(input.email)}`, `--firstName=${String(input.firstName)}`, `--lastName=${String(input.lastName)}`, `--password=${String(input.password)}`, `--role=${String(input.role)}`, `--sites=${sites}`, "--timezone=UTC", "--status=1"], { timeout: 90_000 });
+      if (placeholder) {
+        const cleared = await this.bridge({ action: "manage-user", username: this.sessionUser(session), operation: { username: input.username, role: "user", status: true, sites: [] } });
+        if (!cleared.ok) throw new AppError("INVALID_REQUEST", "User was created but the placeholder site could not be removed.", 400);
+      }
+    }
     else if (action === "update") { const result = await this.bridge({ action: "manage-user", username: this.sessionUser(session), operation: input }); if (!result.ok) throw new AppError("INVALID_REQUEST", "User settings could not be updated.", 400); }
     else if (action === "reset-password") await this.run("/usr/bin/clpctl", ["user:reset:password", `--userName=${String(input.username)}`, `--password=${String(input.password)}`]);
     else if (action === "delete") await this.run("/usr/bin/clpctl", ["user:delete", `--userName=${String(input.username)}`, "--force"]);
@@ -145,7 +180,7 @@ export class LiveCloudPanelClient implements CloudPanelClient {
 
   async getSiteCreationOptions(session: CloudPanelSession): Promise<SiteCreationOptions> {
     const user = await this.getCurrentUser(session);
-    if (!user.canCreateSites)
+    if (!user.canCreateSites && !(await isPanelAdmin(user.username)))
       throw new AppError("FORBIDDEN", "You do not have permission to create websites.", 403);
     let phpVersions: string[] = [];
     try {
@@ -212,14 +247,13 @@ export class LiveCloudPanelClient implements CloudPanelClient {
       reverseProxyUrl?: string;
     },
   ) {
-    const user = await this.getCurrentUser(session);
-    if (!user.canCreateSites)
-      throw new AppError("FORBIDDEN", "You do not have permission to modify websites.", 403);
+    const { panelAdmin } = await this.requireSiteAccess(session, domain);
     const result = await this.bridge({
       action: "update-site",
       username: this.sessionUser(session),
       domain,
       settings: input,
+      panelAdmin,
     });
     if (!result.ok || !result.site)
       throw new AppError("SITE_UPDATE_FAILED", "CloudPanel could not update the website.", 502);
@@ -227,12 +261,20 @@ export class LiveCloudPanelClient implements CloudPanelClient {
   }
 
   async deleteSite(session: CloudPanelSession, domain: string) {
-    const user = await this.getCurrentUser(session);
-    if (!user.canCreateSites)
-      throw new AppError("FORBIDDEN", "You do not have permission to delete websites.", 403);
+    await this.requireSiteAccess(session, domain);
     await this.run("/usr/bin/clpctl", ["site:delete", `--domainName=${domain}`, "--force"], {
       timeout: 90_000,
     });
+  }
+
+  async assignSite(session: CloudPanelSession, domain: string) {
+    const result = await this.bridge({
+      action: "assign-site",
+      username: this.sessionUser(session),
+      domain,
+    });
+    if (!result.ok)
+      throw new AppError("SITE_UPDATE_FAILED", "The website could not be assigned to your account.", 502);
   }
 
   async getSiteSection(session: CloudPanelSession, domain: string, section: string) {
@@ -253,10 +295,17 @@ export class LiveCloudPanelClient implements CloudPanelClient {
     section: string,
     input: Record<string, unknown>,
   ) {
-    const user = await this.getCurrentUser(session);
-    if (!user.canCreateSites)
-      throw new AppError("FORBIDDEN", "You do not have permission to modify websites.", 403);
+    const { panelAdmin } = await this.requireSiteAccess(session, domain);
     const action = String(input.action ?? "");
+    if (panelAdmin && section === "databases" && action === "delete") {
+      // clpctl db:delete is addressed by database name alone, so confirm the
+      // database actually belongs to this (already authorized) site first.
+      const data = (await this.getSiteSection(session, domain, "databases")) as {
+        items?: { name?: string }[];
+      };
+      if (!data?.items?.some((item) => item.name === String(input.name)))
+        throw new AppError("FORBIDDEN", "That database does not belong to this website.", 403);
+    }
     if (section === "databases" && action === "add") {
       await this.run("/usr/bin/clpctl", [
         "db:add",
@@ -278,6 +327,7 @@ export class LiveCloudPanelClient implements CloudPanelClient {
         domain,
         section,
         operation: input,
+        panelAdmin,
       });
       if (!result.ok)
         throw new AppError("SITE_UPDATE_FAILED", "CloudPanel could not apply the change.", 502);
