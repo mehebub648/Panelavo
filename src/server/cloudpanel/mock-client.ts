@@ -413,6 +413,24 @@ export class MockCloudPanelClient implements CloudPanelClient {
     };
   }
 
+  async updateProfile(session: CloudPanelSession, input: Record<string, unknown>) {
+    const account = accountFor(session);
+    if (input.action === "change-password") {
+      if (String(input.currentPassword) !== account.password)
+        throw new AppError("INVALID_CREDENTIALS", "Your current password is incorrect.", 401);
+      account.password = String(input.newPassword);
+      return account.user;
+    }
+    const [firstName, lastName] = [input.firstName, input.lastName].map((value) =>
+      value === undefined ? undefined : String(value),
+    );
+    if (firstName !== undefined || lastName !== undefined)
+      account.user.displayName = `${firstName ?? ""} ${lastName ?? ""}`.trim() || account.user.displayName;
+    if (input.email !== undefined) account.user.email = String(input.email);
+    if (input.timezone !== undefined) account.user.timezone = String(input.timezone);
+    return account.user;
+  }
+
   async logout() {}
 }
 

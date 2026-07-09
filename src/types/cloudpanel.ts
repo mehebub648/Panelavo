@@ -19,10 +19,13 @@ export interface CloudPanelUser {
   id: string;
   username: string;
   displayName?: string;
+  firstName?: string;
+  lastName?: string;
   role?: "admin" | "site-manager" | "user" | "unknown";
   panelRole?: PanelRole;
   canCreateSites: boolean;
   email?: string;
+  timezone?: string | null;
   status?: boolean;
   sites?: string[];
 }
@@ -129,6 +132,23 @@ export interface ServerResources {
   users: ServerResourceUser[];
 }
 
+export interface ResourceHistoryPoint {
+  t: number;
+  cpu: number;
+  mem: number;
+  disk: number;
+}
+
+export type UpdateProfileInput =
+  | {
+      action: "update";
+      firstName?: string;
+      lastName?: string;
+      email?: string;
+      timezone?: string;
+    }
+  | { action: "change-password"; currentPassword: string; newPassword: string };
+
 export interface ServerInfo {
   hostname: string;
   os: string;
@@ -196,5 +216,9 @@ export interface CloudPanelClient {
   ): Promise<unknown>;
   getServerResources(session: CloudPanelSession): Promise<ServerResources>;
   getServerInfo(session: CloudPanelSession): Promise<ServerInfo>;
+  updateProfile(
+    session: CloudPanelSession,
+    input: UpdateProfileInput,
+  ): Promise<CloudPanelUser>;
   logout(session: CloudPanelSession): Promise<void>;
 }

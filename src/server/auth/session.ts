@@ -75,6 +75,12 @@ const developmentSecret = randomBytes(32).toString("hex");
 function maxAge() {
   return Number(process.env.SESSION_MAX_AGE_SECONDS ?? 3600);
 }
+// Shared with other signing needs (e.g. invite tokens) so everything keys off
+// the one configured SESSION_SECRET.
+export function appSecret() {
+  return sessionSecret();
+}
+
 function sessionSecret() {
   const value = process.env.SESSION_SECRET;
   if (value && value.length >= 32) return value;

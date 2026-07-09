@@ -51,9 +51,13 @@ function publicUser(User $user): array
         'id' => (string) $user->getId(),
         'username' => $user->getUserName(),
         'displayName' => trim($user->getFirstName() . ' ' . $user->getLastName()),
+        'firstName' => $user->getFirstName(),
+        'lastName' => $user->getLastName(),
         'role' => $role,
         'canCreateSites' => in_array($role, ['admin', 'site-manager'], true),
         'email' => $user->getEmail(),
+        // Timezone is a Doctrine relation, not a string.
+        'timezone' => method_exists($user, 'getTimezone') ? $user->getTimezone()?->getName() : null,
         'status' => (bool) $user->getStatus(),
         'sites' => array_map(fn($site) => $site->getDomainName(), $user->getSites()->toArray()),
         'mfa' => (bool) $user->hasMfaEnabled(),
@@ -260,6 +264,29 @@ function runSiteCommand(Site $site, array $args, int $timeout = 300, bool $asRoo
     ];
 }
 
+function detectFramework(string $root): string
+{
+    $package = is_file($root . '/package.json') ? json_decode((string) file_get_contents($root . '/package.json'), true) : null;
+    $deps = is_array($package) ? array_merge($package['dependencies'] ?? [], $package['devDependencies'] ?? []) : [];
+    foreach ([
+        'next' => 'Next.js', 'nuxt' => 'Nuxt', '@remix-run/node' => 'Remix', 'astro' => 'Astro',
+        '@sveltejs/kit' => 'SvelteKit', 'vite' => 'Vite', '@angular/core' => 'Angular',
+        'react-scripts' => 'Create React App', 'express' => 'Express', 'fastify' => 'Fastify',
+        '@nestjs/core' => 'NestJS', 'koa' => 'Koa',
+    ] as $dep => $label) {
+        if (isset($deps[$dep])) return $label;
+    }
+    $composer = is_file($root . '/composer.json') ? json_decode((string) file_get_contents($root . '/composer.json'), true) : null;
+    $phpDeps = is_array($composer) ? ($composer['require'] ?? []) : [];
+    if (isset($phpDeps['laravel/framework'])) return 'Laravel';
+    if (isset($phpDeps['symfony/framework-bundle'])) return 'Symfony';
+    if (is_file($root . '/wp-config.php') || is_file($root . '/wp-load.php')) return 'WordPress';
+    if (is_file($root . '/artisan')) return 'Laravel';
+    if (is_file($root . '/manage.py')) return 'Django';
+    if (is_file($root . '/docker-compose.yml') || is_file($root . '/compose.yaml')) return 'Docker Compose';
+    return '';
+}
+
 function actionsSection(Site $site): array
 {
     $root = siteRootPath($site);
@@ -289,6 +316,7 @@ function actionsSection(Site $site): array
     return [
         'type' => $site->getType(),
         'path' => $root,
+        'framework' => detectFramework($root),
         'processName' => preg_replace('/[^a-zA-Z0-9._-]/', '-', $site->getDomainName()),
         'hasPackageJson' => is_file($root . '/package.json'),
         'scripts' => $scripts,
@@ -567,6 +595,27 @@ try {
             if (!$user->hasSite($site)) { $user->addSite($site); $manager->flush(); }
             respond(['ok' => true]);
 
+        case 'update-profile':
+            // Self-service profile update: the caller edits their own record.
+            $profile = $input['profile'] ?? [];
+            if (array_key_exists('firstName', $profile)) $user->setFirstName(trim(substr((string) $profile['firstName'], 0, 64)));
+            if (array_key_exists('lastName', $profile)) $user->setLastName(trim(substr((string) $profile['lastName'], 0, 64)));
+            if (array_key_exists('email', $profile)) {
+                $email = trim((string) $profile['email']);
+                if (!filter_var($email, FILTER_VALIDATE_EMAIL)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                $user->setEmail($email);
+            }
+            if (array_key_exists('timezone', $profile) && method_exists($user, 'setTimezone')) {
+                // setTimezone() takes a Timezone entity; resolve by name from
+                // CloudPanel's timezone table.
+                $timezone = $manager->getRepository(\App\Entity\Timezone::class)
+                    ->findOneBy(['name' => (string) $profile['timezone']]);
+                if (!$timezone) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                $user->setTimezone($timezone);
+            }
+            $manager->flush();
+            respond(['ok' => true, 'user' => publicUser($user)]);
+
         case 'server-resources':
             if (!in_array($user->getRole(), [User::ROLE_ADMIN, User::ROLE_SITE_MANAGER], true)) respond(['ok' => false, 'code' => 'FORBIDDEN']);
             respond(['ok' => true, 'data' => serverResources($manager)]);
@@ -810,6 +859,13 @@ try {
                     case 'pm2-restart': $args = ['pm2', 'restart', 'all', '--update-env']; break;
                     case 'pm2-stop': $args = ['pm2', 'stop', 'all']; break;
                     case 'pm2-delete': $args = ['pm2', 'delete', 'all']; break;
+                    case 'pm2-restart-one':
+                    case 'pm2-stop-one':
+                    case 'pm2-delete-one':
+                        $target = (string) ($operation['name'] ?? '');
+                        if (!preg_match('/^[A-Za-z0-9._-]{1,100}$/', $target)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                        $args = ['pm2', substr($command, 4, -4), $target];
+                        break;
                     case 'pm2-save': $args = ['pm2', 'save', '--force']; break;
                     case 'pm2-status': $args = ['pm2', 'status']; break;
                     case 'pm2-logs': $args = ['pm2', 'logs', '--nostream', '--lines', '200']; $timeout = 30; break;

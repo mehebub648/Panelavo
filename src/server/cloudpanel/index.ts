@@ -62,6 +62,8 @@ function withPanelRoles(inner: CloudPanelClient): CloudPanelClient {
     manageSiteSection: inner.manageSiteSection.bind(inner),
     getServerResources: inner.getServerResources.bind(inner),
     getServerInfo: inner.getServerInfo.bind(inner),
+    updateProfile: async (session, input) =>
+      decorateUser(await inner.updateProfile(session, input)),
     logout: inner.logout.bind(inner),
   };
 }

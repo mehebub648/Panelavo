@@ -24,6 +24,7 @@ type Pm2Process = { name: string; status: string; cpu: number; memory: number; r
 export type ActionsData = {
   type?: string;
   path?: string;
+  framework?: string;
   processName?: string;
   hasPackageJson?: boolean;
   scripts?: { name: string; command: string }[];
@@ -66,28 +67,56 @@ export function ActionsManager({
   const [data, setData] = useState(initialData);
   const [running, setRunning] = useState<string | null>(null);
   const [output, setOutput] = useState<ActionsData["run"] | null>(null);
+  const [pipeline, setPipeline] = useState<{ steps: string[]; current: number } | null>(null);
 
-  async function run(command: string, script?: string) {
+  async function execute(command: string, extra: Record<string, unknown> = {}): Promise<ActionsData["run"] | null> {
+    const response = await fetch(`/api/sites/${encodeURIComponent(domain)}/sections/actions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "run", command, ...extra }),
+    });
+    const result = await response.json();
+    if (!result.success) throw new Error(result.error?.message || "The command could not be executed.");
+    const next = result.data as ActionsData;
+    setData(next);
+    setOutput(next.run ?? null);
+    return next.run ?? null;
+  }
+
+  async function run(command: string, extra: Record<string, unknown> = {}, key?: string) {
     if (running) return;
-    setRunning(script ? `${command}:${script}` : command);
+    setRunning(key ?? command);
     try {
-      const response = await fetch(`/api/sites/${encodeURIComponent(domain)}/sections/actions`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action: "run", command, ...(script ? { script } : {}) }),
-      });
-      const result = await response.json();
-      if (!result.success) throw new Error(result.error?.message || "The command could not be executed.");
-      const next = result.data as ActionsData;
-      setData(next);
-      setOutput(next.run ?? null);
-      if (next.run?.timedOut) toast.error("The command was stopped after its time limit.");
-      else if (next.run && next.run.exitCode !== 0) toast.error(`Command finished with exit code ${next.run.exitCode}.`);
+      const outcome = await execute(command, extra);
+      if (outcome?.timedOut) toast.error("The command was stopped after its time limit.");
+      else if (outcome && outcome.exitCode !== 0) toast.error(`Command finished with exit code ${outcome.exitCode}.`);
       else toast.success("Command completed");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "The command could not be executed.");
     } finally {
       setRunning(null);
+    }
+  }
+
+  // Runs a sequence of commands, stopping at the first failure — the closest
+  // thing to a one-click deploy without a shell.
+  async function runPipeline(name: string, steps: { command: string; extra?: Record<string, unknown>; label: string }[]) {
+    if (running) return;
+    setRunning(name);
+    setPipeline({ steps: steps.map((step) => step.label), current: 0 });
+    try {
+      for (let index = 0; index < steps.length; index++) {
+        setPipeline({ steps: steps.map((step) => step.label), current: index });
+        const outcome = await execute(steps[index].command, steps[index].extra ?? {});
+        if (!outcome || outcome.exitCode !== 0 || outcome.timedOut)
+          throw new Error(`"${steps[index].label}" failed — the pipeline was stopped.`);
+      }
+      toast.success(`${name} finished successfully`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "The pipeline failed.");
+    } finally {
+      setRunning(null);
+      setPipeline(null);
     }
   }
 
@@ -118,7 +147,7 @@ export function ActionsManager({
       title: "Build & scripts",
       description: "Scripts detected in package.json run as the site user.",
       show: Boolean(data.scripts?.length),
-      actions: (data.scripts ?? []).slice(0, 12).map((script) => ({
+      actions: (data.scripts ?? []).map((script) => ({
         id: "npm-run",
         script: script.name,
         label: `npm run ${script.name}`,
@@ -171,8 +200,71 @@ export function ActionsManager({
   ];
   const visible = groups.filter((group) => group.show && group.actions.length);
 
+  const hasBuildScript = data.scripts?.some((script) => script.name === "build");
+  const deploySteps = data.hasPackageJson
+    ? [
+        { command: "npm-install", label: "npm install" },
+        ...(hasBuildScript ? [{ command: "npm-run", extra: { script: "build" }, label: "npm run build" }] : []),
+        ...(data.pm2Available ? [
+          { command: "pm2-start", label: "Start / reload with PM2" },
+          { command: "pm2-save", label: "Save process list" },
+        ] : []),
+      ]
+    : [];
+
   return (
     <div className="space-y-5">
+      {(data.framework || data.type) && (
+        <div className="flex flex-wrap items-center gap-2">
+          {data.framework && (
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-panel-50 px-3 py-1 text-xs font-bold text-panel-700 ring-1 ring-inset ring-panel-600/20">
+              <Zap className="h-3 w-3" /> {data.framework} detected
+            </span>
+          )}
+          <span className="inline-flex items-center rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
+            {data.type}
+          </span>
+          <code className="truncate rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-500">{data.path}</code>
+        </div>
+      )}
+
+      {deploySteps.length >= 2 && (
+        <section className="rounded-2xl border border-panel-200/60 bg-gradient-to-br from-panel-50/60 to-white/60 p-5 shadow-card backdrop-blur-md sm:p-6">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <h3 className="font-bold text-ink">One-click deploy</h3>
+              <p className="mt-0.5 text-sm text-slate-500">
+                {deploySteps.map((step) => step.label).join(" → ")}
+              </p>
+            </div>
+            <Button disabled={Boolean(running)} onClick={() => void runPipeline("Deploy", deploySteps)}>
+              {running === "Deploy" ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+              Deploy now
+            </Button>
+          </div>
+          {pipeline && (
+            <ol className="mt-4 flex flex-wrap gap-2">
+              {pipeline.steps.map((step, index) => (
+                <li
+                  key={step}
+                  className={cn(
+                    "flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold",
+                    index < pipeline.current
+                      ? "bg-emerald-50 text-emerald-700"
+                      : index === pipeline.current
+                        ? "bg-panel-100 text-panel-700"
+                        : "bg-slate-100 text-slate-400",
+                  )}
+                >
+                  {index === pipeline.current && <LoaderCircle className="h-3 w-3 animate-spin" />}
+                  {step}
+                </li>
+              ))}
+            </ol>
+          )}
+        </section>
+      )}
+
       {data.pm2?.length ? (
         <section className="overflow-hidden rounded-2xl border border-white/60 bg-white/70 shadow-card backdrop-blur-md">
           <div className="border-b border-slate-200/70 px-5 py-4">
@@ -188,6 +280,7 @@ export function ActionsManager({
                   <th className="px-4 py-3 font-semibold">CPU</th>
                   <th className="px-4 py-3 font-semibold">Memory</th>
                   <th className="px-4 py-3 font-semibold">Restarts</th>
+                  <th className="px-4 py-3 text-right font-semibold">Controls</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -205,6 +298,37 @@ export function ActionsManager({
                     <td className="px-4 py-3 text-slate-500">{proc.cpu}%</td>
                     <td className="px-4 py-3 text-slate-500">{formatBytes(proc.memory)}</td>
                     <td className="px-4 py-3 text-slate-500">{proc.restarts}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex justify-end gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          disabled={Boolean(running)}
+                          aria-label={`Restart ${proc.name}`}
+                          onClick={() => void run("pm2-restart-one", { name: proc.name }, `restart:${proc.name}`)}
+                        >
+                          {running === `restart:${proc.name}` ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          disabled={Boolean(running)}
+                          aria-label={`Stop ${proc.name}`}
+                          onClick={() => void run("pm2-stop-one", { name: proc.name }, `stop:${proc.name}`)}
+                        >
+                          {running === `stop:${proc.name}` ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Square className="h-4 w-4" />}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          disabled={Boolean(running)}
+                          aria-label={`Delete ${proc.name}`}
+                          onClick={() => void run("pm2-delete-one", { name: proc.name }, `delete:${proc.name}`)}
+                        >
+                          {running === `delete:${proc.name}` ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4 text-red-500" />}
+                        </Button>
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -228,7 +352,7 @@ export function ActionsManager({
                   key={key}
                   type="button"
                   disabled={Boolean(running)}
-                  onClick={() => void run(action.id, action.script)}
+                  onClick={() => void run(action.id, action.script ? { script: action.script } : {}, key)}
                   className={cn(
                     "group flex items-start gap-3 rounded-xl border p-4 text-left transition disabled:opacity-60",
                     action.danger

@@ -1,7 +1,8 @@
 "use client";
 import { useState, useMemo, useEffect } from "react";
 import { createPortal } from "react-dom";
-import { KeyRound, Pencil, Plus, Trash2, UserRound, X, Shield, Globe, ShieldAlert, CheckCircle2, Lock, Shuffle, Search, MoreVertical, Copy } from "lucide-react";
+import { KeyRound, LinkIcon, Pencil, Plus, Trash2, UserRound, X, Shield, Globe, ShieldAlert, CheckCircle2, Clock, Lock, Shuffle, Search, Copy } from "lucide-react";
+import { timezoneChoices } from "@/lib/timezones";
 import { toast } from "sonner";
 import type { CloudPanelUser } from "@/types/cloudpanel";
 import { Button } from "@/components/ui/button";
@@ -76,22 +77,106 @@ export function UserManager({
       </div>
 
       <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-        <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-           <div className="relative w-full max-w-sm">
+        <div className="p-4 border-b border-slate-100 flex flex-col gap-2 sm:flex-row sm:justify-between sm:items-center bg-slate-50/50">
+           <div className="relative w-full sm:max-w-sm">
              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
-             <Input 
-               placeholder="Search users by name, email, or role..." 
+             <Input
+               placeholder="Search users by name, email, or role..."
                className="pl-9 h-10 bg-white"
                value={searchQuery}
                onChange={e => setSearchQuery(e.target.value)}
              />
            </div>
-           <div className="text-sm font-medium text-slate-500">
+           <div className="text-sm font-medium text-slate-500 shrink-0">
              {filteredUsers.length} {filteredUsers.length === 1 ? 'user' : 'users'} total
            </div>
         </div>
-        
-        <div className="overflow-x-auto">
+
+        {/* Mobile: card list with always-visible controls. */}
+        <div className="divide-y divide-slate-100 md:hidden">
+          {filteredUsers.map((user) => (
+            <article key={user.id} className="p-4">
+              <div className="flex items-start gap-3">
+                <div className="h-10 w-10 shrink-0 rounded-full bg-panel-100 text-panel-700 flex items-center justify-center font-bold uppercase ring-1 ring-panel-500/20">
+                  {user.displayName?.[0] || user.username[0]}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate font-semibold text-slate-900">{user.displayName || user.username}</p>
+                  <p className="truncate text-xs text-slate-500">{user.username}{user.email ? ` · ${user.email}` : ""}</p>
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                    <span className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-medium capitalize ${
+                      user.panelRole === 'super-admin' ? 'bg-purple-50 text-purple-700 ring-1 ring-purple-600/20' :
+                      user.panelRole === 'manager' ? 'bg-blue-50 text-blue-700 ring-1 ring-blue-600/20' :
+                      user.panelRole === 'admin' ? 'bg-amber-50 text-amber-700 ring-1 ring-amber-600/20' :
+                      'bg-slate-100 text-slate-700 ring-1 ring-slate-500/20'
+                    }`}>
+                      {(user.panelRole || '').replace('-', ' ')}
+                    </span>
+                    {user.status === false ? (
+                      <span className="rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-medium text-red-600 ring-1 ring-red-600/20">Disabled</span>
+                    ) : (
+                      <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-600 ring-1 ring-emerald-600/20">Active</span>
+                    )}
+                    <span className="text-[11px] text-slate-400">
+                      {user.panelRole === 'super-admin' || user.panelRole === 'manager'
+                        ? 'All sites'
+                        : user.sites?.length
+                          ? `${user.sites.length} site${user.sites.length === 1 ? '' : 's'}`
+                          : user.panelRole === 'admin' ? 'Own sites' : 'No sites'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <div className="mt-3 grid grid-cols-3 gap-2">
+                <Button variant="outline" size="sm" onClick={() => setEditing(user)}>
+                  <Pencil className="h-3.5 w-3.5" /> Edit
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setPromptAction({
+                      title: "Reset Password",
+                      message: `Enter new password for ${user.username}`,
+                      type: "password",
+                      onConfirm: (password) => {
+                        setPromptAction(null);
+                        void act({ action: "reset-password", username: user.username, password });
+                      }
+                    });
+                  }}
+                >
+                  <KeyRound className="h-3.5 w-3.5" /> Password
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-red-600 hover:bg-red-50"
+                  onClick={() => {
+                    setConfirmAction({
+                      title: "Delete User",
+                      message: `Are you sure you want to delete ${user.username}? This cannot be undone.`,
+                      onConfirm: () => {
+                        setConfirmAction(null);
+                        void act({ action: "delete", username: user.username });
+                      }
+                    });
+                  }}
+                >
+                  <Trash2 className="h-3.5 w-3.5" /> Delete
+                </Button>
+              </div>
+            </article>
+          ))}
+          {filteredUsers.length === 0 && (
+            <div className="px-6 py-12 text-center text-slate-500">
+              <UserRound className="mx-auto h-8 w-8 mb-3 opacity-20" />
+              <p>No users found matching your search</p>
+            </div>
+          )}
+        </div>
+
+        <div className="hidden overflow-x-auto md:block">
           <table className="w-full text-sm">
             <thead className="bg-slate-50 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 border-b border-slate-200">
               <tr>
@@ -245,6 +330,10 @@ function AddUserForm({ close, act, sites, busy }: { close: () => void, act: (bod
   const [password, setPassword] = useState("");
   const [role, setRole] = useState("user");
   const [selectedSites, setSelectedSites] = useState<string[]>([]);
+  const [mode, setMode] = useState<"password" | "invite">("password");
+  const [inviteBusy, setInviteBusy] = useState(false);
+  const [inviteUrl, setInviteUrl] = useState("");
+  const zones = useMemo(() => timezoneChoices(), []);
 
   // Auto-generate username from name if enabled
   useEffect(() => {
@@ -261,6 +350,40 @@ function AddUserForm({ close, act, sites, busy }: { close: () => void, act: (bod
     setPassword(pass);
   }
 
+  if (inviteUrl)
+    return (
+      <UserModal title="Invitation created" close={close}>
+        <div className="flex-1 overflow-y-auto px-6 py-8 md:px-8 bg-slate-50/50">
+          <div className="mx-auto max-w-lg text-center">
+            <span className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-emerald-50 text-emerald-600">
+              <LinkIcon className="h-6 w-6" />
+            </span>
+            <h4 className="mt-5 text-xl font-bold text-slate-900">Share this link with {firstName || username}</h4>
+            <p className="mt-2 text-sm leading-6 text-slate-500">
+              The account will be created with the access you defined once they open the link
+              and choose their own password. Nothing is stored until then.
+            </p>
+            <div className="mt-6 flex items-center gap-2 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+              <code className="min-w-0 flex-1 truncate text-left text-xs text-slate-600">{inviteUrl}</code>
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => { navigator.clipboard.writeText(inviteUrl); toast.success("Invite link copied"); }}
+              >
+                <Copy className="h-3.5 w-3.5" /> Copy
+              </Button>
+            </div>
+            <p className="mt-4 flex items-center justify-center gap-1.5 text-xs text-slate-400">
+              <Clock className="h-3.5 w-3.5" /> The link expires in 24 hours and can only be used once.
+            </p>
+          </div>
+        </div>
+        <div className="p-4 md:px-8 border-t bg-white flex justify-end shrink-0">
+          <Button type="button" onClick={close}>Done</Button>
+        </div>
+      </UserModal>
+    );
+
   return (
     <UserModal title="Create New User" close={close}>
       <form
@@ -274,6 +397,23 @@ function AddUserForm({ close, act, sites, busy }: { close: () => void, act: (bod
           const form = new FormData(event.currentTarget);
           const body = Object.fromEntries(form);
           body.sites = selectedSites.join(",");
+          if (mode === "invite") {
+            setInviteBusy(true);
+            try {
+              const result = await fetch("/api/users", {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ action: "invite", ...body }),
+              }).then((r) => r.json());
+              if (!result.success) throw new Error(result.error?.message || "The invitation could not be created.");
+              setInviteUrl(result.data.inviteUrl as string);
+            } catch (error) {
+              toast.error(error instanceof Error ? error.message : "The invitation could not be created.");
+            } finally {
+              setInviteBusy(false);
+            }
+            return;
+          }
           if (await act({ action: "add", ...body })) close();
         }}
       >
@@ -299,6 +439,18 @@ function AddUserForm({ close, act, sites, busy }: { close: () => void, act: (bod
                  <Label>Email Address</Label>
                  <Input name="email" type="email" required placeholder="jane.doe@example.com" />
                </div>
+               <div className="space-y-1">
+                 <Label>Timezone</Label>
+                 <select
+                   name="timezone"
+                   defaultValue="UTC"
+                   className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-panel-500/50"
+                 >
+                   {zones.map((zone) => (
+                     <option key={zone} value={zone}>{zone}</option>
+                   ))}
+                 </select>
+               </div>
              </div>
            </div>
 
@@ -321,30 +473,53 @@ function AddUserForm({ close, act, sites, busy }: { close: () => void, act: (bod
                    title="Only letters, numbers, dots, hyphens, and underscores are allowed"
                  />
                </div>
-               <div className="space-y-1">
-                 <Label>Password</Label>
-                 <div className="flex gap-2">
-                   <div className="relative flex-1">
-                     <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
-                     <Input 
-                       name="password" 
-                       type="text" 
-                       value={password} 
-                       onChange={e => setPassword(e.target.value)} 
-                       required 
-                       minLength={12} 
-                       placeholder="Secure password (min 12 chars)" 
-                       className="pl-9 font-mono text-sm"
-                     />
-                   </div>
-                   <Button type="button" variant="outline" onClick={generatePassword} title="Generate random password" aria-label="Generate password" className="shrink-0 px-3">
-                     <Shuffle className="h-4 w-4" />
-                   </Button>
-                   <Button type="button" variant="outline" onClick={() => { navigator.clipboard.writeText(password); toast.success("Password copied"); }} disabled={!password} title="Copy password" aria-label="Copy password" className="shrink-0 px-3">
-                     <Copy className="h-4 w-4" />
-                   </Button>
+               <div className="space-y-2">
+                 <Label>How should the password be set?</Label>
+                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                   <button
+                     type="button"
+                     onClick={() => setMode("password")}
+                     className={`rounded-lg border p-3 text-left text-sm transition ${mode === "password" ? "border-panel-400 bg-panel-50" : "border-slate-200 hover:border-slate-300"}`}
+                   >
+                     <span className="flex items-center gap-2 font-semibold text-slate-800"><Lock className="h-4 w-4 text-panel-600" /> Set password now</span>
+                     <span className="mt-1 block text-xs text-slate-500">You choose the password and share it yourself.</span>
+                   </button>
+                   <button
+                     type="button"
+                     onClick={() => setMode("invite")}
+                     className={`rounded-lg border p-3 text-left text-sm transition ${mode === "invite" ? "border-panel-400 bg-panel-50" : "border-slate-200 hover:border-slate-300"}`}
+                   >
+                     <span className="flex items-center gap-2 font-semibold text-slate-800"><LinkIcon className="h-4 w-4 text-panel-600" /> Send an invite link</span>
+                     <span className="mt-1 block text-xs text-slate-500">The user sets their own password via a 24-hour link.</span>
+                   </button>
                  </div>
                </div>
+               {mode === "password" && (
+                 <div className="space-y-1">
+                   <Label>Password</Label>
+                   <div className="flex gap-2">
+                     <div className="relative flex-1">
+                       <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
+                       <Input
+                         name="password"
+                         type="text"
+                         value={password}
+                         onChange={e => setPassword(e.target.value)}
+                         required
+                         minLength={12}
+                         placeholder="Secure password (min 12 chars)"
+                         className="pl-9 font-mono text-sm"
+                       />
+                     </div>
+                     <Button type="button" variant="outline" onClick={generatePassword} title="Generate random password" aria-label="Generate password" className="shrink-0 px-3">
+                       <Shuffle className="h-4 w-4" />
+                     </Button>
+                     <Button type="button" variant="outline" onClick={() => { navigator.clipboard.writeText(password); toast.success("Password copied"); }} disabled={!password} title="Copy password" aria-label="Copy password" className="shrink-0 px-3">
+                       <Copy className="h-4 w-4" />
+                     </Button>
+                   </div>
+                 </div>
+               )}
              </div>
            </div>
 
@@ -401,7 +576,9 @@ function AddUserForm({ close, act, sites, busy }: { close: () => void, act: (bod
 
         <div className="p-4 md:px-8 border-t bg-white flex justify-end gap-3 shrink-0">
           <Button type="button" variant="ghost" onClick={close}>Cancel</Button>
-          <Button type="submit" disabled={busy}>Create User</Button>
+          <Button type="submit" disabled={busy || inviteBusy}>
+            {mode === "invite" ? (inviteBusy ? "Creating link…" : "Create invite link") : "Create User"}
+          </Button>
         </div>
       </form>
     </UserModal>

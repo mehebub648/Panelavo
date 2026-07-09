@@ -30,7 +30,9 @@ export function AppShell({
           ? "Server resources"
           : pathname === "/information"
             ? "Server information"
-            : pathname === "/sites/new"
+            : pathname === "/profile"
+              ? "My profile"
+              : pathname === "/sites/new"
       ? "Add website"
       : pathname.split("/").length > 3
         ? "Website workspace"
@@ -165,6 +167,13 @@ export function AppShell({
                   Signed in as {user.username}
                 </DropdownMenu.Label>
                 <DropdownMenu.Separator className="my-1 h-px bg-slate-100" />
+                <DropdownMenu.Item
+                  onSelect={() => router.push("/profile")}
+                  className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-slate-700 outline-none hover:bg-slate-50"
+                >
+                  <UserRound className="h-4 w-4" />
+                  My profile
+                </DropdownMenu.Item>
                 <DropdownMenu.Item
                   onSelect={logout}
                   disabled={loggingOut}

@@ -11,6 +11,7 @@ import type {
   ServerInfo,
   ServerResources,
   SiteCreationOptions,
+  UpdateProfileInput,
 } from "@/types/cloudpanel";
 import { isPanelAdmin } from "@/server/auth/panel-roles";
 import { AppError } from "./errors";
@@ -172,7 +173,8 @@ export class LiveCloudPanelClient implements CloudPanelClient {
           throw new AppError("INVALID_REQUEST", "Create at least one website before adding restricted users.", 400);
         sites = all[0].domain;
       }
-      await this.run("/usr/bin/clpctl", ["user:add", `--userName=${String(input.username)}`, `--email=${String(input.email)}`, `--firstName=${String(input.firstName)}`, `--lastName=${String(input.lastName)}`, `--password=${String(input.password)}`, `--role=${String(input.role)}`, `--sites=${sites}`, "--timezone=UTC", "--status=1"], { timeout: 90_000 });
+      const timezone = /^[A-Za-z0-9_+\-/]{1,64}$/.test(String(input.timezone ?? "")) ? String(input.timezone) : "UTC";
+      await this.run("/usr/bin/clpctl", ["user:add", `--userName=${String(input.username)}`, `--email=${String(input.email)}`, `--firstName=${String(input.firstName)}`, `--lastName=${String(input.lastName)}`, `--password=${String(input.password)}`, `--role=${String(input.role)}`, `--sites=${sites}`, `--timezone=${timezone}`, "--status=1"], { timeout: 90_000 });
       if (placeholder) {
         const cleared = await this.bridge({ action: "manage-user", username: this.sessionUser(session), operation: { username: input.username, role: "user", status: true, sites: [] } });
         if (!cleared.ok) throw new AppError("INVALID_REQUEST", "User was created but the placeholder site could not be removed.", 400);
@@ -361,6 +363,32 @@ export class LiveCloudPanelClient implements CloudPanelClient {
     if (!result.ok || !result.data)
       throw new AppError("FORBIDDEN", "Server information is available to administrators only.", 403);
     return result.data as ServerInfo;
+  }
+
+  async updateProfile(session: CloudPanelSession, input: UpdateProfileInput) {
+    const username = this.sessionUser(session);
+    if (input.action === "change-password") {
+      // Verify the current password before resetting; clpctl itself has no
+      // notion of "change with verification".
+      const check = await this.bridge({ action: "login", username, password: input.currentPassword });
+      if (!check.ok)
+        throw new AppError("INVALID_CREDENTIALS", "Your current password is incorrect.", 401);
+      await this.run("/usr/bin/clpctl", ["user:reset:password", `--userName=${username}`, `--password=${input.newPassword}`]);
+      return this.getCurrentUser(session);
+    }
+    const result = await this.bridge({
+      action: "update-profile",
+      username,
+      profile: {
+        firstName: input.firstName,
+        lastName: input.lastName,
+        email: input.email,
+        timezone: input.timezone,
+      },
+    });
+    if (!result.ok || !result.user)
+      throw new AppError("INVALID_REQUEST", "Your profile could not be updated.", 400);
+    return result.user;
   }
 
   async logout() {}

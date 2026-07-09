@@ -4,13 +4,19 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
+  Braces,
   Check,
   Clipboard,
+  Code2,
+  Container,
   ExternalLink,
+  FileCode2,
   Globe2,
+  Network,
   Plus,
   RefreshCw,
   Search,
+  Server,
   ServerCrash,
   Settings,
 } from "lucide-react";
@@ -33,6 +39,23 @@ const typeLabels: Record<SiteType, string> = {
   "reverse-proxy": "Reverse proxy",
   docker: "Docker",
 };
+const typeVisuals: Record<SiteType, { icon: typeof Globe2; color: string }> = {
+  php: { icon: Code2, color: "bg-violet-50 text-violet-600" },
+  nodejs: { icon: Braces, color: "bg-emerald-50 text-emerald-600" },
+  static: { icon: FileCode2, color: "bg-amber-50 text-amber-600" },
+  python: { icon: Server, color: "bg-blue-50 text-blue-600" },
+  "reverse-proxy": { icon: Network, color: "bg-rose-50 text-rose-600" },
+  docker: { icon: Container, color: "bg-sky-50 text-sky-600" },
+};
+function SiteIcon({ type, className }: { type?: SiteType; className?: string }) {
+  const visual = (type && typeVisuals[type]) || { icon: Globe2, color: "bg-panel-50 text-panel-600" };
+  const Icon = visual.icon;
+  return (
+    <span className={`grid shrink-0 place-items-center rounded-xl ${visual.color} ${className ?? "h-10 w-10"}`}>
+      <Icon className="h-4 w-4" />
+    </span>
+  );
+}
 function TypeBadge({ type }: { type?: SiteType }) {
   return (
     <span className="inline-flex rounded-md bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-600">
@@ -272,9 +295,7 @@ export function SiteList({ user }: { user: CloudPanelUser }) {
                     <tr key={site.id} className="group hover:bg-slate-50/50">
                       <td className="px-6 py-4">
                         <div className="flex items-center gap-3">
-                          <span className="grid h-9 w-9 place-items-center rounded-lg bg-panel-50 text-panel-600">
-                            <Globe2 className="h-4 w-4" />
-                          </span>
+                          <SiteIcon type={site.type} className="h-9 w-9" />
                           <div>
                             <p className="font-semibold text-slate-800">
                               {site.domain}
@@ -336,57 +357,62 @@ export function SiteList({ user }: { user: CloudPanelUser }) {
                 </tbody>
               </table>
             </div>
-            <div className="divide-y divide-slate-100 md:hidden">
+            <div className="space-y-3 p-3 md:hidden">
               {filtered.map((site) => (
-                <article key={site.id} className="p-5">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="flex min-w-0 items-center gap-3">
-                      <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-panel-50 text-panel-600">
-                        <Globe2 className="h-4 w-4" />
-                      </span>
-                      <div className="min-w-0">
-                        <p className="truncate font-semibold text-slate-800">
-                          {site.domain}
-                        </p>
-                        <p className="mt-1 text-xs text-slate-400">
-                          {site.siteUser || "No site user available"}
-                        </p>
-                      </div>
+                <article
+                  key={site.id}
+                  className="overflow-hidden rounded-xl border border-slate-200/80 bg-white shadow-sm"
+                >
+                  <div className="flex items-start gap-3 p-4">
+                    <SiteIcon type={site.type} />
+                    <div className="min-w-0 flex-1">
+                      {/* Tapping the domain copies it — no separate copy button. */}
+                      <button
+                        type="button"
+                        onClick={() => copy(site.domain)}
+                        className="flex w-full items-center gap-1.5 text-left"
+                        aria-label={`Copy ${site.domain}`}
+                      >
+                        <span className="truncate font-semibold text-slate-800">{site.domain}</span>
+                        {copied === site.domain ? (
+                          <Check className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
+                        ) : (
+                          <Clipboard className="h-3.5 w-3.5 shrink-0 text-slate-300" />
+                        )}
+                      </button>
+                      <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-400">
+                        <span>{typeLabels[site.type as SiteType] ?? "Website"}</span>
+                        {site.runtimeVersion && (
+                          <>
+                            <span className="text-slate-200">•</span>
+                            <span>{site.runtimeVersion}</span>
+                          </>
+                        )}
+                        {site.siteUser && (
+                          <>
+                            <span className="text-slate-200">•</span>
+                            <span>{site.siteUser}</span>
+                          </>
+                        )}
+                      </p>
                     </div>
                     <Status status={site.status} />
                   </div>
-                  <div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-4">
-                    <div className="flex items-center gap-2">
-                      <TypeBadge type={site.type} />
-                      <span className="text-xs text-slate-500">
-                        {site.runtimeVersion || "—"}
-                      </span>
-                    </div>
-                    <div className="flex gap-1">
-                      <Button variant="outline" size="sm" asChild>
-                        <Link href={`/sites/${encodeURIComponent(site.domain)}`}>
-                          Manage
-                        </Link>
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => copy(site.domain)}
-                        aria-label={`Copy ${site.domain}`}
-                      >
-                        <Clipboard className="h-4 w-4" />
-                      </Button>
-                      <Button variant="outline" size="sm" asChild>
-                        <a
-                          href={site.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                        >
-                          Open
-                          <ExternalLink className="h-3.5 w-3.5" />
-                        </a>
-                      </Button>
-                    </div>
+                  <div className="grid grid-cols-2 divide-x divide-slate-100 border-t border-slate-100 bg-slate-50/40">
+                    <Link
+                      href={`/sites/${encodeURIComponent(site.domain)}`}
+                      className="flex h-11 items-center justify-center gap-2 text-sm font-semibold text-panel-700 active:bg-panel-50"
+                    >
+                      <Settings className="h-4 w-4" /> Manage
+                    </Link>
+                    <a
+                      href={site.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex h-11 items-center justify-center gap-2 text-sm font-semibold text-slate-600 active:bg-slate-100"
+                    >
+                      <ExternalLink className="h-4 w-4" /> Open site
+                    </a>
                   </div>
                 </article>
               ))}
