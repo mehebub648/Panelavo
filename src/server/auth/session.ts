@@ -1,4 +1,9 @@
-import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import {
+  createHmac,
+  randomBytes,
+  randomUUID,
+  timingSafeEqual,
+} from "node:crypto";
 import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { cookies, headers } from "next/headers";
@@ -65,7 +70,10 @@ async function saveSessions() {
 // throttled to avoid per-request disk I/O; create/destroy persist immediately.
 async function persistThrottled() {
   const now = Date.now();
-  if (now - (globalSessions.__panelSessionsLastPersist ?? 0) < PERSIST_THROTTLE_MS)
+  if (
+    now - (globalSessions.__panelSessionsLastPersist ?? 0) <
+    PERSIST_THROTTLE_MS
+  )
     return;
   await saveSessions();
 }
@@ -75,12 +83,6 @@ const developmentSecret = randomBytes(32).toString("hex");
 function maxAge() {
   return Number(process.env.SESSION_MAX_AGE_SECONDS ?? 3600);
 }
-// Shared with other signing needs (e.g. invite tokens) so everything keys off
-// the one configured SESSION_SECRET.
-export function appSecret() {
-  return sessionSecret();
-}
-
 function sessionSecret() {
   const value = process.env.SESSION_SECRET;
   if (value && value.length >= 32) return value;
@@ -90,6 +92,11 @@ function sessionSecret() {
     );
   return value || developmentSecret;
 }
+
+export function appSecret() {
+  return sessionSecret();
+}
+
 function sign(id: string) {
   return createHmac("sha256", sessionSecret()).update(id).digest("base64url");
 }

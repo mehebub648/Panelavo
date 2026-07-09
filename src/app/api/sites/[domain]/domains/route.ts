@@ -1,4 +1,3 @@
-import { resolve4 } from "node:dns/promises";
 import type { NextRequest } from "next/server";
 import { z } from "zod";
 import { requireUser } from "@/server/auth/require-user";
@@ -8,7 +7,10 @@ import { fail, ok } from "@/server/http";
 import { audit } from "@/server/security/log";
 import { assertWriteRequest } from "@/server/security/request";
 import { getServerPublicIp } from "@/server/network/server-ip";
-import { setPanelARecord, deletePanelARecord } from "@/server/cloudflare/auto";
+import {
+  assertDomainsPointToServer,
+  resolveDnsStatus,
+} from "@/server/network/dns";
 import { getSiteMeta, setSiteMeta, type SiteMeta } from "@/server/sites/site-meta";
 import { domainValue } from "@/schemas/sites";
 import { certAlternativeNames } from "@/lib/domains";
@@ -28,24 +30,6 @@ function requireWrite(session: Awaited<ReturnType<typeof requireUser>>) {
     throw new AppError("FORBIDDEN", "You do not have permission to modify websites.", 403);
 }
 
-async function resolveStatus(names: string[], serverIp: string) {
-  return Promise.all(
-    names.map(async (name) => {
-      try {
-        const records = await Promise.race([
-          resolve4(name),
-          new Promise<string[]>((_, reject) =>
-            setTimeout(() => reject(new Error("timeout")), 4000),
-          ),
-        ]);
-        return { name, ip: records[0] ?? null, pointed: records.includes(serverIp) };
-      } catch {
-        return { name, ip: null, pointed: false };
-      }
-    }),
-  );
-}
-
 export async function GET(request: NextRequest, context: Context) {
   try {
     const { domain } = await context.params;
@@ -54,7 +38,7 @@ export async function GET(request: NextRequest, context: Context) {
     const forwarded = request.headers.get("x-forwarded-host")?.split(":")[0];
     const serverIp = await getServerPublicIp(forwarded || request.nextUrl.hostname);
     const meta = await getSiteMeta(decodedDomain);
-    const dns = await resolveStatus(
+    const dns = await resolveDnsStatus(
       [decodedDomain, ...(meta?.aliases ?? [])],
       serverIp,
     );
@@ -74,7 +58,6 @@ const actionSchema = z.discriminatedUnion("action", [
       redirectTo: domainValue.optional(),
     })
     .strict(),
-  z.object({ action: z.literal("point-dns"), domain: domainValue }).strict(),
   z
     .object({ action: z.literal("issue-ssl"), domains: z.array(domainValue).max(11) })
     .strict(),
@@ -116,26 +99,17 @@ export async function POST(request: NextRequest, context: Context) {
     if (input.action === "add-alias") {
       if (input.domain === decodedDomain)
         throw new AppError("INVALID_REQUEST", "The system domain is already served.", 400);
-      
-      const { assertDomainsPointToServer } = await import("@/server/network/dns");
-      await assertDomainsPointToServer([input.domain], serverIp);
-
+      await assertDomainsPointToServer(
+        [input.domain],
+        serverIp,
+        (status) =>
+          `${status.name} must point to this server (${serverIp}) before it can be added.`,
+      );
       if (!meta.aliases.includes(input.domain)) meta.aliases.push(input.domain);
       // The vhost is the part that must not silently fail; update meta only
       // after the web server accepted the new alias.
       await syncVhost(session, decodedDomain, meta);
       await setSiteMeta(decodedDomain, meta);
-      try {
-        const record = await setPanelARecord({ name: input.domain, ip: serverIp });
-        if (!record)
-          warnings.push(
-            `Point ${input.domain} to ${serverIp} at your DNS provider, then issue SSL below.`,
-          );
-      } catch (error) {
-        warnings.push(
-          `DNS for ${input.domain}: ${error instanceof Error ? error.message : "could not be updated"}.`,
-        );
-      }
     } else if (input.action === "remove-alias") {
       meta.aliases = meta.aliases.filter((alias) => alias !== input.domain);
       if (meta.redirectTo === input.domain) {
@@ -144,7 +118,6 @@ export async function POST(request: NextRequest, context: Context) {
       }
       await syncVhost(session, decodedDomain, meta);
       await setSiteMeta(decodedDomain, meta);
-      await deletePanelARecord(input.domain).catch(() => undefined);
     } else if (input.action === "set-block") {
       if (input.block !== "none" && !meta.aliases.length)
         throw new AppError(
@@ -161,16 +134,6 @@ export async function POST(request: NextRequest, context: Context) {
           : undefined;
       await syncVhost(session, decodedDomain, meta);
       await setSiteMeta(decodedDomain, meta);
-    } else if (input.action === "point-dns") {
-      if (input.domain !== decodedDomain && !meta.aliases.includes(input.domain))
-        throw new AppError("INVALID_REQUEST", "That domain does not belong to this website.", 400);
-      const record = await setPanelARecord({ name: input.domain, ip: serverIp, replace: true });
-      if (!record)
-        throw new AppError(
-          "INVALID_REQUEST",
-          "No configured Cloudflare token manages this domain. Point it at your DNS provider instead.",
-          409,
-        );
     } else if (input.action === "issue-ssl") {
       const allowed = new Set([decodedDomain, ...meta.aliases]);
       const requested = input.domains.filter((name) => allowed.has(name));
@@ -184,6 +147,12 @@ export async function POST(request: NextRequest, context: Context) {
             .filter((name) => name !== decodedDomain)
             .flatMap((name) => [name, ...certAlternativeNames(name)]),
         ),
+      );
+      await assertDomainsPointToServer(
+        Array.from(new Set([decodedDomain, ...san])),
+        serverIp,
+        (status) =>
+          `${status.name} must point to this server (${serverIp}) before a certificate can be issued.`,
       );
       await getCloudPanelClient().manageSiteSection(
         session.record.cloudPanel,
@@ -200,7 +169,7 @@ export async function POST(request: NextRequest, context: Context) {
       domain: decodedDomain,
       action: input.action,
     });
-    const dns = await resolveStatus([decodedDomain, ...meta.aliases], serverIp);
+    const dns = await resolveDnsStatus([decodedDomain, ...meta.aliases], serverIp);
     return ok({ meta: await getSiteMeta(decodedDomain), serverIp, dns, warnings });
   } catch (error) {
     audit("sites.domains", "failure", {});

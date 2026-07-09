@@ -1,5 +1,6 @@
-import { destroySession, getSession, updateSession } from "./session";
 import { redirect } from "next/navigation";
+import { destroySession, getSession, updateSession } from "./session";
+import { decorateUser } from "./panel-roles";
 import { getCloudPanelClient } from "@/server/cloudpanel";
 import { AppError } from "@/server/cloudpanel/errors";
 
@@ -12,8 +13,8 @@ export async function requireUser() {
       401,
     );
   try {
-    const user = await getCloudPanelClient().getCurrentUser(
-      session.record.cloudPanel,
+    const user = await decorateUser(
+      await getCloudPanelClient().getCurrentUser(session.record.cloudPanel),
     );
     await updateSession(session.id, { user });
     return { ...session, user };
@@ -28,7 +29,7 @@ export async function requireUserOrRedirect() {
   try {
     return await requireUser();
   } catch (error) {
-    if (error instanceof AppError && error.code === "SESSION_EXPIRED")
+    if (error instanceof AppError && error.status === 401)
       redirect("/login?reason=session-expired");
     throw error;
   }

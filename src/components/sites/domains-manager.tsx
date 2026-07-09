@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
-  ArrowRightCircle,
   Ban,
   CheckCircle2,
   Globe2,
@@ -129,23 +128,6 @@ export function DomainsManager({
               <span className="flex items-center gap-1.5 font-medium text-amber-600">
                 <TriangleAlert className="h-4 w-4" />
                 {systemDns?.ip ? `Points to ${systemDns.ip}` : "No DNS record"}
-                {canWrite && (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={busy !== ""}
-                    onClick={() =>
-                      void act({ action: "point-dns", domain }, "dns-system", "DNS record updated")
-                    }
-                  >
-                    {busy === "dns-system" ? (
-                      <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <ArrowRightCircle className="h-3.5 w-3.5" />
-                    )}
-                    Point here
-                  </Button>
-                )}
               </span>
             )}
           </div>
@@ -271,27 +253,6 @@ export function DomainsManager({
                             <TriangleAlert className="h-4 w-4" />
                             {dns?.ip ? `Points to ${dns.ip}` : "No DNS record"}
                           </span>
-                          {canWrite && (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              disabled={busy !== ""}
-                              onClick={() =>
-                                void act(
-                                  { action: "point-dns", domain: alias },
-                                  `dns-${alias}`,
-                                  "DNS record updated",
-                                )
-                              }
-                            >
-                              {busy === `dns-${alias}` ? (
-                                <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-                              ) : (
-                                <ArrowRightCircle className="h-3.5 w-3.5" />
-                              )}
-                              Point here
-                            </Button>
-                          )}
                         </>
                       )}
                       {canWrite && (
@@ -303,7 +264,7 @@ export function DomainsManager({
                           onClick={() =>
                             setConfirm({
                               title: "Remove domain",
-                              message: `Stop serving ${alias} from this website? Its panel-managed DNS record is removed as well.`,
+                              message: `Stop serving ${alias} from this website? DNS records at your provider will not be changed.`,
                               onConfirm: () => {
                                 setConfirm(null);
                                 void act(

@@ -1,0 +1,17 @@
+[Unit]
+Description=Server Panel Next.js development server
+After=network.target mysql.service
+
+[Service]
+Type=simple
+User=clp-pro
+Group=clp-pro
+WorkingDirectory=/home/clp-pro/htdocs/panel.152.239.123.12.mehebub.com
+Environment=NODE_ENV=development
+Environment=PATH=/home/clp-pro/.nvm/versions/node/v24.18.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/home/clp-pro/.nvm/versions/node/v24.18.0/bin/npx pnpm@10.12.1 dev
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

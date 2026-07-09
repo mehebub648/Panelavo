@@ -1,5 +1,5 @@
 /**
- * PM2 process definition for panelavo (Next.js, production mode).
+ * PM2 process definition for the Server Panel (Next.js, production mode).
  *
  * Prerequisites: run a production build first (`pnpm build`), then:
  *   pm2 start ecosystem.config.js
@@ -11,7 +11,7 @@ const { join } = require("node:path");
 module.exports = {
   apps: [
     {
-      name: "panelavo",
+      name: "server-panel",
       cwd: __dirname,
       // Invoke Next's binary directly so we don't depend on pnpm being on PATH
       // (pm2's daemon runs with a minimal environment).
@@ -30,7 +30,7 @@ module.exports = {
       restart_delay: 3000,
       kill_timeout: 10000,
 
-      // Timestamped, merged logs (view with `pm2 logs panelavo`).
+      // Timestamped, merged logs (view with `pm2 logs server-panel`).
       time: true,
       merge_logs: true,
 
