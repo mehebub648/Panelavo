@@ -10,7 +10,6 @@ import {
   setSiteTypeOverride,
 } from "@/server/sites/site-type-overlay";
 import { removeSiteMeta } from "@/server/sites/site-meta";
-import { deletePanelARecord } from "@/server/settings/store";
 import { LiveCloudPanelClient } from "./live-client";
 
 async function withSiteTypes(sites: CloudPanelSite[]) {
@@ -73,7 +72,6 @@ function withPanelRoles(inner: CloudPanelClient): CloudPanelClient {
       // Release the reserved site id and clean up the system-subdomain DNS
       // record (best-effort; the site itself is already gone).
       await removeSiteMeta(domain).catch(() => undefined);
-      await deletePanelARecord(domain).catch(() => undefined);
     },
     assignSite: inner.assignSite.bind(inner),
     getSiteSection: inner.getSiteSection.bind(inner),

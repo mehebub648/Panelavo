@@ -126,16 +126,7 @@ export async function POST(request: NextRequest) {
     // can manage, then the alias vhost sync. Failures are reported as warnings
     // instead of rolling back the created site.
     for (const alias of aliases) {
-      try {
-        const { setPanelARecord } = await import("@/server/cloudflare/auto");
-        const record = await setPanelARecord({ name: alias, ip: serverIp });
-        if (!record)
-          warnings.push(`Point ${alias} to ${serverIp} at your DNS provider, then issue SSL from the Domains tab.`);
-      } catch (error) {
-        warnings.push(
-          `DNS for ${alias}: ${error instanceof Error ? error.message : "could not be updated"}.`,
-        );
-      }
+      warnings.push(`Point ${alias} to ${serverIp} at your DNS provider, then issue SSL from the Domains tab.`);
     }
     if (aliases.length) {
       try {
