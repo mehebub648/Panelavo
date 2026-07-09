@@ -8,7 +8,7 @@ import {
   Server,
   Timer,
 } from "lucide-react";
-import { requireUser } from "@/server/auth/require-user";
+import { requireUserOrRedirect } from "@/server/auth/require-user";
 import { getCloudPanelClient } from "@/server/cloudpanel";
 
 export const dynamic = "force-dynamic";
@@ -28,7 +28,7 @@ function formatUptime(seconds: number) {
 }
 
 export default async function InformationPage() {
-  const session = await requireUser();
+  const session = await requireUserOrRedirect();
   if (!["super-admin", "manager"].includes(session.user.panelRole ?? "")) notFound();
   const info = await getCloudPanelClient().getServerInfo(session.record.cloudPanel);
 

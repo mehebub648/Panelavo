@@ -38,8 +38,8 @@ describe("site meta", () => {
 
   it("builds system domains and site users from the id", () => {
     expect(siteUserForId(23223)).toBe("site-23223");
-    expect(systemDomainFor(23223, "152.239.123.12", "Mehebub.COM")).toBe(
-      "site-23223.152.239.123.12.mehebub.com",
+    expect(systemDomainFor(23223, "203.0.113.10", "Example.COM")).toBe(
+      "site-23223.203.0.113.10.example.com",
     );
   });
 
@@ -64,7 +64,9 @@ describe("site meta", () => {
       (_, index) => demo.start + index,
     );
     expect(nextFreeId(demo, all)).toBeNull();
-    await expect(allocateSiteId("demo", all)).rejects.toMatchObject({ status: 409 });
+    await expect(allocateSiteId("demo", all)).rejects.toMatchObject({
+      status: 409,
+    });
   });
 
   it("stores, updates, and removes meta case-insensitively", async () => {
@@ -83,12 +85,28 @@ describe("site meta", () => {
   });
 
   it("moves a reservation to a new port and re-categorizes it", async () => {
-    await setSiteMeta("a.test", { id: 20000, category: "client", aliases: [], block: "none" });
-    await setSiteMeta("b.test", { id: 21000, category: "personal", aliases: [], block: "none" });
+    await setSiteMeta("a.test", {
+      id: 20000,
+      category: "client",
+      aliases: [],
+      block: "none",
+    });
+    await setSiteMeta("b.test", {
+      id: 21000,
+      category: "personal",
+      aliases: [],
+      block: "none",
+    });
     const moved = await changeSiteId("a.test", 25000);
     expect(moved).toMatchObject({ id: 25000, category: "internal" });
-    await expect(changeSiteId("a.test", 21000)).rejects.toMatchObject({ status: 409 });
-    await expect(changeSiteId("a.test", 19999)).rejects.toMatchObject({ status: 400 });
-    await expect(changeSiteId("missing.test", 20001)).rejects.toMatchObject({ status: 404 });
+    await expect(changeSiteId("a.test", 21000)).rejects.toMatchObject({
+      status: 409,
+    });
+    await expect(changeSiteId("a.test", 19999)).rejects.toMatchObject({
+      status: 400,
+    });
+    await expect(changeSiteId("missing.test", 20001)).rejects.toMatchObject({
+      status: 404,
+    });
   });
 });

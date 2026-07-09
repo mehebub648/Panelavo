@@ -1,4 +1,5 @@
 import { destroySession, getSession, updateSession } from "./session";
+import { redirect } from "next/navigation";
 import { getCloudPanelClient } from "@/server/cloudpanel";
 import { AppError } from "@/server/cloudpanel/errors";
 
@@ -19,6 +20,16 @@ export async function requireUser() {
   } catch (error) {
     if (error instanceof AppError && error.code === "SESSION_EXPIRED")
       await destroySession();
+    throw error;
+  }
+}
+
+export async function requireUserOrRedirect() {
+  try {
+    return await requireUser();
+  } catch (error) {
+    if (error instanceof AppError && error.code === "SESSION_EXPIRED")
+      redirect("/login?reason=session-expired");
     throw error;
   }
 }

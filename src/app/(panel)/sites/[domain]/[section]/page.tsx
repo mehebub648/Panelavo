@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
-import { requireUser } from "@/server/auth/require-user";
+import { requireUserOrRedirect } from "@/server/auth/require-user";
 import { getCloudPanelClient } from "@/server/cloudpanel";
 import { SiteSettings } from "@/components/sites/site-settings";
 import { DomainsManager } from "@/components/sites/domains-manager";
@@ -45,7 +45,7 @@ export default async function SiteSectionPage({
   const { domain: encodedDomain, section } = await params;
   if (!titles[section]) notFound();
   const domain = decodeURIComponent(encodedDomain);
-  const session = await requireUser();
+  const session = await requireUserOrRedirect();
   const cloudPanel = getCloudPanelClient();
   if (section === "settings") {
     const sites = await cloudPanel.listSites(session.record.cloudPanel);

@@ -8,7 +8,7 @@ export function Brand({
   compact?: boolean;
   inverse?: boolean;
 }) {
-  const name = process.env.NEXT_PUBLIC_APP_NAME ?? "Server Panel";
+  const name = process.env.NEXT_PUBLIC_APP_NAME ?? "panelavo";
   return (
     <div className="flex items-center gap-3">
       <span

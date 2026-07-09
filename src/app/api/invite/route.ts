@@ -15,25 +15,42 @@ import { fail, ok } from "@/server/http";
 export async function POST(request: NextRequest) {
   try {
     assertWriteRequest(request);
-    const ip = request.headers.get("x-forwarded-for")?.split(",")[0].trim() || "unknown";
+    const ip =
+      request.headers.get("x-forwarded-for")?.split(",")[0].trim() || "unknown";
     rateLimit(`invite:${ip}`, 5, 10 * 60_000);
     const body = (await request.json()) as Record<string, unknown>;
     const payload = verifyInviteToken(String(body.token ?? ""));
     if (!payload)
-      throw new AppError("INVALID_REQUEST", "This invitation link is invalid or has expired.", 400);
+      throw new AppError(
+        "INVALID_REQUEST",
+        "This invitation link is invalid or has expired.",
+        400,
+      );
     const password = String(body.password ?? "");
-    if (password.length < 12 || password.length > 128 || /[\x00-\x1f\x7f]/.test(password))
-      throw new AppError("INVALID_REQUEST", "Use a password of at least 12 characters.", 400);
+    if (
+      password.length < 12 ||
+      password.length > 128 ||
+      /[\x00-\x1f\x7f]/.test(password)
+    )
+      throw new AppError(
+        "INVALID_REQUEST",
+        "Use a password of at least 12 characters.",
+        400,
+      );
 
     const issuerSession: CloudPanelSession = {
-      cookies: { mockUser: payload.invitedBy },
+      cookies: {},
       usernameHint: payload.invitedBy,
       cliAuthenticated: true,
     };
     const client = getCloudPanelClient();
     const issuer = await client.getCurrentUser(issuerSession).catch(() => null);
     if (issuer?.panelRole !== "super-admin")
-      throw new AppError("INVALID_REQUEST", "This invitation is no longer valid.", 400);
+      throw new AppError(
+        "INVALID_REQUEST",
+        "This invitation is no longer valid.",
+        400,
+      );
 
     await client.manageUser(issuerSession, {
       action: "add",
@@ -47,7 +64,10 @@ export async function POST(request: NextRequest) {
       timezone: payload.timezone,
     });
     await setPanelAdmin(payload.username, payload.role === "admin");
-    audit("users.invite.redeem", "success", { username: payload.username, invitedBy: payload.invitedBy });
+    audit("users.invite.redeem", "success", {
+      username: payload.username,
+      invitedBy: payload.invitedBy,
+    });
     return ok({ username: payload.username });
   } catch (error) {
     audit("users.invite.redeem", "failure", {});

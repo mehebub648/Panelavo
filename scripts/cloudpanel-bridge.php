@@ -436,7 +436,7 @@ function serverResources($manager): array
     foreach ($manager->getRepository(Site::class)->findAll() as $site) {
         $domainsByUser[$site->getUser()][] = $site->getDomainName();
     }
-    $cacheFile = '/tmp/.clp-pro-panel-du-cache.json';
+    $cacheFile = '/tmp/.panelavo-du-cache.json';
     $cache = null;
     if (is_file($cacheFile) && time() - (int) filemtime($cacheFile) < 600) {
         $cache = json_decode((string) file_get_contents($cacheFile), true);

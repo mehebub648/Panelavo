@@ -1,10 +1,10 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import {
-  Activity,
   AlertCircle,
   CheckCircle2,
   Globe2,
+  ServerCog,
   ShieldCheck,
 } from "lucide-react";
 import { Brand } from "@/components/brand";
@@ -38,22 +38,23 @@ export default async function LoginPage({
         </div>
         <div className="relative my-auto max-w-xl pb-16">
           <p className="mb-5 text-sm font-bold uppercase tracking-[.2em] text-cyan-300">
-            Website operations, simplified
+            panelavo for CloudPanel servers
           </p>
           <h1 className="text-5xl font-bold leading-[1.08] tracking-[-.04em]">
-            Your server.
+            Your CloudPanel server.
             <br />
-            Clear and under control.
+            Cleaner to manage.
           </h1>
           <p className="mt-6 max-w-lg text-lg leading-8 text-slate-200">
-            Manage the websites you already run in CloudPanel through a focused,
-            secure workspace.
+            panelavo is a self-hosted companion interface for CloudPanel. It
+            keeps CloudPanel as the source of truth while giving day-to-day
+            website work a focused workspace.
           </p>
           <div className="mt-12 grid grid-cols-2 gap-4">
             {[
               { icon: Globe2, label: "Sites at a glance" },
               { icon: ShieldCheck, label: "CloudPanel permissions" },
-              { icon: Activity, label: "Fast, focused workflow" },
+              { icon: ServerCog, label: "Self-hosted install" },
               { icon: CheckCircle2, label: "No duplicated accounts" },
             ].map(({ icon: Icon, label }) => (
               <div
@@ -67,7 +68,8 @@ export default async function LoginPage({
           </div>
         </div>
         <p className="relative text-xs text-slate-400">
-          Authentication and permissions remain managed by CloudPanel.
+          panelavo is not affiliated with, endorsed by, or sponsored by
+          CloudPanel.
         </p>
       </section>
       <section className="flex min-h-screen items-center justify-center bg-[#fbfcfe] px-6 py-12">
@@ -77,13 +79,14 @@ export default async function LoginPage({
           </div>
           <div className="mb-8">
             <p className="mb-2 text-sm font-semibold text-panel-600">
-              WELCOME BACK
+              WELCOME TO PANELAVO
             </p>
             <h2 className="text-3xl font-bold tracking-tight text-ink">
-              Sign in to your panel
+              Sign in with CloudPanel
             </h2>
             <p className="mt-3 text-sm leading-6 text-slate-500">
-              Use the same credentials as your CloudPanel account.
+              Use your existing CloudPanel account. panelavo does not create a
+              separate user database.
             </p>
           </div>
           {reason === "session-expired" && (
@@ -95,12 +98,6 @@ export default async function LoginPage({
           <LoginForm
             initialTwoFactor={Boolean(session?.record.twoFactorPending)}
           />
-          {process.env.CLOUDPANEL_MODE !== "live" && (
-            <div className="mt-8 rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs leading-5 text-amber-800">
-              <b>Development mock:</b> admin / admin123 · user / user123 · mfa /
-              mfa123 (code 123456)
-            </div>
-          )}
         </div>
       </section>
     </main>

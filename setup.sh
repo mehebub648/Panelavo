@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #
-# Server Panel — standalone provisioning script.
+# panelavo — standalone provisioning script.
 #
 # Turns a fresh Debian/Ubuntu server into a fully working panel host:
 #   1. Detects the OS and installs CloudPanel if it is not present.
 #   2. Creates the initial CloudPanel admin user.
 #   3. Installs nvm + the latest Node.js for root and a shared PM2 in
 #      /usr/local that every user can run.
-#   4. Creates a CloudPanel Node.js site owned by system user "clp-pro",
+#   4. Creates a CloudPanel Node.js site owned by a dedicated system user,
 #      deploys this application into it, builds it, and hosts it with PM2
 #      (systemd resurrect on boot).
 #
@@ -15,10 +15,11 @@
 #   sudo bash setup.sh
 #
 # Optional environment overrides:
-#   PANEL_DOMAIN=panel.example.com   site domain (default panel.<ip>.nip.io)
+#   PANEL_DOMAIN=panelavo.example.com site domain (default panelavo.<ip>.nip.io)
 #   PANEL_BASE_DOMAIN=example.com    base domain for site subdomains
 #                                    (site-<id>.<ip>.<base>); editable later
 #                                    on the panel Settings page
+#   PANEL_SITE_USER=panelavo         CloudPanel site/system user for panelavo
 #   ADMIN_USER=admin                 CloudPanel admin username
 #   ADMIN_PASSWORD=...               CloudPanel admin password (default random)
 #   ADMIN_EMAIL=...                  CloudPanel admin e-mail
@@ -29,11 +30,11 @@
 
 set -euo pipefail
 
-SITE_USER="clp-pro"
+SITE_USER="${PANEL_SITE_USER:-panelavo}"
 APP_PORT="10443"
 NODEJS_SITE_VERSION="22"
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LOG_PREFIX="[server-panel-setup]"
+LOG_PREFIX="[panelavo-setup]"
 
 log()  { echo -e "\033[1;32m${LOG_PREFIX}\033[0m $*"; }
 warn() { echo -e "\033[1;33m${LOG_PREFIX}\033[0m $*" >&2; }
@@ -41,6 +42,7 @@ die()  { echo -e "\033[1;31m${LOG_PREFIX}\033[0m $*" >&2; exit 1; }
 
 [ "$(id -u)" = "0" ] || die "Run this script as root: sudo bash setup.sh"
 [ -f "${SRC_DIR}/package.json" ] || die "Run setup.sh from the application directory (package.json not found)."
+[[ "${SITE_USER}" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || die "PANEL_SITE_USER must be a valid Linux user name."
 
 export DEBIAN_FRONTEND=noninteractive
 
@@ -78,22 +80,24 @@ SERVER_IP="$(curl -4 -fsS --max-time 10 https://api.ipify.org 2>/dev/null || tru
 [ -n "${SERVER_IP}" ] || SERVER_IP="$(hostname -I | awk '{print $1}')"
 [ -n "${SERVER_IP}" ] || die "Could not determine the server IP address."
 log "Server IP: ${SERVER_IP}"
+SERVER_IP_SLUG="$(echo "${SERVER_IP}" | tr '.' '-')"
 
 # ---------------------------------------------------------------------------
 # 3b. Interactive configuration (domain + first CloudPanel admin)
 #     Values already provided through the environment are never asked again.
 # ---------------------------------------------------------------------------
-DEFAULT_DOMAIN="panel.$(echo "${SERVER_IP}" | tr '.' '-').nip.io"
+DEFAULT_DOMAIN="panelavo.${SERVER_IP_SLUG}.nip.io"
 if [ -t 0 ]; then
   if [ -z "${PANEL_DOMAIN:-}" ]; then
-    read -r -p "${LOG_PREFIX} Panel domain [${DEFAULT_DOMAIN}]: " PANEL_DOMAIN_INPUT
+    read -r -p "${LOG_PREFIX} panelavo domain [${DEFAULT_DOMAIN}]: " PANEL_DOMAIN_INPUT
     PANEL_DOMAIN="${PANEL_DOMAIN_INPUT:-$DEFAULT_DOMAIN}"
   fi
   if [ -z "${PANEL_BASE_DOMAIN:-}" ]; then
     # Websites get system subdomains like site-20001.<ip>.<base domain>. If the
-    # panel domain follows the panel.<ip>.<base> convention, suggest that base.
+    # panelavo domain follows the panelavo.<ip>.<base> convention, suggest that base.
     case "${PANEL_DOMAIN}" in
-      "panel.${SERVER_IP}."*) DEFAULT_BASE_DOMAIN="${PANEL_DOMAIN#panel.${SERVER_IP}.}" ;;
+      "panelavo.${SERVER_IP_SLUG}."*) DEFAULT_BASE_DOMAIN="${PANEL_DOMAIN#panelavo.${SERVER_IP_SLUG}.}" ;;
+      "panelavo.${SERVER_IP}."*) DEFAULT_BASE_DOMAIN="${PANEL_DOMAIN#panelavo.${SERVER_IP}.}" ;;
       *) DEFAULT_BASE_DOMAIN="" ;;
     esac
     read -r -p "${LOG_PREFIX} Base domain for site subdomains${DEFAULT_BASE_DOMAIN:+ [${DEFAULT_BASE_DOMAIN}]}: " PANEL_BASE_DOMAIN_INPUT
@@ -120,7 +124,7 @@ PANEL_BASE_DOMAIN="${PANEL_BASE_DOMAIN:-}"
 ADMIN_USER="${ADMIN_USER:-admin}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@${PANEL_DOMAIN}}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 16)!Aa1}"
-log "Panel domain: ${PANEL_DOMAIN} — CloudPanel admin: ${ADMIN_USER}"
+log "panelavo domain: ${PANEL_DOMAIN} — CloudPanel admin: ${ADMIN_USER}"
 
 # ---------------------------------------------------------------------------
 # 4. CloudPanel
@@ -175,7 +179,7 @@ nvm alias default node >/dev/null
 NODE_BIN="$(dirname "$(nvm which default)")"
 log "Node.js $("${NODE_BIN}/node" -v) installed for root."
 
-# Expose node to every user (PM2, clp-pro builds, systemd) via /usr/local/bin.
+# Expose node to every user (PM2, panelavo builds, systemd) via /usr/local/bin.
 for bin in node npm npx corepack; do
   ln -sf "${NODE_BIN}/${bin}" "/usr/local/bin/${bin}"
 done
@@ -187,7 +191,7 @@ fi
 log "PM2 $(/usr/local/bin/pm2 -v | tail -1) available system-wide."
 
 # ---------------------------------------------------------------------------
-# 7. CloudPanel site owned by clp-pro
+# 7. CloudPanel site owned by the panelavo system user
 # ---------------------------------------------------------------------------
 SITE_ROOT="/home/${SITE_USER}/htdocs/${PANEL_DOMAIN}"
 SITE_USER_PASSWORD="$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 16)!Aa1"
@@ -209,13 +213,14 @@ id "${SITE_USER}" >/dev/null 2>&1 || die "System user ${SITE_USER} was not creat
 # 8. Narrow sudo access for the panel's CloudPanel bridge
 # ---------------------------------------------------------------------------
 PHP_BIN="$(command -v php || echo /usr/bin/php)"
-cat > /etc/sudoers.d/clp-pro-panel <<EOF
-# Server Panel: the Next.js app talks to CloudPanel through clpctl and a
+SUDOERS_FILE="/etc/sudoers.d/panelavo-${SITE_USER}"
+cat > "${SUDOERS_FILE}" <<EOF
+# panelavo: the Next.js app talks to CloudPanel through clpctl and a
 # read-only PHP bridge, both executed via passwordless sudo.
 ${SITE_USER} ALL=(root) NOPASSWD: /usr/bin/clpctl, ${PHP_BIN}
 EOF
-chmod 0440 /etc/sudoers.d/clp-pro-panel
-visudo -cf /etc/sudoers.d/clp-pro-panel >/dev/null || die "Generated sudoers file is invalid."
+chmod 0440 "${SUDOERS_FILE}"
+visudo -cf "${SUDOERS_FILE}" >/dev/null || die "Generated sudoers file is invalid."
 log "Sudo rules for ${SITE_USER} installed."
 
 # ---------------------------------------------------------------------------
@@ -234,11 +239,10 @@ rsync -a --delete \
 if [ ! -f "${SITE_ROOT}/.env.local" ]; then
   log "Writing .env.local ..."
   cat > "${SITE_ROOT}/.env.local" <<EOF
-NEXT_PUBLIC_APP_NAME=Server Panel
+NEXT_PUBLIC_APP_NAME=panelavo
 SESSION_SECRET=$(openssl rand -base64 48 | tr -d '\n')
 CREDENTIALS_ENCRYPTION_KEY=$(openssl rand -base64 48 | tr -d '\n')
 SESSION_MAX_AGE_SECONDS=3600
-CLOUDPANEL_MODE=live
 ${PANEL_BASE_DOMAIN:+PANEL_BASE_DOMAIN=${PANEL_BASE_DOMAIN}}
 EOF
 fi
@@ -251,7 +255,7 @@ log "Installing dependencies and building (as ${SITE_USER}) ..."
 sudo -u "${SITE_USER}" bash -c "cd '${SITE_ROOT}' && export PATH=/usr/local/bin:\$PATH && npx -y pnpm@10.12.1 install --frozen-lockfile && npx -y pnpm@10.12.1 build"
 
 # ---------------------------------------------------------------------------
-# 10. Host with PM2 (shared install, clp-pro process, boot persistence)
+# 10. Host with PM2 (shared install, panelavo process, boot persistence)
 # ---------------------------------------------------------------------------
 log "Starting the panel with PM2 ..."
 sudo -u "${SITE_USER}" bash -c "cd '${SITE_ROOT}' && export PATH=/usr/local/bin:\$PATH && /usr/local/bin/pm2 startOrReload ecosystem.config.js && /usr/local/bin/pm2 save"
@@ -296,15 +300,15 @@ for _ in $(seq 1 30); do
   if curl -fsS -o /dev/null "http://127.0.0.1:${APP_PORT}/login"; then HEALTH=ok; break; fi
   sleep 2
 done
-[ "${HEALTH:-}" = "ok" ] || warn "The panel did not answer on port ${APP_PORT} yet — check 'pm2 logs server-panel' as ${SITE_USER}."
+[ "${HEALTH:-}" = "ok" ] || warn "panelavo did not answer on port ${APP_PORT} yet — check 'pm2 logs panelavo' as ${SITE_USER}."
 
 cat <<EOF
 
 ============================================================
- Server Panel setup complete
+ panelavo setup complete
 ============================================================
- Panel (primary):    http://${SERVER_IP}:${APP_PORT}
- Panel (domain):     https://${PANEL_DOMAIN}
+ panelavo (primary): http://${SERVER_IP}:${APP_PORT}
+ panelavo (domain):  https://${PANEL_DOMAIN}
  CloudPanel:         https://127.0.0.1:8443 (blocked publicly; use an SSH tunnel)
 
  CloudPanel admin:   ${ADMIN_USER}
@@ -312,7 +316,7 @@ cat <<EOF
  Site user:          ${SITE_USER}
  Site user password: ${SITE_USER_PASSWORD}
 
- Log in to the panel with the CloudPanel admin credentials.
- Manage the process as ${SITE_USER}: pm2 status | pm2 logs server-panel
+ Log in to panelavo with the CloudPanel admin credentials.
+ Manage the process as ${SITE_USER}: pm2 status | pm2 logs panelavo
 ============================================================
 EOF

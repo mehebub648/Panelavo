@@ -1,27 +1,39 @@
-# Server Panel
+# panelavo
 
-A small, modern Next.js frontend for an existing CloudPanel installation. CloudPanel remains the source of truth for accounts, passwords, MFA, roles, site assignments, runtime support, and server-side permissions. This application creates no user database and communicates locally through CloudPanel's CLI and a read-only Symfony CLI bridge. It never accesses or scrapes the CloudPanel portal.
+panelavo is a small, modern Next.js companion interface for CloudPanel servers. CloudPanel remains the source of truth for accounts, passwords, MFA, roles, site assignments, runtime support, and server-side permissions. panelavo creates no user database and communicates locally through CloudPanel's CLI and a read-only Symfony CLI bridge. It never accesses or scrapes the CloudPanel portal.
+
+panelavo works over CloudPanel, but it is not affiliated with, endorsed by, or sponsored by CloudPanel.
 
 ## One-command server setup
 
-On a fresh Debian 11/12/13 or Ubuntu 22.04/24.04/26.04 server, clone (or upload) this repository and run:
+On a fresh Debian 11/12/13 or Ubuntu 22.04/24.04/26.04 server, clone this repository and run the installer from the repo root:
 
 ```bash
+git clone https://github.com/<your-org>/panelavo.git
+cd panelavo
 sudo bash setup.sh
 ```
 
-The script detects the OS, installs CloudPanel if it is missing, creates the initial CloudPanel admin, installs nvm + the latest Node.js for root, installs a shared PM2 into `/usr/local` usable by every user, creates a CloudPanel Node.js site owned by the system user `clp-pro`, deploys and builds this app inside it, and hosts it with PM2 (with systemd persistence across reboots). When it finishes it prints the panel URL (`http://<server-ip>:10443`) and the generated credentials. Overrides: `PANEL_DOMAIN`, `ADMIN_USER`, `ADMIN_PASSWORD`, `ADMIN_EMAIL`, `DB_ENGINE` — e.g. `sudo PANEL_DOMAIN=panel.example.com bash setup.sh`. The script is idempotent: re-running skips everything that already exists.
+The script detects the OS, installs CloudPanel if it is missing, creates the initial CloudPanel admin, installs nvm plus the latest Node.js for root, installs a shared PM2 into `/usr/local`, creates a CloudPanel Node.js site, deploys and builds panelavo inside it, and hosts it with PM2 with systemd persistence across reboots.
+
+When it finishes, it prints the panel URL (`http://<server-ip>:10443`) and generated credentials. By default, the CloudPanel site/system user is `panelavo`. Overrides: `PANEL_DOMAIN`, `PANEL_BASE_DOMAIN`, `PANEL_SITE_USER`, `ADMIN_USER`, `ADMIN_PASSWORD`, `ADMIN_EMAIL`, `DB_ENGINE`. Example:
+
+```bash
+sudo PANEL_DOMAIN=panelavo.example.com PANEL_BASE_DOMAIN=example.com bash setup.sh
+```
+
+The script is idempotent: re-running skips resources that already exist.
 
 ## Roles
 
-The panel exposes four roles on top of CloudPanel's three native ones:
+panelavo exposes four roles on top of CloudPanel's three native ones:
 
-| Panel role    | Backed by CloudPanel | Capabilities                                                                                   |
-| ------------- | -------------------- | ---------------------------------------------------------------------------------------------- |
-| Super Admin   | `admin`              | Everything, including user management.                                                          |
-| Manager       | `site-manager`       | All sites and site creation — everything except user management.                               |
-| Admin         | `user` + local flag  | Creates websites; sees and manages only sites assigned to them plus sites they created.        |
-| User          | `user`               | Sees only assigned sites; cannot create or manage anything else.                                |
+| panelavo role | Backed by CloudPanel | Capabilities                                                                            |
+| ------------- | -------------------- | --------------------------------------------------------------------------------------- |
+| Super Admin   | `admin`              | Everything, including user management.                                                  |
+| Manager       | `site-manager`       | All sites and site creation, except user management.                                    |
+| Admin         | `user` + local flag  | Creates websites; sees and manages only sites assigned to them plus sites they created. |
+| User          | `user`               | Sees only assigned sites; cannot create or manage anything else.                        |
 
 The "Admin" tier is stored as a CloudPanel `user` plus an entry in `.data/panel-roles.json`, so CloudPanel itself keeps restricting their site list. Sites an Admin creates are automatically assigned to them; other users' sites stay invisible to them. Role changes and deletes made from the Users page keep the overlay in sync.
 
@@ -29,7 +41,7 @@ The "Admin" tier is stored as a CloudPanel `user` plus an entry in `.data/panel-
 
 Next.js App Router, strict TypeScript, Tailwind CSS, shadcn-style local UI components, Lucide, Zod, pnpm, ESLint, Prettier, and Vitest.
 
-## Quick start (mock mode)
+## Local development
 
 ```bash
 cp .env.example .env.local
@@ -38,38 +50,23 @@ npx pnpm@10.12.1 install
 npx pnpm@10.12.1 dev
 ```
 
-Open `http://localhost:3000`.
-
-| Account   | Password     | Behavior                              |
-| --------- | ------------ | ------------------------------------- |
-| `admin`   | `admin123`   | Administrator; all sites and creation |
-| `manager` | `manager123` | Site manager; all sites and creation  |
-| `user`    | `user123`    | Restricted to one assigned site       |
-| `empty`   | `empty123`   | Restricted user with no sites         |
-| `mfa`     | `mfa123`     | Administrator with MFA; code `123456` |
-| `offline` | any          | Simulated CloudPanel outage           |
-
-Mock credentials are development-only. Never enable mock mode on a public production deployment.
+Open `http://localhost:3000`. The app always talks to a real local CloudPanel installation, so development needs the same `/usr/bin/clpctl` and `/usr/bin/php` sudo access as production.
 
 ## Environment
 
-Copy `.env.example` to `.env.local`. Use `CLOUDPANEL_MODE=mock` for local UI work or `CLOUDPANEL_MODE=live` for the installed panel. Live mode requires non-interactive sudo access to `/usr/bin/clpctl` and `/usr/bin/php` for the local CLI bridge.
+Copy `.env.example` to `.env.local`. panelavo talks to the installed CloudPanel CLI and local bridge; non-interactive sudo access to `/usr/bin/clpctl` and `/usr/bin/php` is required. `setup.sh` installs the required sudoers rule for the CloudPanel site user.
 
 The application cookie is opaque, `HttpOnly`, `SameSite=Strict`, scoped to `/`, and `Secure` in production. Sessions expire after `SESSION_MAX_AGE_SECONDS`. The initial session store is process memory, so production must run a single Next.js process. Replace the isolated store in `src/server/auth/session.ts` before horizontal scaling or zero-downtime multi-process restarts.
 
 ## Tested CloudPanel CLI integration
 
-The live adapter was developed against the CloudPanel installation on this host on 2026-07-08:
-
-- Frontend asset version: **2.5.4**
-- CLI version: **6.0.8**
-- Panel origin: configured by `CLOUDPANEL_BASE_URL` (locally observed on HTTPS port 8443)
+The live adapter was validated against CloudPanel frontend asset version **2.5.4** and CLI version **6.0.8**. The CloudPanel origin is configured by `CLOUDPANEL_BASE_URL`; on a standard local installation it is usually `https://127.0.0.1:8443`.
 
 Root operations use `/usr/bin/clpctl`. CloudPanel does not expose password verification, MFA verification, or site listing through public `clpctl` commands, so `scripts/cloudpanel-bridge.php` boots CloudPanel's own Symfony kernel from the command line and uses its password data, MFA verifier, Doctrine entities, roles, and site assignments directly. The bridge is read-only. CloudPanel's original frontend remains untouched and is never contacted.
 
 ### Authentication and authorization
 
-After the CLI bridge accepts credentials (and MFA, when enabled), the browser receives only a random application-session identifier. Every protected route revalidates the account and current role through the bridge. Restricted site lists are selected from the user's CloudPanel assignments before they reach the browser.
+After the CLI bridge accepts credentials and MFA when enabled, the browser receives only a random application-session identifier. Every protected route revalidates the account and current role through the bridge. Restricted site lists are selected from the user's CloudPanel assignments before they reach the browser.
 
 Create permission is derived from CloudPanel's Admin and Site Manager roles. Unknown roles do not receive elevated access.
 
@@ -79,33 +76,33 @@ The bridge loads sites through CloudPanel's own Doctrine entities. Admins and Si
 
 ### Site identity: categories, ids, and domains
 
-The panel — not the user — chooses each website's primary domain. On creation the user picks a **project category**; the next free id in that category's range becomes the site id, the application port, and the site user:
+panelavo chooses each website's primary system domain. On creation the user picks a project category; the next free id in that category's range becomes the site id, the application port, and the site user:
 
 | Category                   |    Port range |
 | -------------------------- | ------------: |
-| Client projects            | `20000–20999` |
-| Personal projects          | `21000–21999` |
-| Business/SaaS projects     | `22000–22999` |
-| Relatives/Friends projects | `23000–23999` |
-| Demo/Preview projects      | `24000–24999` |
-| Internal tools             | `25000–25999` |
-| Reserved/Future            | `26000–29999` |
+| Client projects            | `20000-20999` |
+| Personal projects          | `21000-21999` |
+| Business/SaaS projects     | `22000-22999` |
+| Relatives/Friends projects | `23000-23999` |
+| Demo/Preview projects      | `24000-24999` |
+| Internal tools             | `25000-25999` |
+| Reserved/Future            | `26000-29999` |
 
-A site with id `23223` is created as `site-23223.<server-ip>.<base domain>` with site user `site-23223` listening on port `23223`. The base domain is set at install time (`PANEL_BASE_DOMAIN`, prompted by `setup.sh`) and editable on the Settings page; changes apply to future sites. Reservations live in `.data/site-meta.json`; the port is movable from the site's Settings tab.
+A site with id `23223` is created as `site-23223.<server-ip>.<base domain>` with site user `site-23223` listening on port `23223`. The base domain is set at install time with `PANEL_BASE_DOMAIN`, prompted by `setup.sh`, and editable on the Settings page. Changes apply to future sites. Reservations live in `.data/site-meta.json`; the port is movable from the site's Settings tab.
 
-Customer-entered domains are **aliases**: the Domains tab (and the create form) adds them to the vhost `server_name`, points DNS through the panel-wide Cloudflare token when it manages the zone, and issues Let's Encrypt certificates covering selected domains. The system subdomain can be blocked (403) or redirected to an alias — ACME challenge paths stay reachable so renewals keep working.
+Customer-entered domains are aliases: the Domains tab and create form add them to the vhost `server_name`, point DNS through the panel-wide Cloudflare token when it manages the zone, and issue Let's Encrypt certificates covering selected domains. The system subdomain can be blocked with 403 or redirected to an alias; ACME challenge paths stay reachable so renewals keep working.
 
 ### Site creation
 
-CloudPanel does not document a public REST API for site creation. Version 2.5.4’s documented `clpctl` operations are used through the installed root-owned `/usr/bin/clpctlWrapper`. The Node process calls `/usr/bin/sudo` with an argument array, `shell: false`, a fixed per-type operation map, validation, a 90-second timeout, bounded output, and generic errors. There is no generic command endpoint and no browser-supplied CLI operation.
+CloudPanel does not document a public REST API for site creation. Version 2.5.4's documented `clpctl` operations are used through `/usr/bin/clpctl`. The Node process calls `/usr/bin/sudo` with an argument array, `shell: false`, a fixed per-type operation map, validation, a 90-second timeout, bounded output, and generic errors. There is no generic command endpoint and no browser-supplied CLI operation.
 
-The server account on this host has the existing narrow sudo permission:
+The installer grants the CloudPanel site user narrow passwordless sudo for:
 
 ```text
-NOPASSWD: /usr/bin/clpctlWrapper
+NOPASSWD: /usr/bin/clpctl, /usr/bin/php
 ```
 
-Do not grant `clpctl *`, `bash *`, `sh *`, or unrestricted sudo to a deployment user. For stronger production isolation, replace the current vendor wrapper permission with root-owned per-operation wrappers that accept only validated fields.
+Do not grant `clpctl *`, `bash *`, `sh *`, or unrestricted sudo to a deployment user. For stronger production isolation, replace the current permission with root-owned per-operation wrappers that accept only validated fields.
 
 PHP versions are discovered from `/etc/php`. CloudPanel 2.5.4 compatibility fallbacks for Node.js, Python, and the Generic vhost template are isolated in the live adapter because no authenticated options page was available during discovery. Validate these against the target server before production use.
 
@@ -121,13 +118,13 @@ PHP versions are discovered from `/etc/php`. CloudPanel 2.5.4 compatibility fall
 
 ## Live acceptance checklist
 
-1. Set `CLOUDPANEL_MODE=live`, the base URL, version `2.5.4`, and a strong session secret.
-   Also set a separate `CREDENTIALS_ENCRYPTION_KEY` (32+ characters) and `SERVER_PUBLIC_IP` for Cloudflare-managed A records.
-2. Confirm a trusted TLS chain, or explicitly accept the documented development-only risk.
-3. Test an admin, site manager, restricted user, MFA user, and invalid password.
-4. Confirm the restricted account sees exactly its assigned sites and cannot call `POST /api/sites`.
-5. Create a disposable site of each supported type, confirm it appears, then remove it through the original CloudPanel UI.
-6. Confirm the original panel on port 8443 still works.
+1. Set `CLOUDPANEL_BASE_URL`, `CLOUDPANEL_VERSION`, and a strong `SESSION_SECRET`.
+2. Set a separate `CREDENTIALS_ENCRYPTION_KEY` with at least 32 characters.
+3. Confirm a trusted TLS chain, or explicitly accept the documented development-only risk.
+4. Test an admin, site manager, restricted user, MFA user, and invalid password.
+5. Confirm the restricted account sees exactly its assigned sites and cannot call `POST /api/sites`.
+6. Create a disposable site of each supported type, confirm it appears, then remove it through the original CloudPanel UI.
+7. Confirm the original CloudPanel interface on port 8443 still works.
 
 ## Commands
 
@@ -147,7 +144,7 @@ src/app                 pages and application-owned API routes
 src/components          auth, layout, sites, and local UI components
 src/schemas             shared browser/server validation
 src/server/auth         opaque application sessions
-src/server/cloudpanel   mock and version-isolated live adapters
+src/server/cloudpanel   version-isolated live CloudPanel adapter
 src/server/security     origin checks, limits, and redacted logs
 src/types               CloudPanel adapter contracts
 ```

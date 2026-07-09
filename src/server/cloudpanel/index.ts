@@ -12,13 +12,18 @@ import {
 import { removeSiteMeta } from "@/server/sites/site-meta";
 import { deletePanelARecord } from "@/server/settings/store";
 import { LiveCloudPanelClient } from "./live-client";
-import { MockCloudPanelClient } from "./mock-client";
 
 async function withSiteTypes(sites: CloudPanelSite[]) {
   const overrides = await getSiteTypeOverrides();
   return sites.map((site) => {
     const type = overrides[site.domain.toLowerCase()];
-    return type ? { ...site, type, application: type === "docker" ? "Docker" : site.application } : site;
+    return type
+      ? {
+          ...site,
+          type,
+          application: type === "docker" ? "Docker" : site.application,
+        }
+      : site;
   });
 }
 
@@ -33,8 +38,10 @@ function withPanelRoles(inner: CloudPanelClient): CloudPanelClient {
       : result;
   return {
     login: async (input) => decorated(await inner.login(input)),
-    verifyTwoFactor: async (input) => decorated(await inner.verifyTwoFactor(input)),
-    getCurrentUser: async (session) => decorateUser(await inner.getCurrentUser(session)),
+    verifyTwoFactor: async (input) =>
+      decorated(await inner.verifyTwoFactor(input)),
+    getCurrentUser: async (session) =>
+      decorateUser(await inner.getCurrentUser(session)),
     listUsers: async (session) =>
       Promise.all((await inner.listUsers(session)).map(decorateUser)),
     listSites: async (session) => withSiteTypes(await inner.listSites(session)),
@@ -52,7 +59,12 @@ function withPanelRoles(inner: CloudPanelClient): CloudPanelClient {
         siteUserPassword: input.siteUserPassword,
       });
       await setSiteTypeOverride(input.domain, "docker");
-      return { ...site, type: "docker", appPort: input.appPort, application: "Docker" };
+      return {
+        ...site,
+        type: "docker",
+        appPort: input.appPort,
+        application: "Docker",
+      };
     },
     updateSite: inner.updateSite.bind(inner),
     deleteSite: async (session, domain) => {
@@ -77,13 +89,5 @@ function withPanelRoles(inner: CloudPanelClient): CloudPanelClient {
 let client: CloudPanelClient | undefined;
 
 export function getCloudPanelClient() {
-  return (client ??= withPanelRoles(
-    process.env.CLOUDPANEL_MODE === "live"
-      ? new LiveCloudPanelClient()
-      : new MockCloudPanelClient(),
-  ));
-}
-
-export function setCloudPanelClientForTests(value?: CloudPanelClient) {
-  client = value;
+  return (client ??= withPanelRoles(new LiveCloudPanelClient()));
 }

@@ -4,7 +4,19 @@ import { useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { Activity, Cloud, Globe2, Info, LogOut, Menu, Settings, UserRound, Users, X } from "lucide-react";
+import {
+  Activity,
+  BadgeInfo,
+  Cloud,
+  Globe2,
+  Info,
+  LogOut,
+  Menu,
+  Settings,
+  UserRound,
+  Users,
+  X,
+} from "lucide-react";
 import type { CloudPanelUser } from "@/types/cloudpanel";
 import { Brand } from "@/components/brand";
 import { Button } from "@/components/ui/button";
@@ -26,27 +38,38 @@ export function AppShell({
       ? "Domains & DNS"
       : pathname === "/settings"
         ? "Panel settings"
-      : pathname === "/users"
-        ? "User management"
-        : pathname === "/resources"
-          ? "Server resources"
-          : pathname === "/information"
-            ? "Server information"
-            : pathname === "/profile"
-              ? "My profile"
-              : pathname === "/sites/new"
-      ? "Add website"
-      : pathname.split("/").length > 3
-        ? "Website workspace"
-        : "Websites";
+        : pathname === "/users"
+          ? "User management"
+          : pathname === "/resources"
+            ? "Server resources"
+            : pathname === "/about"
+              ? "About panelavo"
+              : pathname === "/information"
+                ? "Server information"
+                : pathname === "/profile"
+                  ? "My profile"
+                  : pathname === "/sites/new"
+                    ? "Add website"
+                    : pathname.split("/").length > 3
+                      ? "Website workspace"
+                      : "Websites";
   const elevated = ["super-admin", "manager"].includes(user.panelRole ?? "");
   const nav = [
     { href: "/sites", label: "Websites", icon: Globe2 },
     { href: "/domains", label: "Domains", icon: Cloud },
-    ...(elevated ? [{ href: "/resources", label: "Resources", icon: Activity }] : []),
-    ...(elevated ? [{ href: "/information", label: "Information", icon: Info }] : []),
-    ...(user.panelRole === "super-admin" ? [{ href: "/users", label: "Users", icon: Users }] : []),
-    ...(user.panelRole === "super-admin" ? [{ href: "/settings", label: "Settings", icon: Settings }] : []),
+    ...(elevated
+      ? [{ href: "/resources", label: "Resources", icon: Activity }]
+      : []),
+    ...(elevated
+      ? [{ href: "/information", label: "Information", icon: Info }]
+      : []),
+    { href: "/about", label: "About", icon: BadgeInfo },
+    ...(user.panelRole === "super-admin"
+      ? [{ href: "/users", label: "Users", icon: Users }]
+      : []),
+    ...(user.panelRole === "super-admin"
+      ? [{ href: "/settings", label: "Settings", icon: Settings }]
+      : []),
   ];
   async function logout() {
     setLoggingOut(true);
@@ -140,7 +163,9 @@ export function AppShell({
               <p className="mt-0.5 hidden text-xs text-slate-400 sm:block">
                 {title === "Website workspace"
                   ? "Configure and maintain your website"
-                  : "Manage your CloudPanel websites"}
+                  : title === "About panelavo"
+                    ? "Product details and project notices"
+                    : "Manage your CloudPanel websites"}
               </p>
             </div>
           </div>
