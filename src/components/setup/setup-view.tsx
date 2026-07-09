@@ -183,10 +183,6 @@ export function SetupView({
                       Save
                     </Button>
                   </div>
-                  <p className="text-xs text-slate-500">
-                    No domain of your own? Keep <b>mehebub.com</b> and register
-                    the wildcard automatically below.
-                  </p>
                 </div>
 
                 <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm">
@@ -211,18 +207,34 @@ export function SetupView({
                         )}
                         Auto-register wildcard
                       </Button>
-                      <p className="mt-2 text-xs text-slate-500">
-                        Registers <code className="break-all">{shownWildcard}</code>{" "}
-                        in the mehebub.com zone (only your own server IP can be
-                        registered).
-                      </p>
                     </div>
                   ) : (
-                    <p className="mt-2 text-xs text-slate-500">
-                      Create this A record in your DNS provider (or Cloudflare),
-                      then recheck. Auto-registration is only available for the
-                      default <b>mehebub.com</b> base domain.
-                    </p>
+                    <div className="mt-4 space-y-3">
+                      <p className="text-xs text-slate-500">
+                        Create this A record in your DNS provider, then recheck.
+                      </p>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={busy !== null}
+                        onClick={() => {
+                          setBaseDomain("mehebub.com");
+                          call(
+                            "save",
+                            () =>
+                              fetch("/api/setup", {
+                                method: "POST",
+                                headers: { "content-type": "application/json" },
+                                body: JSON.stringify({ action: "set-base-domain", baseDomain: "mehebub.com" }),
+                              }),
+                            (data) => apply(data.status),
+                          );
+                        }}
+                      >
+                        Use default mehebub.com domain
+                      </Button>
+                    </div>
                   )}
                 </div>
 

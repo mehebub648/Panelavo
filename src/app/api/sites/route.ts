@@ -122,8 +122,8 @@ export async function POST(request: NextRequest) {
       throw error;
     }
 
-    // Best-effort automation: DNS for any aliases the panel's Cloudflare token
-    // can manage, then the alias vhost sync. Failures are reported as warnings
+    // Best-effort automation: DNS for any aliases we can
+    // manage, then the alias vhost sync. Failures are reported as warnings
     // instead of rolling back the created site.
     for (const alias of aliases) {
       warnings.push(`Point ${alias} to ${serverIp} at your DNS provider, then issue SSL from the Domains tab.`);

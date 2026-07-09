@@ -202,7 +202,7 @@ export function PanelSettingsForm({
               )}
             </div>
             <div className="mt-3 flex flex-wrap items-center gap-2">
-              {canAutoRegister && (
+              {canAutoRegister ? (
                 <Button
                   type="button"
                   size="sm"
@@ -210,6 +210,19 @@ export function PanelSettingsForm({
                   onClick={registerWildcard}
                 >
                   <Zap className="h-4 w-4" /> Auto-register
+                </Button>
+              ) : (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => {
+                    setBaseDomain("mehebub.com");
+                    void patch({ baseDomain: "mehebub.com" }, "Base domain saved");
+                  }}
+                >
+                  Use default mehebub.com domain
                 </Button>
               )}
               <Button
