@@ -53,6 +53,7 @@ export interface CloudPanelSite {
   status?: "active" | "inactive" | "unknown";
   createdAt?: string;
   url: string;
+  meta?: { aliases?: string[] } & Record<string, unknown>;
 }
 
 export interface SiteCreationOptions {

@@ -99,12 +99,6 @@ export async function POST(request: NextRequest, context: Context) {
     if (input.action === "add-alias") {
       if (input.domain === decodedDomain)
         throw new AppError("INVALID_REQUEST", "The system domain is already served.", 400);
-      await assertDomainsPointToServer(
-        [input.domain],
-        serverIp,
-        (status) =>
-          `${status.name} must point to this server (${serverIp}) before it can be added.`,
-      );
       if (!meta.aliases.includes(input.domain)) meta.aliases.push(input.domain);
       // The vhost is the part that must not silently fail; update meta only
       // after the web server accepted the new alias.

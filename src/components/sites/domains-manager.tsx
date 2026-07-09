@@ -40,7 +40,7 @@ export function DomainsManager({
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string>("");
   const [aliasDraft, setAliasDraft] = useState("");
-  const [sslSelection, setSslSelection] = useState<string[]>([]);
+  const [sslSelection, setSslSelection] = useState<string[]>([domain]);
   const [confirm, setConfirm] = useState<{ title: string; message: string; onConfirm: () => void } | null>(null);
 
   const base = `/api/sites/${encodeURIComponent(domain)}/domains`;
@@ -315,19 +315,20 @@ export function DomainsManager({
                 <button
                   key={name}
                   type="button"
-                  disabled={!canWrite}
-                  onClick={() =>
+                  disabled={!canWrite || name === domain}
+                  onClick={() => {
+                    if (name === domain) return;
                     setSslSelection((current) =>
                       selected
                         ? current.filter((item) => item !== name)
                         : [...current, name],
-                    )
-                  }
+                    );
+                  }}
                   className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm font-medium transition ${
                     selected
                       ? "border-panel-400 bg-panel-50 text-panel-700"
                       : "border-slate-200 text-slate-600 hover:bg-slate-50"
-                  }`}
+                  } ${name === domain ? "opacity-75 cursor-not-allowed" : ""}`}
                 >
                   {selected ? <CheckCircle2 className="h-4 w-4" /> : <Ban className="h-4 w-4 opacity-30" />}
                   <span className="break-all">{name}</span>

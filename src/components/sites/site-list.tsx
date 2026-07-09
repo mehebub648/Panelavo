@@ -298,10 +298,12 @@ export function SiteList({ user }: { user: CloudPanelUser }) {
                           <SiteIcon type={site.type} className="h-9 w-9" />
                           <div>
                             <p className="font-semibold text-slate-800">
-                              {site.domain}
+                              {site.meta?.aliases?.[0] || site.domain}
                             </p>
-                            <p className="mt-0.5 text-xs text-slate-400">
-                              {site.application || "—"}
+                            <p className="mt-0.5 text-[11px] text-slate-400">
+                              {(site.meta?.aliases?.[0] && site.meta?.aliases?.[0] !== site.domain) ? `ID: ${site.domain}` : ""}
+                              {site.application && (site.meta?.aliases?.[0] && site.meta?.aliases?.[0] !== site.domain) ? <span className="mx-1.5 opacity-50">•</span> : ""}
+                              {site.application || (!(site.meta?.aliases?.[0] && site.meta?.aliases?.[0] !== site.domain) ? "—" : "")}
                             </p>
                           </div>
                         </div>
@@ -369,18 +371,24 @@ export function SiteList({ user }: { user: CloudPanelUser }) {
                       {/* Tapping the domain copies it — no separate copy button. */}
                       <button
                         type="button"
-                        onClick={() => copy(site.domain)}
+                        onClick={() => copy(site.meta?.aliases?.[0] || site.domain)}
                         className="flex w-full items-center gap-1.5 text-left"
-                        aria-label={`Copy ${site.domain}`}
+                        aria-label={`Copy ${site.meta?.aliases?.[0] || site.domain}`}
                       >
-                        <span className="truncate font-semibold text-slate-800">{site.domain}</span>
-                        {copied === site.domain ? (
+                        <span className="truncate font-semibold text-slate-800">{site.meta?.aliases?.[0] || site.domain}</span>
+                        {copied === (site.meta?.aliases?.[0] || site.domain) ? (
                           <Check className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
                         ) : (
                           <Clipboard className="h-3.5 w-3.5 shrink-0 text-slate-300" />
                         )}
                       </button>
-                      <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-400">
+                      <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-slate-400">
+                        {(site.meta?.aliases?.[0] && site.meta?.aliases?.[0] !== site.domain) ? (
+                          <>
+                            <span className="font-mono" title="System ID">{site.domain}</span>
+                            <span className="text-slate-200">•</span>
+                          </>
+                        ) : null}
                         <span>{typeLabels[site.type as SiteType] ?? "Website"}</span>
                         {site.runtimeVersion && (
                           <>

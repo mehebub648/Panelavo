@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { ArrowLeft, ExternalLink, Globe2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { SiteSectionNav } from "@/components/sites/site-section-nav";
+import { getSiteMeta } from "@/server/sites/site-meta";
 
 export default async function SiteLayout({
   children,
@@ -12,6 +13,9 @@ export default async function SiteLayout({
   params: Promise<{ domain: string }>;
 }) {
   const domain = decodeURIComponent((await params).domain);
+  const meta = await getSiteMeta(domain);
+  const displayDomain = meta?.aliases?.[0] || domain;
+  
   return (
     <div className="mx-auto w-full max-w-7xl space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -35,13 +39,18 @@ export default async function SiteLayout({
                 Website
               </p>
               <h1 className="truncate text-2xl font-extrabold tracking-tight text-ink drop-shadow-sm">
-                {domain}
+                {displayDomain}
               </h1>
+              {displayDomain !== domain && (
+                <p className="mt-1 text-xs text-slate-400">
+                  ID: <span className="font-mono">{domain}</span>
+                </p>
+              )}
             </div>
           </div>
           <Button asChild variant="outline" size="sm" className="rounded-full shadow-sm bg-white/70 backdrop-blur-sm transition-all hover:bg-white hover:shadow-md">
           <a
-            href={`https://${domain}`}
+            href={`https://${displayDomain}`}
             target="_blank"
             rel="noopener noreferrer"
           >

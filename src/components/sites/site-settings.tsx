@@ -81,18 +81,30 @@ export function SiteSettings({
     async function checkDns() {
       setBusyDns(true);
       try {
-        const result = await fetch(`/api/sites/${encodeURIComponent(site.domain)}/dns`).then((r) => r.json());
+        const targetDomain = site.meta?.aliases?.[0] || site.domain;
+        const result = await fetch(`/api/sites/${encodeURIComponent(targetDomain)}/dns`).then((r) => r.json());
         if (result.success) {
           setDnsStatus(result.data);
         }
-      } catch (e) {
+      } catch {
         // ignore
       } finally {
         setBusyDns(false);
       }
     }
-    void checkDns();
-  }, [site.domain]);
+    // Only check DNS if it's NOT the wildcard system domain without aliases, 
+    // because wildcard system domains are already pointed by default (wildcard DNS).
+    // Actually the user said: "no need to do for the id, as we already have wild card"
+    const targetDomain = site.meta?.aliases?.[0];
+    if (targetDomain) {
+      void checkDns();
+    } else {
+      setBusyDns(false);
+      // We assume system domains are pointed via wildcard.
+      setDnsStatus({ pointed: true, ip: null, serverIp: "", zoneId: null, credentialId: null });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [site.domain, site.meta?.aliases?.[0]]);
 
   async function save(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -168,7 +180,8 @@ export function SiteSettings({
     const doPoint = async (replace = false) => {
       setBusyDns(true);
       try {
-        const response = await fetch(`/api/sites/${encodeURIComponent(site.domain)}/dns`, {
+        const targetDomain = site.meta?.aliases?.[0] || site.domain;
+        const response = await fetch(`/api/sites/${encodeURIComponent(targetDomain)}/dns`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({

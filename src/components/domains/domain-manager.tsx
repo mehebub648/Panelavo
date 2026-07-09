@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { Cloud, KeyRound, LoaderCircle, Pencil, Plus, RefreshCw, Trash2, Globe, ChevronRight, Server, ShieldCheck, Mail, FileText, Search } from "lucide-react";
+import { Cloud, LoaderCircle, Pencil, Plus, RefreshCw, Trash2, Globe, ChevronRight, Server, ShieldCheck, Mail, FileText, Search } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -50,6 +50,7 @@ export function DomainManager() {
 
   useEffect(() => {
     void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function select(zone: Zone) {

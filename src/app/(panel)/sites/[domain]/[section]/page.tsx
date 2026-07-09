@@ -51,7 +51,9 @@ export default async function SiteSectionPage({
     const sites = await cloudPanel.listSites(session.record.cloudPanel);
     const site = sites.find((item) => item.domain === domain);
     if (!site) notFound();
-    return <SiteSettings initialSite={site} user={session.user} />;
+    const siteMeta = await import("@/server/sites/site-meta").then(m => m.getSiteMeta(domain));
+    const mergedSite = siteMeta ? { ...site, meta: siteMeta } : site;
+    return <SiteSettings initialSite={mergedSite} user={session.user} />;
   }
   if (section === "domains") {
     const certificates = await cloudPanel.getSiteSection(
