@@ -248,7 +248,9 @@ export function SiteSectionManager({
             <div className="space-y-3">
               {(() => {
                 const items = data.items as CertificateItem[];
-                const validItems = Array.isArray(items) ? items.filter((item) => String(item.type) !== "2" && String(item.type).toLowerCase() !== "self-signed") : [];
+                // Self-signed placeholders (CloudPanel type 1) are not real SSL — never
+                // present them as installed certificates.
+                const validItems = Array.isArray(items) ? items.filter((item) => !["1", "self-signed"].includes(String(item.type).toLowerCase())) : [];
                 return validItems.map((item) => (
                 <div key={item.id} className={`group flex flex-wrap items-center justify-between gap-3 rounded-xl border p-4 transition-all hover:shadow-sm ${item.default ? "border-emerald-200/70 bg-emerald-50/40" : "border-slate-200/60 bg-white/50 hover:bg-white"}`}>
                   <div className="min-w-0">
@@ -280,7 +282,9 @@ export function SiteSectionManager({
               })()}
               {(() => {
                 const items = data.items as CertificateItem[];
-                const validItems = Array.isArray(items) ? items.filter((item) => String(item.type) !== "2" && String(item.type).toLowerCase() !== "self-signed") : [];
+                // Self-signed placeholders (CloudPanel type 1) are not real SSL — never
+                // present them as installed certificates.
+                const validItems = Array.isArray(items) ? items.filter((item) => !["1", "self-signed"].includes(String(item.type).toLowerCase())) : [];
                 return validItems.length === 0 ? (
                   <div className="rounded-xl border border-dashed border-slate-200 py-7 text-center text-sm text-slate-400">No certificates installed</div>
                 ) : null;

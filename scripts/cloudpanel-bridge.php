@@ -736,9 +736,17 @@ try {
                     'users' => array_map(fn($u) => $u->getUserName(), $db->getUsers()->toArray()),
                     'createdAt' => $db->getCreatedAt()?->format(DATE_ATOM),
                 ], $site->getDatabases()->toArray())],
+                // Certificate::TYPE_SELF_SIGNED = 1, TYPE_LETS_ENCRYPT = 2,
+                // TYPE_IMPORTED = 3 — exported as semantic strings so no
+                // consumer ever has to guess the numeric mapping again.
                 'certificates' => ['items' => array_map(fn($cert) => [
                     'id' => (string) $cert->getId(),
-                    'type' => $cert->getType(),
+                    'type' => match ((int) $cert->getType()) {
+                        1 => 'self-signed',
+                        2 => 'lets-encrypt',
+                        3 => 'imported',
+                        default => (string) $cert->getType(),
+                    },
                     'domains' => $cert->getDomains(),
                     'expiresAt' => $cert->getExpiresAt()?->format(DATE_ATOM),
                     'default' => $cert->getDefaultCertificate(),
