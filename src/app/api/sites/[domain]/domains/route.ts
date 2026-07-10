@@ -11,6 +11,7 @@ import {
   assertDomainsPointToServer,
   resolveDnsStatus,
 } from "@/server/network/dns";
+import { autoPointDns, autoDeleteDns } from "@/server/network/auto-dns";
 import { getSiteMeta, setSiteMeta, type SiteMeta } from "@/server/sites/site-meta";
 import { domainValue } from "@/schemas/sites";
 import { certAlternativeNames } from "@/lib/domains";
@@ -104,6 +105,37 @@ export async function POST(request: NextRequest, context: Context) {
       // after the web server accepted the new alias.
       await syncVhost(session, decodedDomain, meta);
       await setSiteMeta(decodedDomain, meta);
+
+      // Background DNS and SSL automation
+      void (async () => {
+        try {
+          await autoPointDns(session.user.id, input.domain, serverIp);
+          // Only attempt SSL if all domains are pointed
+          const san = Array.from(
+            new Set(
+              meta.aliases
+                .filter((name) => name !== decodedDomain)
+                .flatMap((name) => [name, ...certAlternativeNames(name)]),
+            ),
+          );
+          const domains = Array.from(new Set([decodedDomain, ...san]));
+          const statuses = await resolveDnsStatus(domains, serverIp);
+          const allPointed = statuses.every(s => s.pointed);
+          
+          if (allPointed) {
+            await getCloudPanelClient().manageSiteSection(
+              session.record.cloudPanel,
+              decodedDomain,
+              "certificates",
+              san.length
+                ? { action: "lets-encrypt", subjectAlternativeName: san.join(",") }
+                : { action: "lets-encrypt" },
+            );
+          }
+        } catch (e: unknown) {
+          console.error("Auto DNS/SSL failed for added alias:", e);
+        }
+      })();
     } else if (input.action === "remove-alias") {
       meta.aliases = meta.aliases.filter((alias) => alias !== input.domain);
       if (meta.redirectTo === input.domain) {
@@ -112,6 +144,11 @@ export async function POST(request: NextRequest, context: Context) {
       }
       await syncVhost(session, decodedDomain, meta);
       await setSiteMeta(decodedDomain, meta);
+
+      // Background DNS cleanup
+      void autoDeleteDns(session.user.id, input.domain, serverIp).catch((e: unknown) => {
+        console.error("Auto DNS delete failed for removed alias:", e);
+      });
     } else if (input.action === "set-block") {
       if (input.block !== "none" && !meta.aliases.length)
         throw new AppError(

@@ -17,6 +17,9 @@ import {
   siteUserForId,
   systemDomainFor,
 } from "@/server/sites/site-meta";
+import { resolveDnsStatus } from "@/server/network/dns";
+import { autoPointDns } from "@/server/network/auto-dns";
+import { certAlternativeNames } from "@/lib/domains";
 import type { CreateSiteInput } from "@/types/cloudpanel";
 
 export async function GET() {
@@ -125,9 +128,6 @@ export async function POST(request: NextRequest) {
     // Best-effort automation: DNS for any aliases we can
     // manage, then the alias vhost sync. Failures are reported as warnings
     // instead of rolling back the created site.
-    for (const alias of aliases) {
-      warnings.push(`Point ${alias} to ${serverIp} at your DNS provider, then issue SSL from the Domains tab.`);
-    }
     if (aliases.length) {
       try {
         await client.manageSiteSection(session.record.cloudPanel, domain, "domains", {
@@ -138,10 +138,44 @@ export async function POST(request: NextRequest) {
         });
       } catch {
         warnings.push(
-          "The alias domains were saved but could not be added to the web server config yet — open the Domains tab and retry.",
+          "Website was created, but failed to configure your domain aliases. Try saving them again from the Settings tab.",
         );
       }
     }
+
+    // Background DNS and SSL automation
+    void (async () => {
+      try {
+        for (const alias of aliases) {
+          await autoPointDns(session.user.id, alias, serverIp);
+        }
+        
+        // Check if SSL can be issued
+        const san = Array.from(
+          new Set(
+            aliases
+              .filter((name) => name !== domain)
+              .flatMap((name) => [name, ...certAlternativeNames(name)]),
+          ),
+        );
+        const allDomains = Array.from(new Set([domain, ...san]));
+        const statuses = await resolveDnsStatus(allDomains, serverIp);
+        const allPointed = statuses.every(s => s.pointed);
+        
+        if (allPointed) {
+          await client.manageSiteSection(
+            session.record.cloudPanel,
+            domain,
+            "certificates",
+            san.length
+              ? { action: "lets-encrypt", subjectAlternativeName: san.join(",") }
+              : { action: "lets-encrypt" },
+          );
+        }
+      } catch (e: unknown) {
+        console.error("Auto DNS/SSL failed for new site:", e);
+      }
+    })();
 
     audit("sites.create", "success", {
       requestId,

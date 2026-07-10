@@ -80,6 +80,56 @@ export function DomainsManager({
     }
   }
 
+  async function pointDns(targetDomain: string, currentIp: string | null) {
+    setBusy(`dns-${targetDomain}`);
+    try {
+      // 1. Check DNS status to get zone and credential
+      const getRes = await fetch(`/api/sites/${encodeURIComponent(targetDomain)}/dns`).then(r => r.json());
+      if (!getRes.success) throw new Error("Could not check DNS status.");
+      
+      const status = getRes.data;
+      if (!status.zoneId || !status.credentialId) {
+        throw new Error("No connected Cloudflare zone found for this domain.");
+      }
+
+      // 2. Point it
+      const doPoint = async (replace = false) => {
+        const postRes = await fetch(`/api/sites/${encodeURIComponent(targetDomain)}/dns`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            zoneId: status.zoneId,
+            credentialId: status.credentialId,
+            replace,
+            proxied: false,
+          }),
+        });
+        const postResult = await postRes.json();
+        if (!postResult.success) throw new Error(postResult.error?.message || "Failed to update DNS");
+        toast.success("DNS record updated successfully");
+        void refresh();
+      };
+
+      if (currentIp && currentIp !== status.serverIp) {
+        setConfirm({
+          title: "Replace DNS Record",
+          message: `An A record already points to ${currentIp}. Do you want to replace it to point to this server (${status.serverIp})?`,
+          onConfirm: () => {
+            setConfirm(null);
+            setBusy(`dns-${targetDomain}`);
+            void doPoint(true).finally(() => setBusy(""));
+          }
+        });
+      } else {
+        await doPoint(false);
+      }
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Failed to update DNS");
+    } finally {
+      if (!confirm) setBusy("");
+    }
+  }
+
   if (loading)
     return <div className="h-72 animate-pulse rounded-2xl border border-slate-200 bg-white" />;
 
@@ -248,12 +298,24 @@ export function DomainsManager({
                           <CheckCircle2 className="h-4 w-4" /> Points here
                         </span>
                       ) : (
-                        <>
+                        <div className="flex items-center gap-3">
                           <span className="flex items-center gap-1.5 text-amber-600">
                             <TriangleAlert className="h-4 w-4" />
                             {dns?.ip ? `Points to ${dns.ip}` : "No DNS record"}
                           </span>
-                        </>
+                          {canWrite && (
+                            <Button 
+                              size="sm" 
+                              variant="outline" 
+                              className="h-7 text-xs border-amber-200 text-amber-700 hover:bg-amber-50"
+                              disabled={busy !== ""}
+                              onClick={() => pointDns(alias, dns?.ip ?? null)}
+                            >
+                              {busy === `dns-${alias}` ? <LoaderCircle className="mr-1.5 h-3 w-3 animate-spin" /> : null}
+                              Point to this server
+                            </Button>
+                          )}
+                        </div>
                       )}
                       {canWrite && (
                         <Button
