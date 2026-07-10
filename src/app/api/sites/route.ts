@@ -17,9 +17,7 @@ import {
   siteUserForId,
   systemDomainFor,
 } from "@/server/sites/site-meta";
-import { resolveDnsStatus } from "@/server/network/dns";
-import { autoPointDns } from "@/server/network/auto-dns";
-import { certAlternativeNames } from "@/lib/domains";
+import { issueSiteSsl, planSiteSsl } from "@/server/sites/ensure-ssl";
 import type { CreateSiteInput } from "@/types/cloudpanel";
 
 export async function GET() {
@@ -79,14 +77,12 @@ export async function POST(request: NextRequest) {
 
     const domain = systemDomainFor(id, serverIp, baseDomain);
     const siteUser = siteUserForId(id);
+    // Aliases do NOT have to point here yet: the site is created either way,
+    // the certificate covers whatever already points at us, and unpointed
+    // aliases come back as warnings the user can act on later.
     const aliases = Array.from(
       new Set(input.aliases.filter((alias) => alias !== domain)),
     );
-
-    if (aliases.length > 0) {
-      const { assertDomainsPointToServer } = await import("@/server/network/dns");
-      await assertDomainsPointToServer(aliases, serverIp);
-    }
 
     const shared = { domain, siteUser, siteUserPassword: input.siteUserPassword };
     const createInput: CreateSiteInput =
@@ -143,39 +139,24 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Background DNS and SSL automation
-    void (async () => {
-      try {
-        for (const alias of aliases) {
-          await autoPointDns(session.user.id, alias, serverIp);
-        }
-        
-        // Check if SSL can be issued
-        const san = Array.from(
-          new Set(
-            aliases
-              .filter((name) => name !== domain)
-              .flatMap((name) => [name, ...certAlternativeNames(name)]),
-          ),
-        );
-        const allDomains = Array.from(new Set([domain, ...san]));
-        const statuses = await resolveDnsStatus(allDomains, serverIp);
-        const allPointed = statuses.every(s => s.pointed);
-        
-        if (allPointed) {
-          await client.manageSiteSection(
-            session.record.cloudPanel,
-            domain,
-            "certificates",
-            san.length
-              ? { action: "lets-encrypt", subjectAlternativeName: san.join(",") }
-              : { action: "lets-encrypt" },
-          );
-        }
-      } catch (e: unknown) {
-        console.error("Auto DNS/SSL failed for new site:", e);
-      }
-    })();
+    // DNS + SSL automation. The plan (Cloudflare auto-pointing + DNS
+    // verification) runs synchronously so its warnings reach this response;
+    // the actual Let's Encrypt issuance can take a minute, so it runs in the
+    // background. Every panel site gets a certificate — at minimum for its
+    // wildcard-covered system domain.
+    const plan = await planSiteSsl({
+      userId: session.user.id,
+      systemDomain: domain,
+      aliases,
+      serverIp,
+      autoPoint: true,
+    });
+    warnings.push(...plan.warnings);
+    void issueSiteSsl(session.record.cloudPanel, domain, plan.san).catch(
+      (error: unknown) => {
+        console.error(`Let's Encrypt issuance failed for new site ${domain}:`, error);
+      },
+    );
 
     audit("sites.create", "success", {
       requestId,

@@ -198,77 +198,81 @@ export function SetupView({
                   </div>
                 </div>
 
-                <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm">
-                  <p className="font-semibold text-slate-800">
-                    Required wildcard DNS record
-                  </p>
-                  <p className="mt-1 text-slate-600">
-                    <code className="break-all">A {shownWildcard}</code> →{" "}
-                    <b>{status.serverIp || "this server"}</b>
-                  </p>
-                  {status.canAutoRegister ? (
-                    <div className="mt-3">
-                      <Button
-                        type="button"
-                        disabled={busy !== null}
-                        onClick={register}
-                      >
-                        {busy === "register" ? (
-                          <LoaderCircle className="h-4 w-4 animate-spin" />
-                        ) : (
-                          <Zap className="h-4 w-4" />
-                        )}
-                        Auto-register wildcard
-                      </Button>
-                    </div>
-                  ) : (
-                    <div className="mt-4 space-y-3">
-                      <p className="text-xs text-slate-500">
-                        Create this A record in your DNS provider, then recheck.
-                      </p>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        disabled={busy !== null}
-                        onClick={() => {
-                          setBaseDomain(status.defaultBaseDomain);
-                          call(
-                            "save",
-                            () =>
-                              fetch("/api/setup", {
-                                method: "POST",
-                                headers: { "content-type": "application/json" },
-                                body: JSON.stringify({
-                                  action: "set-base-domain",
-                                  baseDomain: status.defaultBaseDomain,
-                                }),
-                              }),
-                            (data) => apply(data.status),
-                          );
-                        }}
-                      >
-                        Use default {status.defaultBaseDomain} domain
-                      </Button>
-                    </div>
-                  )}
-                </div>
-
-                <div className="flex justify-end">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    disabled={busy !== null}
-                    onClick={recheck}
-                  >
-                    {busy === "recheck" ? (
-                      <LoaderCircle className="h-4 w-4 animate-spin" />
+                {!status.pointed && (
+                  <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm">
+                    <p className="font-semibold text-slate-800">
+                      Required wildcard DNS record
+                    </p>
+                    <p className="mt-1 text-slate-600">
+                      <code className="break-all">A {shownWildcard}</code> →{" "}
+                      <b>{status.serverIp || "this server"}</b>
+                    </p>
+                    {status.canAutoRegister ? (
+                      <div className="mt-3">
+                        <Button
+                          type="button"
+                          disabled={busy !== null}
+                          onClick={register}
+                        >
+                          {busy === "register" ? (
+                            <LoaderCircle className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <Zap className="h-4 w-4" />
+                          )}
+                          Auto-register wildcard
+                        </Button>
+                      </div>
                     ) : (
-                      <RefreshCw className="h-4 w-4" />
+                      <div className="mt-4 space-y-3">
+                        <p className="text-xs text-slate-500">
+                          Create this A record in your DNS provider, then recheck.
+                        </p>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={busy !== null}
+                          onClick={() => {
+                            setBaseDomain(status.defaultBaseDomain);
+                            call(
+                              "save",
+                              () =>
+                                fetch("/api/setup", {
+                                  method: "POST",
+                                  headers: { "content-type": "application/json" },
+                                  body: JSON.stringify({
+                                    action: "set-base-domain",
+                                    baseDomain: status.defaultBaseDomain,
+                                  }),
+                                }),
+                              (data) => apply(data.status),
+                            );
+                          }}
+                        >
+                          Use default {status.defaultBaseDomain} domain
+                        </Button>
+                      </div>
                     )}
-                    Recheck DNS
-                  </Button>
-                </div>
+                  </div>
+                )}
+
+                {!status.pointed && (
+                  <div className="flex justify-end">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      disabled={busy !== null}
+                      onClick={recheck}
+                    >
+                      {busy === "recheck" ? (
+                        <LoaderCircle className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <RefreshCw className="h-4 w-4" />
+                      )}
+                      Recheck DNS
+                    </Button>
+                  </div>
+                )}
               </>
             ) : (
               <div className="space-y-4">

@@ -320,7 +320,37 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 12. Health check + summary
+# 12. Panel SSL: once the wildcard resolves here, the panel domain
+#     (panel.<ip>.<base>) is covered by it, so a Let's Encrypt certificate
+#     can be issued immediately. Re-check first — DNS often propagates while
+#     CloudPanel was installing.
+# ---------------------------------------------------------------------------
+PANEL_URL="http://${SERVER_IP}:${APP_PORT}"
+if [ -n "${PANEL_BASE_DOMAIN}" ]; then
+  log "Re-checking wildcard DNS before issuing the panel certificate ..."
+  for _ in $(seq 1 15); do
+    if wildcard_points_here; then WILDCARD_OK=yes; break; fi
+    sleep 2
+  done
+  if [ "${WILDCARD_OK:-}" = "yes" ]; then
+    log "Issuing a Let's Encrypt certificate for ${PANEL_DOMAIN} ..."
+    if clpctl lets-encrypt:install:certificate --domainName="${PANEL_DOMAIN}" >/dev/null 2>&1; then
+      PANEL_URL="https://${PANEL_DOMAIN}"
+      log "Certificate installed — the panel is served on ${PANEL_URL}"
+    else
+      warn "Let's Encrypt issuance failed for ${PANEL_DOMAIN}; the panel keeps its self-signed certificate."
+      warn "Retry later with: clpctl lets-encrypt:install:certificate --domainName=${PANEL_DOMAIN}"
+      PANEL_URL="https://${PANEL_DOMAIN}"
+    fi
+  else
+    warn "The wildcard *.${SERVER_IP}.${PANEL_BASE_DOMAIN} does not resolve here yet."
+    warn "The panel will show a setup screen until it does; SSL for ${PANEL_DOMAIN} can then be issued with:"
+    warn "  clpctl lets-encrypt:install:certificate --domainName=${PANEL_DOMAIN}"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# 13. Health check + summary
 # ---------------------------------------------------------------------------
 log "Waiting for the panel to come up ..."
 for _ in $(seq 1 30); do
@@ -334,8 +364,8 @@ cat <<EOF
 ============================================================
  panelavo setup complete
 ============================================================
- panelavo (primary): http://${SERVER_IP}:${APP_PORT}
- panelavo (domain):  https://${PANEL_DOMAIN}
+ Panel address:      ${PANEL_URL}
+ Fallback (by IP):   http://${SERVER_IP}:${APP_PORT}
  CloudPanel:         https://127.0.0.1:8443 (blocked publicly; use an SSH tunnel)
 
  CloudPanel admin:   ${ADMIN_USER}

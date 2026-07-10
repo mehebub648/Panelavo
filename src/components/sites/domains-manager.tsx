@@ -8,6 +8,7 @@ import {
   LoaderCircle,
   Lock,
   Plus,
+  RefreshCw,
   ShieldCheck,
   Trash2,
   TriangleAlert,
@@ -413,27 +414,48 @@ export function DomainsManager({
             })}
           </div>
           {canWrite && (
-            <Button
-              disabled={busy !== "" || !sslSelection.length}
-              onClick={() =>
-                void act(
-                  { action: "issue-ssl", domains: sslSelection },
-                  "ssl",
-                  "Certificate issued",
-                )
-              }
-            >
-              {busy === "ssl" ? (
-                <LoaderCircle className="h-4 w-4 animate-spin" />
-              ) : (
-                <ShieldCheck className="h-4 w-4" />
-              )}
-              Issue certificate
-            </Button>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                disabled={busy !== "" || !sslSelection.length}
+                onClick={() =>
+                  void act(
+                    { action: "issue-ssl", domains: sslSelection },
+                    "ssl",
+                    "Certificate issued",
+                  )
+                }
+              >
+                {busy === "ssl" ? (
+                  <LoaderCircle className="h-4 w-4 animate-spin" />
+                ) : (
+                  <ShieldCheck className="h-4 w-4" />
+                )}
+                Issue certificate
+              </Button>
+              <Button
+                variant="outline"
+                disabled={busy !== ""}
+                onClick={() =>
+                  void act(
+                    { action: "ensure-ssl" },
+                    "ensure-ssl",
+                    "DNS rechecked — certificate covers every pointed domain",
+                  )
+                }
+              >
+                {busy === "ensure-ssl" ? (
+                  <LoaderCircle className="h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-4 w-4" />
+                )}
+                Recheck DNS &amp; secure
+              </Button>
+            </div>
           )}
           <p className="text-xs text-slate-400">
             Installed certificates are shown below on this page. Issuing can take up
-            to a minute.
+            to a minute. &quot;Recheck DNS &amp; secure&quot; re-points what it can,
+            then extends the certificate to every domain that points here.
           </p>
         </div>
       </section>

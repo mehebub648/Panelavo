@@ -11,7 +11,12 @@ import {
   assertDomainsPointToServer,
   resolveDnsStatus,
 } from "@/server/network/dns";
-import { autoPointDns, autoDeleteDns } from "@/server/network/auto-dns";
+import { autoDeleteDns } from "@/server/network/auto-dns";
+import {
+  certificateAlreadyCovers,
+  issueSiteSsl,
+  planSiteSsl,
+} from "@/server/sites/ensure-ssl";
 import { getSiteMeta, setSiteMeta, type SiteMeta } from "@/server/sites/site-meta";
 import { domainValue } from "@/schemas/sites";
 import { certAlternativeNames } from "@/lib/domains";
@@ -62,6 +67,7 @@ const actionSchema = z.discriminatedUnion("action", [
   z
     .object({ action: z.literal("issue-ssl"), domains: z.array(domainValue).max(11) })
     .strict(),
+  z.object({ action: z.literal("ensure-ssl") }).strict(),
 ]);
 
 async function syncVhost(
@@ -106,36 +112,22 @@ export async function POST(request: NextRequest, context: Context) {
       await syncVhost(session, decodedDomain, meta);
       await setSiteMeta(decodedDomain, meta);
 
-      // Background DNS and SSL automation
-      void (async () => {
-        try {
-          await autoPointDns(session.user.id, input.domain, serverIp);
-          // Only attempt SSL if all domains are pointed
-          const san = Array.from(
-            new Set(
-              meta.aliases
-                .filter((name) => name !== decodedDomain)
-                .flatMap((name) => [name, ...certAlternativeNames(name)]),
-            ),
-          );
-          const domains = Array.from(new Set([decodedDomain, ...san]));
-          const statuses = await resolveDnsStatus(domains, serverIp);
-          const allPointed = statuses.every(s => s.pointed);
-          
-          if (allPointed) {
-            await getCloudPanelClient().manageSiteSection(
-              session.record.cloudPanel,
-              decodedDomain,
-              "certificates",
-              san.length
-                ? { action: "lets-encrypt", subjectAlternativeName: san.join(",") }
-                : { action: "lets-encrypt" },
-            );
-          }
-        } catch (e: unknown) {
-          console.error("Auto DNS/SSL failed for added alias:", e);
-        }
-      })();
+      // DNS + SSL automation: point what a connected Cloudflare token can,
+      // verify, and grow the certificate with every alias that points here.
+      // Unpointed names surface as warnings; issuance runs in the background.
+      const plan = await planSiteSsl({
+        userId: session.user.id,
+        systemDomain: decodedDomain,
+        aliases: meta.aliases,
+        serverIp,
+        autoPoint: true,
+      });
+      warnings.push(...plan.warnings);
+      void issueSiteSsl(session.record.cloudPanel, decodedDomain, plan.san).catch(
+        (error: unknown) => {
+          console.error(`Let's Encrypt issuance failed for ${decodedDomain}:`, error);
+        },
+      );
     } else if (input.action === "remove-alias") {
       meta.aliases = meta.aliases.filter((alias) => alias !== input.domain);
       if (meta.redirectTo === input.domain) {
@@ -193,6 +185,26 @@ export async function POST(request: NextRequest, context: Context) {
           ? { action: "lets-encrypt", subjectAlternativeName: san.join(",") }
           : { action: "lets-encrypt" },
       );
+    } else if (input.action === "ensure-ssl") {
+      // "Recheck DNS & secure": re-point what we can, re-verify every alias,
+      // and (re-)issue the certificate so it covers the system domain plus all
+      // aliases that now point here. Skipped when the installed certificate
+      // already covers that exact set — re-issuing identical certificates only
+      // burns Let's Encrypt's duplicate rate limit.
+      const plan = await planSiteSsl({
+        userId: session.user.id,
+        systemDomain: decodedDomain,
+        aliases: meta.aliases,
+        serverIp,
+        autoPoint: true,
+      });
+      warnings.push(...plan.warnings);
+      const desired = [decodedDomain, ...plan.san];
+      if (await certificateAlreadyCovers(session.record.cloudPanel, decodedDomain, desired)) {
+        warnings.push("The installed certificate already covers every domain that points here.");
+      } else {
+        await issueSiteSsl(session.record.cloudPanel, decodedDomain, plan.san);
+      }
     }
 
     audit("sites.domains", "success", {

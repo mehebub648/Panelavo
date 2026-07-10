@@ -381,22 +381,69 @@ function readMeminfo(): array
     return $values;
 }
 
-function cpuUsagePercent(): float
+// One shared ~500 ms sampling window measures the machine total AND each
+// user's share the same way (utime+stime tick deltas from /proc), so the
+// header percentage and the per-user rows are the same quantity and add up.
+// ps's %cpu is a per-process LIFETIME average, which made idle machines show
+// busy users — never use it for "current" CPU.
+function sampleCpu(): array
 {
-    $sample = function (): ?array {
+    $readStat = function (): ?array {
         $line = strtok((string) @file_get_contents('/proc/stat'), "\n");
         if (!$line || !preg_match('/^cpu\s+(.+)$/', $line, $m)) return null;
         $parts = array_map('intval', preg_split('/\s+/', trim($m[1])));
         $idle = ($parts[3] ?? 0) + ($parts[4] ?? 0);
         return [array_sum($parts), $idle];
     };
-    $first = $sample();
-    usleep(250000);
-    $second = $sample();
-    if (!$first || !$second || $second[0] <= $first[0]) return 0.0;
-    $total = $second[0] - $first[0];
-    $idle = $second[1] - $first[1];
-    return round(max(0, min(100, (1 - $idle / max(1, $total)) * 100)), 1);
+    $readProcs = function (): array {
+        $ticks = [];
+        foreach (glob('/proc/[0-9]*/stat') ?: [] as $file) {
+            $stat = @file_get_contents($file);
+            if ($stat === false) continue;
+            $close = strrpos($stat, ')');
+            if ($close === false) continue;
+            $fields = preg_split('/\s+/', trim(substr($stat, $close + 1)));
+            $uid = @fileowner(dirname($file));
+            if ($uid === false) continue;
+            // Fields after the closing paren: state=0 … utime=11, stime=12.
+            $ticks[(int) basename(dirname($file))] =
+                [(int) $uid, (int) ($fields[11] ?? 0) + (int) ($fields[12] ?? 0)];
+        }
+        return $ticks;
+    };
+
+    $statA = $readStat();
+    $procA = $readProcs();
+    $t0 = microtime(true);
+    usleep(500000);
+    $statB = $readStat();
+    $procB = $readProcs();
+    $elapsed = max(0.05, microtime(true) - $t0);
+
+    $usedPercent = 0.0;
+    if ($statA && $statB && $statB[0] > $statA[0]) {
+        $total = $statB[0] - $statA[0];
+        $idle = $statB[1] - $statA[1];
+        $usedPercent = round(max(0, min(100, (1 - $idle / max(1, $total)) * 100)), 1);
+    }
+
+    $hertz = (int) trim((string) shell_exec('getconf CLK_TCK 2>/dev/null'));
+    if ($hertz <= 0) $hertz = 100;
+    $byUid = [];
+    foreach ($procB as $pid => [$uid, $t]) {
+        if (!isset($procA[$pid])) continue;
+        $delta = $t - $procA[$pid][1];
+        if ($delta > 0) $byUid[$uid] = ($byUid[$uid] ?? 0) + $delta;
+    }
+    $byUser = [];
+    foreach ($byUid as $uid => $ticksDelta) {
+        $name = function_exists('posix_getpwuid')
+            ? ((posix_getpwuid($uid)['name'] ?? null) ?: (string) $uid)
+            : (string) $uid;
+        // Single-core units (100 = one full core), matching capacity cores×100.
+        $byUser[$name] = round($ticksDelta / $hertz / $elapsed * 100, 1);
+    }
+    return ['usedPercent' => $usedPercent, 'byUser' => $byUser];
 }
 
 function serverResources($manager): array
@@ -410,17 +457,24 @@ function serverResources($manager): array
     $diskFree = (float) disk_free_space('/');
     $uptime = (float) strtok((string) @file_get_contents('/proc/uptime'), ' ');
 
-    // Aggregate live process usage by system user.
+    // Current CPU, machine total and per user, from one sampling window.
+    $cpuSample = sampleCpu();
+
+    // Aggregate memory and process counts by system user (snapshot data — ps
+    // is fine for these; its %cpu column is NOT used, see sampleCpu).
     $byUser = [];
     foreach (preg_split('/\R/', (string) shell_exec('ps -eo user:32,pcpu,pmem,rss --no-headers 2>/dev/null')) ?: [] as $line) {
         $parts = preg_split('/\s+/', trim($line));
         if (count($parts) < 4) continue;
         [$name, $cpu, $memPct, $rss] = $parts;
         $byUser[$name] ??= ['user' => $name, 'cpuPercent' => 0.0, 'memoryPercent' => 0.0, 'memoryBytes' => 0, 'processes' => 0];
-        $byUser[$name]['cpuPercent'] += (float) $cpu;
         $byUser[$name]['memoryPercent'] += (float) $memPct;
         $byUser[$name]['memoryBytes'] += (int) $rss * 1024;
         $byUser[$name]['processes']++;
+    }
+    foreach ($cpuSample['byUser'] as $name => $percent) {
+        $byUser[$name] ??= ['user' => $name, 'cpuPercent' => 0.0, 'memoryPercent' => 0.0, 'memoryBytes' => 0, 'processes' => 0];
+        $byUser[$name]['cpuPercent'] = $percent;
     }
 
     // Site users: attach their domains and home-directory disk usage. du is
@@ -464,7 +518,7 @@ function serverResources($manager): array
             'load1' => round((float) $load[0], 2),
             'load5' => round((float) $load[1], 2),
             'load15' => round((float) $load[2], 2),
-            'usedPercent' => cpuUsagePercent(),
+            'usedPercent' => $cpuSample['usedPercent'],
         ],
         'memory' => [
             'totalBytes' => $memTotal,

@@ -216,8 +216,12 @@ export function ResourcesView({
     }
   }, []);
 
+  // Live view: poll every 5s while the tab is visible (each sample costs the
+  // server one ~0.5s /proc sampling window; hidden tabs pause polling).
   useEffect(() => {
-    const interval = setInterval(() => void refresh(true), 30_000);
+    const interval = setInterval(() => {
+      if (!document.hidden) void refresh(true);
+    }, 5_000);
     return () => clearInterval(interval);
   }, [refresh]);
 
@@ -323,9 +327,18 @@ export function ResourcesView({
             Live server usage, broken down by application and user. Tap a card for details.
           </p>
         </div>
-        <Button variant="outline" onClick={() => void refresh()} disabled={busy}>
-          {busy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />} Refresh
-        </Button>
+        <div className="flex items-center gap-3">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700">
+            <span className="relative flex h-2 w-2">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+            </span>
+            Live
+          </span>
+          <Button variant="outline" onClick={() => void refresh()} disabled={busy}>
+            {busy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />} Refresh
+          </Button>
+        </div>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">

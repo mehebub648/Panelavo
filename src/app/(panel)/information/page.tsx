@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { requireUserOrRedirect } from "@/server/auth/require-user";
 import { getCloudPanelClient } from "@/server/cloudpanel";
+import { CopyValue } from "@/components/ui/copy-value";
 
 export const dynamic = "force-dynamic";
 
@@ -61,7 +62,9 @@ export default async function InformationPage() {
               </span>
               <div className="min-w-0">
                 <dt className="text-xs font-semibold uppercase tracking-wide text-slate-400">{label}</dt>
-                <dd className="mt-0.5 break-words text-sm font-semibold text-ink">{value}</dd>
+                <dd className="mt-0.5 text-sm font-semibold text-ink">
+                  <CopyValue value={value}>{value}</CopyValue>
+                </dd>
               </div>
             </div>
           ))}
@@ -77,9 +80,11 @@ export default async function InformationPage() {
           {info.software.map((item) => (
             <div key={item.name} className="flex items-center justify-between gap-3 bg-white px-5 py-4">
               <span className="text-sm font-semibold text-slate-700">{item.name}</span>
-              <code className="rounded-md bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-600">
-                {item.version}
-              </code>
+              <CopyValue value={item.version}>
+                <code className="rounded-md bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-600">
+                  {item.version}
+                </code>
+              </CopyValue>
             </div>
           ))}
           {!info.software.length && (
