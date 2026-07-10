@@ -1,8 +1,11 @@
 import { setDefaultResultOrder } from "node:dns";
-import { resolve4 } from "node:dns/promises";
+import { Resolver } from "node:dns/promises";
 import { AppError } from "@/server/cloudpanel/errors";
 
 setDefaultResultOrder("ipv4first");
+
+const fastResolver = new Resolver();
+fastResolver.setServers(["1.1.1.1", "1.0.0.1", "8.8.8.8"]);
 
 export type DnsStatus = {
   name: string;
@@ -35,7 +38,7 @@ export async function resolveDnsStatus(
   return Promise.all(
     names.map(async (name) => {
       try {
-        const ips = await withTimeout(resolve4(name));
+        const ips = await withTimeout(fastResolver.resolve4(name));
         return { name, ip: ips[0] ?? null, ips, pointed: ips.includes(serverIp) };
       } catch {
         return { name, ip: null, ips: [], pointed: false };

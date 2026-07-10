@@ -9,7 +9,7 @@ const payload = {
   role: "admin" as const,
   sites: ["example.com"],
   timezone: "Europe/Berlin",
-  invitedBy: "mukut",
+  invitedBy: "admin",
 };
 
 describe("invite tokens", () => {

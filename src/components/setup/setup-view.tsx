@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   CheckCircle2,
@@ -21,9 +22,11 @@ import type { SystemStatus } from "@/server/network/system-status";
 export function SetupView({
   status: initialStatus,
   isSuperAdmin,
+  reconfiguring = false,
 }: {
   status: SystemStatus;
   isSuperAdmin: boolean;
+  reconfiguring?: boolean;
 }) {
   const router = useRouter();
   const [status, setStatus] = useState<SystemStatus>(initialStatus);
@@ -31,12 +34,14 @@ export function SetupView({
   const [busy, setBusy] = useState<null | "save" | "register" | "recheck">(null);
 
   // Apply a fresh status; if the wildcard is now live, leave the setup screen.
+  // When reconfiguring an already-set-up panel, return to Settings instead of
+  // the app root.
   function apply(next: SystemStatus, becameReadyMessage?: string) {
     setStatus(next);
     setBaseDomain(next.baseDomain);
     if (next.ready) {
       if (becameReadyMessage) toast.success(becameReadyMessage);
-      router.replace("/sites");
+      router.replace(reconfiguring ? "/settings" : "/sites");
       router.refresh();
     }
   }
@@ -112,9 +117,15 @@ export function SetupView({
       <div className="mx-auto w-full max-w-2xl space-y-6">
         <div className="flex items-center justify-between">
           <Brand />
-          <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">
-            Setup required
-          </span>
+          {reconfiguring ? (
+            <span className="rounded-full border border-panel-100 bg-panel-50 px-3 py-1 text-xs font-semibold text-panel-700">
+              Reconfigure
+            </span>
+          ) : (
+            <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">
+              Setup required
+            </span>
+          )}
         </div>
 
         <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-card">
@@ -123,7 +134,9 @@ export function SetupView({
               <Globe2 className="h-5 w-5" />
             </span>
             <div>
-              <h1 className="text-lg font-bold text-ink">Finish panel setup</h1>
+              <h1 className="text-lg font-bold text-ink">
+                {reconfiguring ? "Change base domain" : "Finish panel setup"}
+              </h1>
               <p className="text-sm text-slate-500">
                 Websites are served on{" "}
                 <code className="text-slate-700">
@@ -167,7 +180,7 @@ export function SetupView({
                       onChange={(event) =>
                         setBaseDomain(event.target.value.toLowerCase())
                       }
-                      placeholder="mehebub.com"
+                      placeholder={status.defaultBaseDomain}
                     />
                     <Button
                       type="button"
@@ -219,20 +232,23 @@ export function SetupView({
                         size="sm"
                         disabled={busy !== null}
                         onClick={() => {
-                          setBaseDomain("mehebub.com");
+                          setBaseDomain(status.defaultBaseDomain);
                           call(
                             "save",
                             () =>
                               fetch("/api/setup", {
                                 method: "POST",
                                 headers: { "content-type": "application/json" },
-                                body: JSON.stringify({ action: "set-base-domain", baseDomain: "mehebub.com" }),
+                                body: JSON.stringify({
+                                  action: "set-base-domain",
+                                  baseDomain: status.defaultBaseDomain,
+                                }),
                               }),
                             (data) => apply(data.status),
                           );
                         }}
                       >
-                        Use default mehebub.com domain
+                        Use default {status.defaultBaseDomain} domain
                       </Button>
                     </div>
                   )}
@@ -277,6 +293,17 @@ export function SetupView({
             )}
           </div>
         </div>
+
+        {reconfiguring && (
+          <div className="text-center">
+            <Link
+              href="/settings"
+              className="text-sm font-medium text-slate-500 hover:text-slate-700"
+            >
+              ← Back to settings
+            </Link>
+          </div>
+        )}
       </div>
     </main>
   );

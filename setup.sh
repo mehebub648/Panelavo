@@ -15,10 +15,12 @@
 #   sudo bash setup.sh
 #
 # Optional environment overrides:
-#   PANEL_DOMAIN=panelavo.example.com site domain (default panelavo.<ip>.nip.io)
 #   PANEL_BASE_DOMAIN=example.com    base domain for site subdomains
-#                                    (site-<id>.<ip>.<base>); editable later
-#                                    on the panel Settings page
+#                                    (site-<id>.<ip>.<base>); reconfigurable
+#                                    later from the panel
+#   PANEL_DOMAIN=panel.example.com   panel site domain
+#                                    (default panel.<ip>.<base-domain>, which
+#                                    the wildcard record already covers)
 #   PANEL_SITE_USER=panelavo         CloudPanel site/system user for panelavo
 #   ADMIN_USER=admin                 CloudPanel admin username
 #   ADMIN_PASSWORD=...               CloudPanel admin password (default random)
@@ -80,25 +82,21 @@ SERVER_IP="$(curl -4 -fsS --max-time 10 https://api.ipify.org 2>/dev/null || tru
 [ -n "${SERVER_IP}" ] || SERVER_IP="$(hostname -I | awk '{print $1}')"
 [ -n "${SERVER_IP}" ] || die "Could not determine the server IP address."
 log "Server IP: ${SERVER_IP}"
-SERVER_IP_SLUG="$(echo "${SERVER_IP}" | tr '.' '-')"
 
 # ---------------------------------------------------------------------------
-# 3b. Interactive configuration (domain + first CloudPanel admin)
+# 3b. Interactive configuration (base domain + first CloudPanel admin)
 #     Values already provided through the environment are never asked again.
+#
+#     One base domain drives everything: websites live on
+#     site-<id>.<ip>.<base> and the panel itself on panel.<ip>.<base>, all
+#     covered by the single wildcard record *.<ip>.<base>. The default base
+#     domain's wildcard can be self-registered (ippointer), so an operator
+#     without a domain of their own gets a working install with zero DNS work.
 # ---------------------------------------------------------------------------
-DEFAULT_DOMAIN="panelavo.${SERVER_IP_SLUG}.nip.io"
+DEFAULT_BASE_DOMAIN="mehebub.com"
 if [ -t 0 ]; then
-  if [ -z "${PANEL_DOMAIN:-}" ]; then
-    read -r -p "${LOG_PREFIX} panelavo domain [${DEFAULT_DOMAIN}]: " PANEL_DOMAIN_INPUT
-    PANEL_DOMAIN="${PANEL_DOMAIN_INPUT:-$DEFAULT_DOMAIN}"
-  fi
   if [ -z "${PANEL_BASE_DOMAIN:-}" ]; then
-    case "${PANEL_DOMAIN}" in
-      "panelavo.${SERVER_IP_SLUG}."*) DEFAULT_BASE_DOMAIN="${PANEL_DOMAIN#panelavo.${SERVER_IP_SLUG}.}" ;;
-      "panelavo.${SERVER_IP}."*) DEFAULT_BASE_DOMAIN="${PANEL_DOMAIN#panelavo.${SERVER_IP}.}" ;;
-      *) DEFAULT_BASE_DOMAIN="mehebub.com" ;;
-    esac
-    read -r -p "${LOG_PREFIX} Base domain for site subdomains [${DEFAULT_BASE_DOMAIN}]: " PANEL_BASE_DOMAIN_INPUT
+    read -r -p "${LOG_PREFIX} Base domain for the panel and its sites [${DEFAULT_BASE_DOMAIN}]: " PANEL_BASE_DOMAIN_INPUT
     PANEL_BASE_DOMAIN="${PANEL_BASE_DOMAIN_INPUT:-$DEFAULT_BASE_DOMAIN}"
   fi
   if [ -z "${ADMIN_USER:-}" ]; then
@@ -116,10 +114,11 @@ if [ -t 0 ]; then
     done
   fi
 fi
-PANEL_DOMAIN="${PANEL_DOMAIN:-$DEFAULT_DOMAIN}"
-PANEL_BASE_DOMAIN="${PANEL_BASE_DOMAIN:-mehebub.com}"
+PANEL_BASE_DOMAIN="${PANEL_BASE_DOMAIN:-$DEFAULT_BASE_DOMAIN}"
+# The panel rides the same wildcard as the sites it manages.
+PANEL_DOMAIN="${PANEL_DOMAIN:-panel.${SERVER_IP}.${PANEL_BASE_DOMAIN}}"
 
-if [ "${PANEL_BASE_DOMAIN}" = "mehebub.com" ]; then
+if [ "${PANEL_BASE_DOMAIN}" = "${DEFAULT_BASE_DOMAIN}" ]; then
   log "Registering IP ${SERVER_IP} with ippointer.mehebub.com ..."
   curl -sS -X POST https://ippointer.mehebub.com -H "Content-Type: application/json" -d "{\"ip\":\"${SERVER_IP}\"}" || warn "Failed to register IP on ippointer."
 fi

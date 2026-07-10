@@ -60,7 +60,7 @@ The application cookie is opaque, `HttpOnly`, `SameSite=Strict`, scoped to `/`, 
 
 ## Tested CloudPanel CLI integration
 
-The live adapter was validated against CloudPanel frontend asset version **2.5.4** and CLI version **6.0.8**. The CloudPanel origin is configured by `CLOUDPANEL_BASE_URL`; on a standard local installation it is usually `https://127.0.0.1:8443`.
+The live adapter was validated against CloudPanel frontend asset version **2.5.4** and CLI version **6.0.8**. All CloudPanel access is local (CLI + bridge); no CloudPanel URL needs to be configured.
 
 Root operations use `/usr/bin/clpctl`. CloudPanel does not expose password verification, MFA verification, or site listing through public `clpctl` commands, so `scripts/cloudpanel-bridge.php` boots CloudPanel's own Symfony kernel from the command line and uses its password data, MFA verifier, Doctrine entities, roles, and site assignments directly. The bridge is read-only. CloudPanel's original frontend remains untouched and is never contacted.
 
@@ -88,7 +88,7 @@ panelavo chooses each website's primary system domain. On creation the user pick
 | Internal tools             | `25000-25999` |
 | Reserved/Future            | `26000-29999` |
 
-A site with id `23223` is created as `site-23223.<server-ip>.<base domain>` with site user `site-23223` listening on port `23223`. The base domain is set at install time with `PANEL_BASE_DOMAIN`, prompted by `setup.sh`, and editable on the Settings page. Changes apply to future sites. Reservations live in `.data/site-meta.json`; the port is movable from the site's Settings tab.
+A site with id `23223` is created as `site-23223.<server-ip>.<base domain>` with site user `site-23223` listening on port `23223`. The base domain is set at install time with `PANEL_BASE_DOMAIN`, prompted by `setup.sh`, and reconfigurable later from the panel (Settings → Change). Changes apply to future sites. The panel itself is served on `panel.<server-ip>.<base domain>`, covered by the same wildcard record, and its own CloudPanel site is hidden from the panel's website list. Reservations live in `.data/site-meta.json`; the port is movable from the site's Settings tab.
 
 Customer-entered domains are aliases: the Domains tab and create form add them to the vhost `server_name`, point DNS through the panel-wide Cloudflare token when it manages the zone, and issue Let's Encrypt certificates covering selected domains. The system subdomain can be blocked with 403 or redirected to an alias; ACME challenge paths stay reachable so renewals keep working.
 
@@ -118,7 +118,7 @@ PHP versions are discovered from `/etc/php`. CloudPanel 2.5.4 compatibility fall
 
 ## Live acceptance checklist
 
-1. Set `CLOUDPANEL_BASE_URL`, `CLOUDPANEL_VERSION`, and a strong `SESSION_SECRET`.
+1. Set a strong `SESSION_SECRET`.
 2. Set a separate `CREDENTIALS_ENCRYPTION_KEY` with at least 32 characters.
 3. Confirm a trusted TLS chain, or explicitly accept the documented development-only risk.
 4. Test an admin, site manager, restricted user, MFA user, and invalid password.

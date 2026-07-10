@@ -106,8 +106,21 @@ export function DomainsManager({
         });
         const postResult = await postRes.json();
         if (!postResult.success) throw new Error(postResult.error?.message || "Failed to update DNS");
+        
+        // Optimistically update the UI state so the user sees immediate feedback
+        setData(current => {
+          if (!current) return current;
+          return {
+            ...current,
+            dns: current.dns.map(d => 
+              d.name === targetDomain ? { ...d, ip: status.serverIp, pointed: true } : d
+            )
+          };
+        });
+        
         toast.success("DNS record updated successfully");
-        void refresh();
+        // We delay the refresh slightly to give Cloudflare and public resolvers a moment to propagate
+        setTimeout(() => void refresh(), 3000);
       };
 
       if (currentIp && currentIp !== status.serverIp) {

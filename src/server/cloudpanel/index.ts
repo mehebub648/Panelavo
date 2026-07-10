@@ -10,7 +10,17 @@ import {
   setSiteTypeOverride,
 } from "@/server/sites/site-type-overlay";
 import { removeSiteMeta } from "@/server/sites/site-meta";
+import { isPanelSelfDomain } from "@/server/sites/panel-self";
+import { AppError } from "./errors";
 import { LiveCloudPanelClient } from "./live-client";
+
+// The CloudPanel site hosting this panel is invisible to the panel: it is
+// filtered from listings and every per-site operation on it is rejected, so
+// it cannot be edited, reassigned, or deleted from the UI or the API.
+function assertNotPanelSelf(domain: string) {
+  if (isPanelSelfDomain(domain))
+    throw new AppError("SITE_NOT_FOUND", "The site could not be found.", 404);
+}
 
 async function withSiteTypes(sites: CloudPanelSite[]) {
   const overrides = await getSiteTypeOverrides();
@@ -43,10 +53,21 @@ function withPanelRoles(inner: CloudPanelClient): CloudPanelClient {
       decorateUser(await inner.getCurrentUser(session)),
     listUsers: async (session) =>
       Promise.all((await inner.listUsers(session)).map(decorateUser)),
-    listSites: async (session) => withSiteTypes(await inner.listSites(session)),
+    listSites: async (session) =>
+      withSiteTypes(
+        (await inner.listSites(session)).filter(
+          (site) => !isPanelSelfDomain(site.domain),
+        ),
+      ),
     manageUser: inner.manageUser.bind(inner),
     getSiteCreationOptions: inner.getSiteCreationOptions.bind(inner),
     createSite: async (session, input) => {
+      if (isPanelSelfDomain(input.domain))
+        throw new AppError(
+          "DOMAIN_ALREADY_EXISTS",
+          "This domain is already in use.",
+          409,
+        );
       if (input.type !== "docker") return inner.createSite(session, input);
       // Docker sites are backed by a CloudPanel reverse proxy pointing at the
       // published container port on localhost.
@@ -65,17 +86,30 @@ function withPanelRoles(inner: CloudPanelClient): CloudPanelClient {
         application: "Docker",
       };
     },
-    updateSite: inner.updateSite.bind(inner),
+    updateSite: async (session, domain, input) => {
+      assertNotPanelSelf(domain);
+      return inner.updateSite(session, domain, input);
+    },
     deleteSite: async (session, domain) => {
+      assertNotPanelSelf(domain);
       await inner.deleteSite(session, domain);
       await removeSiteTypeOverride(domain).catch(() => undefined);
       // Release the reserved site id and clean up the system-subdomain DNS
       // record (best-effort; the site itself is already gone).
       await removeSiteMeta(domain).catch(() => undefined);
     },
-    assignSite: inner.assignSite.bind(inner),
-    getSiteSection: inner.getSiteSection.bind(inner),
-    manageSiteSection: inner.manageSiteSection.bind(inner),
+    assignSite: async (session, domain) => {
+      assertNotPanelSelf(domain);
+      return inner.assignSite(session, domain);
+    },
+    getSiteSection: async (session, domain, section) => {
+      assertNotPanelSelf(domain);
+      return inner.getSiteSection(session, domain, section);
+    },
+    manageSiteSection: async (session, domain, section, input) => {
+      assertNotPanelSelf(domain);
+      return inner.manageSiteSection(session, domain, section, input);
+    },
     getServerResources: inner.getServerResources.bind(inner),
     getServerInfo: inner.getServerInfo.bind(inner),
     updateProfile: async (session, input) =>

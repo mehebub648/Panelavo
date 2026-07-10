@@ -5,6 +5,7 @@ vi.mock("@/server/network/server-ip", () => ({
 }));
 vi.mock("@/server/settings/store", () => ({
   getBaseDomain: vi.fn(),
+  DEFAULT_BASE_DOMAIN: "mehebub.com",
 }));
 vi.mock("@/server/network/dns", () => ({
   resolveDnsStatus: vi.fn(),

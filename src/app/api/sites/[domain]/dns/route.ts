@@ -1,4 +1,4 @@
-import { resolve4 } from "node:dns/promises";
+import { Resolver } from "node:dns/promises";
 import type { NextRequest } from "next/server";
 import { requireUser } from "@/server/auth/require-user";
 import { fail, ok } from "@/server/http";
@@ -21,7 +21,9 @@ export async function GET(request: NextRequest, context: Context) {
     let ip = null;
     let pointed = false;
     try {
-      const records = await resolve4(decodedDomain);
+      const fastResolver = new Resolver();
+      fastResolver.setServers(["1.1.1.1", "1.0.0.1", "8.8.8.8"]);
+      const records = await fastResolver.resolve4(decodedDomain);
       ip = records[0];
       pointed = ip === serverIp;
     } catch {
