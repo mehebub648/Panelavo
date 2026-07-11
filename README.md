@@ -140,7 +140,7 @@ The file manager accepts individual files up to 64 MiB. Because uploads are base
 
 Super Admins can check and install Panelavo updates from Settings. The default source is the public `https://github.com/mehebub648/Panelavo.git` repository on `main`; the public HTTPS repository URL can be changed and is persisted in `.data/panel-settings.json`. Panelavo clones into a private staging directory, installs the locked dependencies, and requires a successful production build before synchronizing the release. `.data` and `.env.local` are preserved. Only the `panelavo` PM2 process reloads, so managed websites are not restarted.
 
-The updater intentionally runs as the panel site user, not root. Host-level migrations are never executed automatically; release notes must identify any required root maintenance. Update progress and failures persist in `.data/update-state.json` and `.data/update.log`.
+The updater intentionally runs as the panel site user, not root. While an update is queued or running, Panelavo displays a maintenance screen and rejects normal authenticated panel operations; hosted websites remain online. The panel unlocks and reloads after PM2 has loaded the completed release. Host-level migrations are never executed automatically; release notes must identify any required root maintenance. Update progress and failures persist in `.data/update-state.json` and `.data/update.log`.
 
 The installer grants the CloudPanel site user narrow passwordless sudo for:
 

@@ -53,7 +53,7 @@ const fs = require('node:fs'); const state = JSON.parse(fs.readFileSync(process.
 state.installedCommit = process.env.INSTALLED_COMMIT; state.remoteCommit = process.env.INSTALLED_COMMIT;
 fs.writeFileSync(process.env.STATE_FILE, JSON.stringify(state), { mode: 0o600 });
 NODE
-write_state complete
 echo "[$(date -Is)] Reloading Panelavo"
 /usr/local/bin/pm2 startOrReload "${APP_ROOT}/ecosystem.config.js"
 /usr/local/bin/pm2 save
+write_state complete

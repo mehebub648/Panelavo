@@ -23,6 +23,15 @@ export type UpdateState = {
   logFile: string;
 };
 
+export function isUpdateCurrent(state: Pick<UpdateState, "installedCommit" | "remoteCommit">) {
+  return Boolean(state.installedCommit && state.remoteCommit && state.installedCommit === state.remoteCommit);
+}
+
+export async function isPanelUpdateRunning() {
+  const state = await loadState();
+  return state.status === "queued" || state.status === "updating";
+}
+
 export function validateUpdateRepository(value: string) {
   const repository = value.trim();
   let parsed: URL;
@@ -90,6 +99,8 @@ export async function queueUpdate() {
   const state = await getUpdateState(true);
   if (["queued", "updating"].includes(state.status))
     throw new AppError("INVALID_REQUEST", "An update is already running.", 409);
+  if (isUpdateCurrent(state))
+    throw new AppError("INVALID_REQUEST", "Panelavo is already up to date.", 409);
   const queued: UpdateState = { ...state, status: "queued", startedAt: new Date().toISOString(), completedAt: undefined, error: undefined };
   await saveState(queued);
   const child = spawn("/usr/bin/bash", [join(process.cwd(), "scripts", "self-update.sh"), state.repository, UPDATE_BRANCH, process.cwd()], {

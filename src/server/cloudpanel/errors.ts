@@ -16,6 +16,7 @@ export type AppErrorCode =
   | "SITE_NOT_FOUND"
   | "SITE_UPDATE_FAILED"
   | "REQUEST_TIMEOUT"
+  | "PANEL_UPDATING"
   | "INVALID_REQUEST"
   | "INTERNAL_ERROR";
 

@@ -8,13 +8,13 @@ import { audit } from "@/server/security/log";
 import { getUpdateState, queueUpdate, validateUpdateRepository } from "@/server/updates/panel-updater";
 import { setUpdateRepository } from "@/server/settings/store";
 
-async function requireSuperAdmin() {
-  const session = await requireUser();
+async function requireSuperAdmin(allowDuringUpdate = false) {
+  const session = await requireUser({ allowDuringUpdate });
   if (session.user.panelRole !== "super-admin") throw new AppError("FORBIDDEN", "Panel updates are available to super administrators only.", 403);
   return session;
 }
 export async function GET(request: NextRequest) {
-  try { await requireSuperAdmin(); return ok(await getUpdateState(request.nextUrl.searchParams.get("check") === "true")); }
+  try { await requireSuperAdmin(true); return ok(await getUpdateState(request.nextUrl.searchParams.get("check") === "true")); }
   catch (error) { return fail(error); }
 }
 const schema = z.discriminatedUnion("action", [
