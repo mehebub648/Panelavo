@@ -4,7 +4,7 @@
 #
 # Turns a fresh Debian/Ubuntu server into a fully working panel host:
 #   1. Detects the OS and installs CloudPanel if it is not present.
-#   2. Creates the initial CloudPanel admin user.
+#   2. Creates the initial panelavo Super Admin in CloudPanel.
 #   3. Installs the latest Node.js with nvm, publishes a complete shared copy
 #      under /usr/local, and installs a shared PM2 that every user can run.
 #   4. Creates a CloudPanel Node.js site owned by a dedicated system user,
@@ -22,9 +22,9 @@
 #                                    (default panel.<ip>.<base-domain>, which
 #                                    the wildcard record already covers)
 #   PANEL_SITE_USER=panelavo         CloudPanel site/system user for panelavo
-#   ADMIN_USER=admin                 CloudPanel admin username
-#   ADMIN_PASSWORD=...               CloudPanel admin password (default random)
-#   ADMIN_EMAIL=...                  CloudPanel admin e-mail
+#   ADMIN_USER=admin                 Super Admin username
+#   ADMIN_PASSWORD=...               Super Admin password (default random)
+#   ADMIN_EMAIL=...                  Super Admin e-mail
 #   DB_ENGINE=MYSQL_8.4              CloudPanel database engine override
 #   KEEP_FAIL2BAN_SSHD_RUNNING=true Temporarily exempt this SSH client from
 #                                   fail2ban (the jail stays active by default)
@@ -149,7 +149,7 @@ SERVER_IP="$(curl -4 -fsS --max-time 10 https://api.ipify.org 2>/dev/null || tru
 log "Server IP: ${SERVER_IP}"
 
 # ---------------------------------------------------------------------------
-# 3b. Interactive configuration (base domain + first CloudPanel admin)
+# 3b. Interactive configuration (base domain + first Super Admin)
 #     Values already provided through the environment are never asked again.
 #
 #     One base domain drives everything: websites live on
@@ -165,12 +165,12 @@ if [ -t 0 ]; then
     PANEL_BASE_DOMAIN="${PANEL_BASE_DOMAIN_INPUT:-$DEFAULT_BASE_DOMAIN}"
   fi
   if [ -z "${ADMIN_USER:-}" ]; then
-    read -r -p "${LOG_PREFIX} CloudPanel admin username [admin]: " ADMIN_USER_INPUT
+    read -r -p "${LOG_PREFIX} Super Admin username [admin]: " ADMIN_USER_INPUT
     ADMIN_USER="${ADMIN_USER_INPUT:-admin}"
   fi
   if [ -z "${ADMIN_PASSWORD:-}" ]; then
     while true; do
-      read -r -s -p "${LOG_PREFIX} CloudPanel admin password (blank = generate): " ADMIN_PASSWORD_INPUT; echo
+      read -r -s -p "${LOG_PREFIX} Super Admin password (blank = generate): " ADMIN_PASSWORD_INPUT; echo
       if [ -z "${ADMIN_PASSWORD_INPUT}" ]; then break; fi
       if [ "${#ADMIN_PASSWORD_INPUT}" -lt 8 ]; then warn "Use at least 8 characters."; continue; fi
       read -r -s -p "${LOG_PREFIX} Confirm password: " ADMIN_PASSWORD_CONFIRM; echo
@@ -216,7 +216,7 @@ fi
 ADMIN_USER="${ADMIN_USER:-admin}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@${PANEL_DOMAIN}}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 16)!Aa1}"
-log "panelavo domain: ${PANEL_DOMAIN} — CloudPanel admin: ${ADMIN_USER}"
+log "panelavo domain: ${PANEL_DOMAIN} — Super Admin: ${ADMIN_USER}"
 
 # ---------------------------------------------------------------------------
 # 4. CloudPanel
@@ -234,13 +234,13 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Initial CloudPanel admin user
+# 5. Initial Super Admin (backed by CloudPanel's admin role)
 # ---------------------------------------------------------------------------
 if clpctl user:list 2>/dev/null | awk -F'|' 'NR>3 {gsub(/ /,"",$2); print $2}' | grep -qx "${ADMIN_USER}"; then
-  log "CloudPanel user '${ADMIN_USER}' already exists — leaving it untouched."
+  log "Super Admin '${ADMIN_USER}' already exists — leaving the account untouched."
   ADMIN_PASSWORD="(unchanged)"
 else
-  log "Creating CloudPanel admin user '${ADMIN_USER}' ..."
+  log "Creating Super Admin '${ADMIN_USER}' in CloudPanel ..."
   clpctl user:add \
     --userName="${ADMIN_USER}" \
     --email="${ADMIN_EMAIL}" \
@@ -470,12 +470,12 @@ cat <<EOF
  Fallback (by IP):   http://${SERVER_IP}:${APP_PORT}
  CloudPanel:         https://127.0.0.1:8443 (firewall rule prepared; use an SSH tunnel)
 
- CloudPanel admin:   ${ADMIN_USER}
- Admin password:     ${ADMIN_PASSWORD}
+ Super Admin:        ${ADMIN_USER}
+ Super Admin pass:   ${ADMIN_PASSWORD}
  Site user:          ${SITE_USER}
  Site user password: ${SITE_USER_PASSWORD}
 
- Log in to panelavo with the CloudPanel admin credentials.
+ Log in to panelavo with the Super Admin credentials.
  Manage the process as ${SITE_USER}: pm2 status | pm2 logs panelavo
 ============================================================
 EOF
