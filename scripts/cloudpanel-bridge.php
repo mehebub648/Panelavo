@@ -596,8 +596,21 @@ function runGit(Site $site, array $args, bool $allowFailure = false): array
 {
     $cwd = realpath('/home/' . $site->getUser() . '/htdocs/' . $site->getRootDirectory());
     if (!$cwd) respond(['ok' => false, 'code' => 'SITE_NOT_FOUND']);
-    $command = array_merge(['/usr/bin/sudo', '-u', $site->getUser(), '/usr/bin/git', '-c', 'safe.directory=' . $cwd], $args);
-    $process = proc_open($command, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, $cwd, ['HOME' => '/home/' . $site->getUser(), 'PATH' => '/usr/local/bin:/usr/bin:/bin']);
+    $home = '/home/' . $site->getUser();
+    $ssh = $home . '/.ssh';
+    if (!is_dir($ssh) && mkdir($ssh, 0700, true)) {
+        chown($ssh, $site->getUser()); chgrp($ssh, $site->getUser());
+    }
+    $command = array_merge(['/usr/bin/timeout', '--signal=KILL', '285', '/usr/bin/sudo', '-u', $site->getUser(), '/usr/bin/git', '-c', 'safe.directory=' . $cwd], $args);
+    $process = proc_open($command, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, $cwd, [
+        'HOME' => $home,
+        'PATH' => '/usr/local/bin:/usr/bin:/bin',
+        // Git runs without a terminal in the bridge. Trust a new SSH host on
+        // first use, persist its key for later verification, and fail instead
+        // of hanging when repository credentials are unavailable.
+        'GIT_SSH_COMMAND' => '/usr/bin/ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new',
+        'GIT_TERMINAL_PROMPT' => '0',
+    ]);
     if (!is_resource($process)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
     fclose($pipes[0]); $stdout = stream_get_contents($pipes[1]); fclose($pipes[1]); $stderr = stream_get_contents($pipes[2]); fclose($pipes[2]); $code = proc_close($process);
     if ($code !== 0 && !$allowFailure) respond(['ok' => false, 'code' => 'GIT_FAILED', 'message' => trim($stderr ?: $stdout)]);
@@ -806,8 +819,22 @@ try {
                         chown($rootPath, $site->getUser()); chgrp($rootPath, $site->getUser());
                     }
                     $root = realpath($rootPath);
-                    if (!$root || count(array_diff(scandir($root) ?: [], ['.', '..'])) > 0) respond(['ok' => false, 'code' => 'DIRECTORY_NOT_EMPTY']);
-                    runGit($site, array_values(array_filter(['clone', $ref ? '--branch' : null, $ref ?: null, $url, '.'])));
+                    $entries = $root ? array_values(array_diff(scandir($root) ?: [], ['.', '..'])) : [];
+                    $contentEntries = array_values(array_diff($entries, ['.well-known']));
+                    if (!$root || $contentEntries) respond(['ok' => false, 'code' => 'DIRECTORY_NOT_EMPTY']);
+                    if (in_array('.well-known', $entries, true)) {
+                        // ACME creates .well-known before application code is
+                        // deployed. Clone metadata into a temporary child,
+                        // promote .git, then check out the working tree around
+                        // the preserved challenge directory.
+                        $temporary = '.panelavo-clone-' . bin2hex(random_bytes(8));
+                        runGit($site, array_values(array_filter(['clone', '--no-checkout', $ref ? '--branch' : null, $ref ?: null, $url, $temporary])));
+                        if (!rename($root . '/' . $temporary . '/.git', $root . '/.git')) respond(['ok' => false, 'code' => 'GIT_FAILED']);
+                        rmdir($root . '/' . $temporary);
+                        runGit($site, ['reset', '--hard', 'HEAD']);
+                    } else {
+                        runGit($site, array_values(array_filter(['clone', $ref ? '--branch' : null, $ref ?: null, $url, '.'])));
+                    }
                 } elseif ($action === 'init') runGit($site, ['init']);
                 elseif ($action === 'set-remote') {
                     $url = trim((string) ($operation['url'] ?? '')); if (!preg_match('#^(https://|git@)[^\s]+$#', $url)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);

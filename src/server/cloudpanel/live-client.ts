@@ -19,11 +19,31 @@ import { AppError } from "./errors";
 type BridgeResult = {
   ok: boolean;
   code?: string | null;
+  message?: string | null;
   user?: CloudPanelUser & { mfa?: boolean };
   site?: CloudPanelSite;
   sites?: CloudPanelSite[];
   data?: unknown;
 };
+
+export function siteSectionBridgeError(result: BridgeResult) {
+  if (result.code === "DIRECTORY_NOT_EMPTY")
+    return new AppError("INVALID_REQUEST", "The website root is not empty. Initialize Git there or remove the existing files before cloning.", 409);
+  if (result.code === "GIT_FAILED") {
+    const detail = result.message ?? "";
+    const message = /permission denied|publickey|authentication failed|could not read username/i.test(detail)
+      ? "Repository authentication failed. Add this website's public deployment key to the repository and try again."
+      : /repository not found|not found|does not exist/i.test(detail)
+        ? "The repository or branch was not found. Check the URL, access, and branch name."
+        : /host key verification failed/i.test(detail)
+          ? "The Git host identity could not be verified. Try the connection again."
+          : "Git could not access the repository. Check the URL, deployment key, and branch name.";
+    return new AppError("SITE_UPDATE_FAILED", message, 422);
+  }
+  if (result.code === "INVALID_REQUEST" || result.code === "INVALID_ACTION")
+    return new AppError("INVALID_REQUEST", "The Git request is not valid.", 400);
+  return new AppError("SITE_UPDATE_FAILED", "CloudPanel could not apply the change.", 502);
+}
 
 export class LiveCloudPanelClient implements CloudPanelClient {
   private run(
@@ -338,9 +358,9 @@ export class LiveCloudPanelClient implements CloudPanelClient {
         section,
         operation: input,
         panelAdmin,
-      }, section === "actions" || section === "file-manager" ? 620_000 : undefined);
+      }, section === "actions" || section === "file-manager" ? 620_000 : section === "git" ? 300_000 : undefined);
       if (!result.ok)
-        throw new AppError("SITE_UPDATE_FAILED", "CloudPanel could not apply the change.", 502);
+        throw siteSectionBridgeError(result);
       if (result.data !== undefined) return result.data;
     }
     return this.getSiteSection(session, domain, section);
