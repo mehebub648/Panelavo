@@ -601,16 +601,23 @@ function runGit(Site $site, array $args, bool $allowFailure = false): array
     if (!is_dir($ssh) && mkdir($ssh, 0700, true)) {
         chown($ssh, $site->getUser()); chgrp($ssh, $site->getUser());
     }
-    $command = array_merge(['/usr/bin/timeout', '--signal=KILL', '285', '/usr/bin/sudo', '-u', $site->getUser(), '/usr/bin/git', '-c', 'safe.directory=' . $cwd], $args);
-    $process = proc_open($command, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, $cwd, [
-        'HOME' => $home,
-        'PATH' => '/usr/local/bin:/usr/bin:/bin',
+    chmod($ssh, 0700); chown($ssh, $site->getUser()); chgrp($ssh, $site->getUser());
+    $knownHosts = $ssh . '/known_hosts';
+    if (is_file($knownHosts)) { chmod($knownHosts, 0600); chown($knownHosts, $site->getUser()); chgrp($knownHosts, $site->getUser()); }
+    // Set the environment after sudo. Variables passed to proc_open can be
+    // reset by sudo, causing SSH to use root's home or default host-key policy.
+    $env = [
+        '/usr/bin/env',
+        'HOME=' . $home,
+        'PATH=/usr/local/bin:/usr/bin:/bin',
         // Git runs without a terminal in the bridge. Trust a new SSH host on
         // first use, persist its key for later verification, and fail instead
         // of hanging when repository credentials are unavailable.
-        'GIT_SSH_COMMAND' => '/usr/bin/ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new',
-        'GIT_TERMINAL_PROMPT' => '0',
-    ]);
+        'GIT_SSH_COMMAND=/usr/bin/ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=' . $knownHosts,
+        'GIT_TERMINAL_PROMPT=0',
+    ];
+    $command = array_merge(['/usr/bin/timeout', '--signal=KILL', '285', '/usr/bin/sudo', '-n', '-u', $site->getUser(), '--'], $env, ['/usr/bin/git', '-c', 'safe.directory=' . $cwd], $args);
+    $process = proc_open($command, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, $cwd);
     if (!is_resource($process)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
     fclose($pipes[0]); $stdout = stream_get_contents($pipes[1]); fclose($pipes[1]); $stderr = stream_get_contents($pipes[2]); fclose($pipes[2]); $code = proc_close($process);
     if ($code !== 0 && !$allowFailure) respond(['ok' => false, 'code' => 'GIT_FAILED', 'message' => trim($stderr ?: $stdout)]);
