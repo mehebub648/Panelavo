@@ -80,6 +80,33 @@ The file manager accepts files up to 64 MiB. Run `sudo bash setup.sh` after upgr
 
 Super Admins can perform normal application updates from Settings. The updater clones and builds the configured public repository in staging, then preserves `.data` and `.env.local` while deploying and reloading only the Panelavo PM2 process. It does not run `setup.sh` or any root-level migration. When a changelog calls for host maintenance, run that step separately over SSH.
 
+## Managed website Operations
+
+The Operations tab manages applications hosted by CloudPanel; it is separate from updating Panelavo itself. CloudPanel's [configured site type](https://www.cloudpanel.io/docs/v2/frontend-area/add-site/), application root, runtime, document root, app port, and reverse-proxy upstream remain authoritative. Panelavo inspects only that application root and reports architecture evidence separately from runtime/tool availability, permission, configuration validity, and safety checks. It does not recursively search a repository for deployable apps.
+
+The root contracts currently cover npm, pnpm, Yarn, and Bun projects; Composer, Laravel, and WordPress; uv, Poetry, Pipenv, pip virtual environments, and Django; direct static roots; reverse-proxy checks; PM2; and Docker Compose. A workspace needs usable root scripts or explicit root-level configuration. For a generated static site, configure CloudPanel to serve a verified build directory yourself: Panelavo does not infer `dist`, `build`, `out`, or another output and does not change the document root.
+
+Every Operations request sends a validated action or plan identifier to the server. The server chooses the executable and arguments, fixes the working directory, runs without a shell, bounds runtime and output, and holds a per-site lock. Recommended plans execute synchronously, stop after the first failed step, and expose each step's result. A missing executable, ambiguous dependency manager, invalid configuration, insufficient role, or failed safety rule remains a visible blocker; Operations never installs a missing tool as a fallback.
+
+### Docker Compose prerequisite and policy
+
+Docker is optional and is never installed by `setup.sh` or the Operations page. Provision Docker Engine and the Compose v2 plugin separately using Docker's [official installation instructions](https://docs.docker.com/engine/install/) and verify the host as an administrator:
+
+```bash
+docker compose version
+docker info
+```
+
+Do not add the Panelavo or website user to the `docker` group. Docker documents that membership grants [root-level privileges](https://docs.docker.com/engine/install/linux-postinstall/); Panelavo instead keeps rootful Compose execution behind its allow-listed local bridge and restricts it to Super Admins.
+
+For every rootful Compose action, Panelavo supplies the selected root Compose file and stable project name explicitly. Preflight requires the Docker CLI, Compose v2 plugin, reachable daemon, a successful equivalent of `docker compose -f <file> -p <project> config --quiet`, and a passing host-safety policy. A Compose manifest may therefore be detected while every action remains disabled. Fix the reported host or project blocker and refresh preflight; do not bypass it with a generic root shell.
+
+### Failure and rollback limits
+
+Managed dependency installs and builds operate on the configured live application root. Operations currently has no release-directory staging, atomic symlink switch, or automatic code rollback. Requests and child commands are synchronous and bounded; if a plan fails, earlier successful steps remain applied and later steps are skipped.
+
+Laravel and Django migrations are deliberately excluded from recommended deployment plans and remain separately confirmed destructive actions. Panelavo does not create a database backup or guarantee a down migration. Export the relevant database and verify its restore procedure before running a migration. Static output selection and reverse-proxy cutover also remain explicit operator responsibilities.
+
 ---
 
 ## Stop / Restart

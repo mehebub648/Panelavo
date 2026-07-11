@@ -1,6 +1,6 @@
 # panelavo
 
-panelavo is a small, modern Next.js companion interface for CloudPanel servers. CloudPanel remains the source of truth for accounts, passwords, MFA, roles, site assignments, runtime support, and server-side permissions. panelavo creates no user database and communicates locally through CloudPanel's CLI and a read-only Symfony CLI bridge. It never accesses or scrapes the CloudPanel portal.
+panelavo is a small, modern Next.js companion interface for CloudPanel servers. CloudPanel remains the source of truth for accounts, passwords, MFA, roles, site assignments, site types, runtime support, and server-side permissions. panelavo creates no user database and communicates locally through CloudPanel's CLI and an allow-listed Symfony/Doctrine bridge. The bridge reads CloudPanel data and performs narrowly mapped site-management actions; it never exposes an arbitrary command endpoint or accesses the CloudPanel portal.
 
 panelavo works over CloudPanel, but it is not affiliated with, endorsed by, or sponsored by CloudPanel.
 
@@ -94,7 +94,7 @@ The application cookie is opaque, `HttpOnly`, `SameSite=Strict`, scoped to `/`, 
 
 The live adapter was validated against CloudPanel frontend asset version **2.5.4** and CLI version **6.0.8**. All CloudPanel access is local (CLI + bridge); no CloudPanel URL needs to be configured.
 
-Root operations use `/usr/bin/clpctl`. CloudPanel does not expose password verification, MFA verification, or site listing through public `clpctl` commands, so `scripts/cloudpanel-bridge.php` boots CloudPanel's own Symfony kernel from the command line and uses its password data, MFA verifier, Doctrine entities, roles, and site assignments directly. The bridge is read-only. CloudPanel's original frontend remains untouched and is never contacted.
+Root operations use `/usr/bin/clpctl`. CloudPanel does not expose password verification, MFA verification, site listing, or all required site-management capabilities through public `clpctl` commands, so `scripts/cloudpanel-bridge.php` boots CloudPanel's own Symfony kernel locally. It reads CloudPanel's password data, MFA verifier, Doctrine entities, roles, sites, assignments, and runtime settings, and it performs only explicitly mapped site actions after authorization and validation. CloudPanel's original frontend remains untouched and is never contacted.
 
 ### Authentication and authorization
 
@@ -134,7 +134,24 @@ The Git section can initialize an existing site root or clone into an empty one.
 
 ### Site operations
 
-Operations follow the site type selected in Panelavo. Explicit Docker sites expose Docker Compose deployment and lifecycle actions even when their repository also contains `package.json`; host-level npm, Composer, Python, and PM2 actions are hidden and rejected. Non-Docker sites continue to discover appropriate actions from files in the site root.
+Operations follow the configured CloudPanel site type; Panelavo's Docker overlay is authoritative when a Docker site is represented by CloudPanel as a reverse proxy. Repository files provide architecture evidence inside that boundary, but a detected manifest does not make an action runnable. The Operations page separates architecture evidence from tool, permission, configuration, and safety preflight checks, shows remediation for blockers, and presents server-owned deployment plans and action groups only when their prerequisites are satisfied. Missing runtimes remain visible and blocked rather than triggering an automatic installation.
+
+| Configured site | Root-level contracts and managed capabilities |
+| --------------- | --------------------------------------------- |
+| Node.js | `package.json`, one unambiguous npm/pnpm/Yarn/Bun lockfile choice, production scripts, and PM2 ecosystem/process actions. |
+| PHP | Composer validation and locked production installs, Laravel cache/storage/queue/migration actions, WordPress checksum/cache/cron actions, and an optional root Node.js frontend build. |
+| Python | uv, Poetry, Pipenv, or pip dependency workflows; isolated `.venv` support for pip; and Django deployment checks, static collection, and migration actions. |
+| Static | A directly served root `index.html`, or an explicit root production build. Panelavo never guesses the generated output directory or rewrites the document root. |
+| Reverse proxy | Availability checks for CloudPanel's configured upstream; repository manifests do not replace the upstream contract. |
+| Docker | One supported root Compose file, Docker/Compose/daemon/configuration checks, host-safety validation, service status/logs, and Compose lifecycle actions only. |
+
+Detection is intentionally rooted at the configured application directory and does not recursively discover deployable subprojects. Workspaces need runnable root scripts or explicit root-level configuration. Dependency installs follow the selected lockfile instead of updating it; ambiguous or missing lockfile/tool combinations block the plan. Relevant upstream behavior is documented by [npm](https://docs.npmjs.com/cli/commands/npm-ci/), [pnpm](https://pnpm.io/cli/install), [Yarn](https://yarnpkg.com/cli/install), [Bun](https://bun.sh/docs/pm/cli/install), [Composer](https://getcomposer.org/doc/01-basic-usage.md), [WP-CLI](https://developer.wordpress.org/cli/commands/), [uv](https://docs.astral.sh/uv/concepts/projects/sync/), and [Django](https://docs.djangoproject.com/en/dev/howto/deployment/checklist/).
+
+The browser submits validated action or plan identifiers, never executable text. The server expands them into fixed argument arrays with no shell, runs them in the configured root under the intended site user or narrowly authorized host scope, bounds time and output, and takes a per-site lock so two operations cannot overlap. Recommended plans stop on the first failed step. Laravel and Django migrations stay separate destructive actions and require explicit confirmation.
+
+Rootful Docker Compose is restricted to Super Admins. Each command carries the preflight-selected Compose file and stable project name explicitly, and deployment remains blocked until the Docker CLI, Compose v2 plugin, daemon, resolved configuration, and host-safety policy pass. Panelavo does not install Docker or add the panel/site user to the `docker` group; Docker documents that the group grants [root-level privileges](https://docs.docker.com/engine/install/linux-postinstall/). Compose setup remains an out-of-band host-administration task.
+
+Operations execute synchronously in a bounded request against the live application root. They do not create atomic releases or automatically roll back code or databases. Back up application data before destructive framework actions and use a separate recovery procedure if a later step fails.
 
 ### File uploads
 
@@ -162,6 +179,7 @@ PHP versions are discovered from `/etc/php`. CloudPanel 2.5.4 compatibility fall
 - Login, MFA, and site creation have in-process rate limits. Use a shared trusted rate limiter before multi-instance deployment.
 - API responses are non-cacheable. Middleware sets CSP, anti-framing, MIME-sniffing, referrer, and permissions headers.
 - Audit logs are structured and centrally redact passwords, MFA codes, cookies, CSRF values, and authorization data.
+- Operations are allow-listed server plans with exact argument arrays, root containment checks, per-site serialization, bounded output, and role-aware host access; repository content never becomes a browser-supplied shell command.
 - Passwords are never persisted, echoed by APIs, or written to browser storage. A failed create clears the site password.
 - TLS verification must remain enabled in production.
 - The live authenticated parsers require a credentialed staging acceptance test before production. See the checklist below.
@@ -195,6 +213,7 @@ src/components          auth, layout, sites, and local UI components
 src/schemas             shared browser/server validation
 src/server/auth         opaque application sessions
 src/server/cloudpanel   version-isolated live CloudPanel adapter
+src/server/sites        site metadata, type overlay, and Operations policy
 src/server/security     origin checks, limits, and redacted logs
 src/types               CloudPanel adapter contracts
 ```

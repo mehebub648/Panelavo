@@ -141,6 +141,10 @@ export const updateSiteSchema = z
       .trim()
       .max(200)
       .regex(/^\/?[a-zA-Z0-9._/-]*$/, "Use a relative directory path.")
+      .refine(
+        (value) => !value.split("/").includes(".."),
+        "The directory must stay inside this website's htdocs folder.",
+      )
       .optional(),
     runtimeVersion: runtime.optional(),
     appPort: z.coerce.number().int().min(1024).max(65535).optional(),

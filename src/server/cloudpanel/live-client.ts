@@ -42,8 +42,16 @@ export function siteSectionBridgeError(result: BridgeResult) {
           : "Git could not access the repository. Check the URL, deployment key, and branch name.";
     return new AppError("SITE_UPDATE_FAILED", message, 422);
   }
+  if (result.code === "OPERATION_BUSY")
+    return new AppError("SITE_UPDATE_FAILED", "Another operation is already running for this website. Wait for it to finish, then run the preflight again.", 409);
+  if (result.code === "TOOL_UNAVAILABLE")
+    return new AppError("SITE_UPDATE_FAILED", "A required runtime tool is unavailable. Review the failed preflight check before trying again.", 409);
+  if (result.code === "UNSAFE_COMPOSE")
+    return new AppError("INVALID_REQUEST", "The Compose configuration does not satisfy Panelavo's host safety policy. Review the preflight blocker and update the project configuration.", 422);
+  if (result.code === "ACTION_UNAVAILABLE")
+    return new AppError("INVALID_REQUEST", "That action is no longer available for the detected website architecture. Run the preflight again.", 409);
   if (result.code === "INVALID_REQUEST" || result.code === "INVALID_ACTION")
-    return new AppError("INVALID_REQUEST", "The Git request is not valid.", 400);
+    return new AppError("INVALID_REQUEST", "The website operation is not valid.", 400);
   return new AppError("SITE_UPDATE_FAILED", "CloudPanel could not apply the change.", 502);
 }
 
@@ -360,7 +368,7 @@ export class LiveCloudPanelClient implements CloudPanelClient {
         section,
         operation: input,
         panelAdmin,
-      }, section === "actions" || section === "file-manager" ? 620_000 : section === "git" ? 300_000 : undefined);
+      }, section === "actions" ? 1_850_000 : section === "file-manager" ? 620_000 : section === "git" ? 300_000 : undefined);
       if (!result.ok)
         throw siteSectionBridgeError(result);
       if (result.data !== undefined) return result.data;

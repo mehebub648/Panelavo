@@ -216,7 +216,62 @@ function siteKeyPair(Site $site): array
 
 function siteRootPath(Site $site): string
 {
-    return rtrim('/home/' . $site->getUser() . '/htdocs/' . trim($site->getRootDirectory(), '/'), '/');
+    $user = (string) $site->getUser();
+    if (!preg_match('/^[A-Za-z0-9._-]{1,64}$/', $user)) {
+        respond(['ok' => false, 'code' => 'SITE_NOT_FOUND']);
+    }
+    $base = realpath('/home/' . $user . '/htdocs');
+    if (!$base || !is_dir($base)) respond(['ok' => false, 'code' => 'SITE_NOT_FOUND']);
+
+    $relative = trim(str_replace('\\', '/', (string) $site->getRootDirectory()), '/');
+    if (str_contains($relative, "\0")) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+    if ($relative !== '') {
+        foreach (explode('/', $relative) as $part) {
+            if ($part === '' || $part === '.' || $part === '..') {
+                respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+            }
+        }
+    }
+
+    $candidate = $base . ($relative === '' ? '' : '/' . $relative);
+    if (!pathIsContained($candidate, $base)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+    return realpath($candidate) ?: $candidate;
+}
+
+function normalizeAbsolutePath(string $path): ?string
+{
+    if ($path === '' || $path[0] !== '/' || str_contains($path, "\0")) return null;
+    $parts = [];
+    foreach (explode('/', str_replace('\\', '/', $path)) as $part) {
+        if ($part === '' || $part === '.') continue;
+        if ($part === '..') {
+            if (!$parts) return null;
+            array_pop($parts);
+            continue;
+        }
+        $parts[] = $part;
+    }
+    return '/' . implode('/', $parts);
+}
+
+// Lexical containment is not enough: every existing ancestor is resolved so
+// a symlink inside htdocs cannot redirect operations to another site or host
+// path. Non-existent leaf paths are accepted only when their nearest existing
+// ancestor is still inside the allowed root.
+function pathIsContained(string $candidate, string $root): bool
+{
+    $root = realpath($root) ?: normalizeAbsolutePath($root);
+    $candidate = normalizeAbsolutePath($candidate);
+    if (!$root || !$candidate || ($candidate !== $root && !str_starts_with($candidate, $root . '/'))) return false;
+
+    $probe = $candidate;
+    while (!file_exists($probe) && !is_link($probe)) {
+        $parent = dirname($probe);
+        if ($parent === $probe) return false;
+        $probe = $parent;
+    }
+    $resolved = realpath($probe);
+    return $resolved !== false && ($resolved === $root || str_starts_with($resolved, $root . '/'));
 }
 
 // Rewrites a vhost template so every server block serves the given alias
@@ -282,25 +337,91 @@ function runSiteCommand(Site $site, array $args, int $timeout = 300, bool $asRoo
 {
     $cwd = realpath(siteRootPath($site));
     if (!$cwd) respond(['ok' => false, 'code' => 'SITE_NOT_FOUND']);
+    $timeout = max(1, min($timeout, 900));
     $home = $asRoot ? '/root' : '/home/' . $site->getUser();
+    $runUser = $asRoot ? 'root' : (string) $site->getUser();
     $nodeBin = nodeBinPath($home);
-    $env = ['/usr/bin/env', 'PATH=' . ($nodeBin ? $nodeBin . ':' : '') . '/usr/local/bin:/usr/bin:/bin', 'HOME=' . $home];
+    // Start from an empty environment. In particular, a site-owned Compose
+    // file must never interpolate CloudPanel or Panelavo process secrets.
+    $env = [
+        '/usr/bin/env', '-i',
+        'PATH=' . ($nodeBin ? $nodeBin . ':' : '') . '/usr/local/bin:/usr/bin:/bin',
+        'HOME=' . $home,
+        'USER=' . $runUser,
+        'LOGNAME=' . $runUser,
+        'LANG=C.UTF-8',
+        'CI=1',
+    ];
     $command = array_merge(
-        ['/usr/bin/timeout', '--signal=KILL', (string) $timeout],
+        ['/usr/bin/timeout', '--signal=KILL', $timeout . 's'],
         $asRoot ? $env : array_merge(['/usr/bin/sudo', '-n', '-u', $site->getUser(), '--'], $env),
         $args,
     );
     $process = proc_open($command, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, $cwd);
     if (!is_resource($process)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
     fclose($pipes[0]);
-    $stdout = stream_get_contents($pipes[1]); fclose($pipes[1]);
-    $stderr = stream_get_contents($pipes[2]); fclose($pipes[2]);
-    $code = proc_close($process);
+    stream_set_blocking($pipes[1], false);
+    stream_set_blocking($pipes[2], false);
+    $stdout = '';
+    $stderr = '';
+    $stdoutTruncated = false;
+    $stderrTruncated = false;
+    $deadline = microtime(true) + $timeout + 5;
+    $lastStatus = null;
+    $append = static function (string &$target, string $chunk, int $limit, bool &$truncated): void {
+        $remaining = $limit - strlen($target);
+        if ($remaining > 0) $target .= substr($chunk, 0, $remaining);
+        if (strlen($chunk) > max(0, $remaining)) $truncated = true;
+    };
+
+    while (true) {
+        $read = [];
+        if (!feof($pipes[1])) $read[] = $pipes[1];
+        if (!feof($pipes[2])) $read[] = $pipes[2];
+        if ($read) {
+            $write = null;
+            $except = null;
+            @stream_select($read, $write, $except, 0, 200000);
+            foreach ($read as $stream) {
+                $chunk = (string) fread($stream, 8192);
+                if ($chunk === '') continue;
+                if ($stream === $pipes[1]) $append($stdout, $chunk, 400000, $stdoutTruncated);
+                else $append($stderr, $chunk, 100000, $stderrTruncated);
+            }
+        } else {
+            usleep(10000);
+        }
+
+        $lastStatus = proc_get_status($process);
+        if (!$lastStatus['running']) {
+            foreach ([1, 2] as $index) {
+                while (!feof($pipes[$index])) {
+                    $chunk = (string) fread($pipes[$index], 8192);
+                    if ($chunk === '') break;
+                    if ($index === 1) $append($stdout, $chunk, 400000, $stdoutTruncated);
+                    else $append($stderr, $chunk, 100000, $stderrTruncated);
+                }
+            }
+            break;
+        }
+        if (microtime(true) >= $deadline) {
+            proc_terminate($process, 9);
+            $lastStatus = ['exitcode' => 137, 'running' => false];
+            break;
+        }
+    }
+
+    fclose($pipes[1]);
+    fclose($pipes[2]);
+    $closedCode = proc_close($process);
+    $code = $closedCode >= 0 ? $closedCode : (int) ($lastStatus['exitcode'] ?? 1);
+    if ($stdoutTruncated) $stdout .= "\n[stdout truncated by Panelavo]";
+    if ($stderrTruncated) $stderr .= "\n[stderr truncated by Panelavo]";
     return [
         'code' => $code,
         'timedOut' => $code === 137,
-        'stdout' => substr($stdout ?: '', 0, 400000),
-        'stderr' => substr($stderr ?: '', 0, 100000),
+        'stdout' => $stdout,
+        'stderr' => $stderr,
     ];
 }
 

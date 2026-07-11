@@ -72,10 +72,13 @@ export function SiteSectionManager({
 
   async function act(input: Record<string, unknown>, skipConfirm = false) {
     if (busy) return false;
-    if (String(input.action).includes("delete") && !skipConfirm) {
+    if (["delete", "clear"].some((value) => String(input.action).includes(value)) && !skipConfirm) {
+      const clearing = input.action === "clear";
       setConfirmAction({
-        title: "Remove item",
-        message: "Remove this item? This action cannot be undone.",
+        title: clearing ? "Clear log" : "Remove item",
+        message: clearing
+          ? "Permanently remove the current contents of this log file?"
+          : "Remove this item? This action cannot be undone.",
         onConfirm: () => {
           setConfirmAction(null);
           void act(input, true);
@@ -475,7 +478,7 @@ export function SiteSectionManager({
                   <code className="text-panel-700 bg-panel-50 px-1.5 py-0.5 rounded text-xs">{job.expression}</code>
                   <p className="mt-1.5 text-sm">{job.command}</p>
                 </div>
-                <button className="opacity-0 group-hover:opacity-100 transition-opacity" onClick={() => act({ action: "delete", id: job.id })}>
+                <button aria-label={`Delete cron job ${job.expression}`} className="rounded-lg p-2 opacity-100 transition-opacity hover:bg-red-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100" onClick={() => act({ action: "delete", id: job.id })}>
                   <Trash2 className="h-4 w-4 text-red-500" />
                 </button>
               </div>
@@ -518,21 +521,22 @@ export function SiteSectionManager({
             {((data.items as string[]) ?? []).map((name) => (
               <div
                 key={name}
-                className="group flex cursor-pointer items-center justify-between rounded-xl border border-slate-200/60 bg-white/50 p-4 transition-all hover:bg-white hover:shadow-sm"
-                onClick={() => void readLog(name)}
+                className="group flex items-center justify-between gap-3 rounded-xl border border-slate-200/60 bg-white/50 p-2 transition-all hover:bg-white hover:shadow-sm"
               >
-                <div><code>{name}</code><p className="mt-1 text-xs text-slate-400">Click to inspect recent entries</p></div>
+                <button type="button" className="min-w-0 flex-1 rounded-lg p-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-panel-500" onClick={() => void readLog(name)}>
+                  <code className="block truncate">{name}</code><span className="mt-1 block text-xs text-slate-400">Open recent entries</span>
+                </button>
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={(event) => { event.stopPropagation(); void act({ action: "clear", name }); }}
+                  onClick={() => { void act({ action: "clear", name }); }}
                 >
                   Clear log
                 </Button>
               </div>
             ))}
           </div>
-          {logViewer && createPortal(<div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/40 p-4 backdrop-blur-sm" onMouseDown={(event) => { if (event.target === event.currentTarget) setLogViewer(null); }}><div className="flex max-h-[calc(100vh-2rem)] w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"><div className="flex items-center justify-between border-b px-5 py-4"><div><h3 className="font-bold">{logViewer.name}</h3><p className="text-xs text-slate-500">{logViewer.truncated ? "Showing the most recent 500 KB" : "Complete log"}</p></div><Button variant="ghost" size="icon" onClick={() => setLogViewer(null)}><X className="h-5 w-5" /></Button></div><pre className="min-h-[50vh] flex-1 overflow-auto bg-slate-950 p-5 font-mono text-xs leading-5 text-slate-200">{logViewer.content || "This log is empty."}</pre></div></div>, document.body)}
+          {logViewer && createPortal(<div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/40 p-4 backdrop-blur-sm" onMouseDown={(event) => { if (event.target === event.currentTarget) setLogViewer(null); }}><div role="dialog" aria-modal="true" aria-label={`Log file ${logViewer.name}`} className="flex max-h-[calc(100vh-2rem)] w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"><div className="flex items-center justify-between border-b px-5 py-4"><div><h3 className="font-bold">{logViewer.name}</h3><p className="text-xs text-slate-500">{logViewer.truncated ? "Showing the most recent 500 KB" : "Complete log"}</p></div><Button aria-label="Close log viewer" variant="ghost" size="icon" onClick={() => setLogViewer(null)}><X className="h-5 w-5" /></Button></div><pre className="min-h-[50vh] flex-1 overflow-auto bg-slate-950 p-5 font-mono text-xs leading-5 text-slate-200">{logViewer.content || "This log is empty."}</pre></div></div>, document.body)}
         </section>
       );
   return null;
@@ -554,5 +558,5 @@ export function SiteSectionManager({
 }
 
 function FormModal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
-  return createPortal(<div className="fixed inset-0 z-[80] flex items-center justify-center overflow-y-auto bg-slate-950/40 p-4 backdrop-blur-sm" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="my-auto w-full max-w-2xl overflow-hidden rounded-2xl bg-white shadow-2xl"><div className="flex items-center justify-between border-b border-slate-100 px-6 py-5"><div><h2 className="text-lg font-bold text-ink">{title}</h2><p className="mt-0.5 text-sm text-slate-500">Review the details before continuing.</p></div><Button type="button" variant="ghost" size="icon" onClick={onClose}><X className="h-5 w-5" /></Button></div><div className="p-6">{children}</div></div></div>, document.body);
+  return createPortal(<div className="fixed inset-0 z-[80] flex items-center justify-center overflow-y-auto bg-slate-950/40 p-4 backdrop-blur-sm" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div role="dialog" aria-modal="true" aria-label={title} className="my-auto w-full max-w-2xl overflow-hidden rounded-2xl bg-white shadow-2xl"><div className="flex items-center justify-between border-b border-slate-100 px-6 py-5"><div><h2 className="text-lg font-bold text-ink">{title}</h2><p className="mt-0.5 text-sm text-slate-500">Review the details before continuing.</p></div><Button aria-label={`Close ${title}`} type="button" variant="ghost" size="icon" onClick={onClose}><X className="h-5 w-5" /></Button></div><div className="p-6">{children}</div></div></div>, document.body);
 }

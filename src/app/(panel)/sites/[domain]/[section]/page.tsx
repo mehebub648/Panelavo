@@ -7,6 +7,7 @@ import { DomainsManager } from "@/components/sites/domains-manager";
 import { SiteSectionManager } from "@/components/sites/site-section-manager";
 import { GitManager } from "@/components/sites/git-manager";
 import { ActionsManager } from "@/components/sites/actions-manager";
+import type { OperationsData } from "@/types/operations";
 
 const titles: Record<string, string> = {
   settings: "Settings",
@@ -25,7 +26,7 @@ const titles: Record<string, string> = {
 const descriptions: Record<string, string> = {
   settings: "Runtime, document root, and core website configuration.",
   domains: "System domain, your own domains, DNS, and SSL for this website.",
-  actions: "Maintenance commands, scheduled jobs, and logs.",
+  actions: "Deployment readiness, lifecycle controls, scheduled jobs, and logs.",
   vhost: "Review and update the NGINX configuration for this website.",
   databases: "Create databases and manage their associated users.",
   certificates: "Issue, renew, and review TLS certificates.",
@@ -87,7 +88,7 @@ export default async function SiteSectionPage({
     );
   }
   if (section === "actions") {
-    const [actions, cronJobs, logs] = await Promise.all([
+    const [actionsResult, cronJobsResult, logsResult] = await Promise.allSettled([
       cloudPanel.getSiteSection(session.record.cloudPanel, domain, "actions"),
       cloudPanel.getSiteSection(session.record.cloudPanel, domain, "cron-jobs"),
       cloudPanel.getSiteSection(session.record.cloudPanel, domain, "logs"),
@@ -100,24 +101,35 @@ export default async function SiteSectionPage({
           </h2>
           <p className="mt-1 text-sm text-slate-500">{descriptions.actions}</p>
         </div>
-        <ActionsManager
-          domain={domain}
-          initialData={(actions ?? {}) as Parameters<typeof ActionsManager>[0]["initialData"]}
-          canRunDocker={["super-admin", "manager"].includes(session.user.panelRole ?? "")}
-        />
-        <SectionBlock title="Cron jobs" description={descriptions["cron-jobs"]}>
-          <SiteSectionManager
+        {actionsResult.status === "fulfilled" ? (
+          <ActionsManager
             domain={domain}
-            section="cron-jobs"
-            initialData={(cronJobs ?? {}) as Record<string, unknown>}
+            initialData={actionsResult.value as OperationsData}
           />
+        ) : (
+          <SectionUnavailable name="deployment checks and actions" />
+        )}
+        <SectionBlock title="Cron jobs" description={descriptions["cron-jobs"]}>
+          {cronJobsResult.status === "fulfilled" ? (
+            <SiteSectionManager
+              domain={domain}
+              section="cron-jobs"
+              initialData={(cronJobsResult.value ?? {}) as Record<string, unknown>}
+            />
+          ) : (
+            <SectionUnavailable name="scheduled jobs" />
+          )}
         </SectionBlock>
         <SectionBlock title="Logs" description={descriptions.logs}>
-          <SiteSectionManager
-            domain={domain}
-            section="logs"
-            initialData={(logs ?? {}) as Record<string, unknown>}
-          />
+          {logsResult.status === "fulfilled" ? (
+            <SiteSectionManager
+              domain={domain}
+              section="logs"
+              initialData={(logsResult.value ?? {}) as Record<string, unknown>}
+            />
+          ) : (
+            <SectionUnavailable name="website logs" />
+          )}
         </SectionBlock>
       </div>
     );
@@ -189,6 +201,18 @@ function SectionBlock({
         <p className="mt-1 text-sm text-slate-500">{description}</p>
       </div>
       {children}
+    </div>
+  );
+}
+
+function SectionUnavailable({ name }: { name: string }) {
+  return (
+    <div className="rounded-2xl border border-amber-200 bg-amber-50/70 p-5 text-sm text-amber-900 shadow-card">
+      <p className="font-bold">Could not load {name}</p>
+      <p className="mt-1 text-amber-800">
+        The other Operations sections remain available. Refresh this page after
+        checking the CloudPanel service.
+      </p>
     </div>
   );
 }

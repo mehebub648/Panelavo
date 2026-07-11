@@ -3,7 +3,10 @@ import { siteSectionBridgeError } from "./live-client";
 
 describe("siteSectionBridgeError", () => {
   it("returns the file-manager upload limit", () => {
-    const error = siteSectionBridgeError({ ok: false, code: "UPLOAD_TOO_LARGE" });
+    const error = siteSectionBridgeError({
+      ok: false,
+      code: "UPLOAD_TOO_LARGE",
+    });
     expect(error.status).toBe(413);
     expect(error.message).toContain("64 MiB");
   });
@@ -26,5 +29,25 @@ describe("siteSectionBridgeError", () => {
     expect(error.status).toBe(422);
     expect(error.message).toContain("public deployment key");
     expect(error.message).not.toContain("git@github.com");
+  });
+
+  it("reports a concurrent operation as a retryable conflict", () => {
+    const error = siteSectionBridgeError({
+      ok: false,
+      code: "OPERATION_BUSY",
+    });
+    expect(error.status).toBe(409);
+    expect(error.message).toContain("already running");
+  });
+
+  it("does not expose unsafe Compose details returned by the bridge", () => {
+    const error = siteSectionBridgeError({
+      ok: false,
+      code: "UNSAFE_COMPOSE",
+      message: "bind mount /etc/shadow",
+    });
+    expect(error.status).toBe(422);
+    expect(error.message).toContain("host safety policy");
+    expect(error.message).not.toContain("/etc/shadow");
   });
 });

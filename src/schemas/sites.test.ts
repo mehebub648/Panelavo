@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createSiteSchema, normalizeDomain } from "./sites";
+import { createSiteSchema, normalizeDomain, updateSiteSchema } from "./sites";
 
 const shared = {
   type: "static" as const,
@@ -38,7 +38,8 @@ describe("site validation", () => {
       createSiteSchema.safeParse({ ...shared, command: "id" }).success,
     ).toBe(false);
     expect(
-      createSiteSchema.safeParse({ ...shared, category: "x; rm -rf /" }).success,
+      createSiteSchema.safeParse({ ...shared, category: "x; rm -rf /" })
+        .success,
     ).toBe(false);
   });
 
@@ -71,6 +72,21 @@ describe("site validation", () => {
         type: "reverse-proxy",
         reverseProxyUrl,
       }).success,
+    ).toBe(false);
+  });
+
+  it("keeps updated document roots inside the website htdocs directory", () => {
+    expect(
+      updateSiteSchema.safeParse({ rootDirectory: "public" }).success,
+    ).toBe(true);
+    expect(
+      updateSiteSchema.safeParse({ rootDirectory: "apps/web/public" }).success,
+    ).toBe(true);
+    expect(
+      updateSiteSchema.safeParse({ rootDirectory: "../../etc" }).success,
+    ).toBe(false);
+    expect(
+      updateSiteSchema.safeParse({ rootDirectory: "app/../secret" }).success,
     ).toBe(false);
   });
 });
