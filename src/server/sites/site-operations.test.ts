@@ -61,6 +61,11 @@ describe("normalizeOperationsData", () => {
     expect(
       data.groups
         .flatMap((group) => group.actions)
+        .find((action) => action.id === "compose-deploy"),
+    ).toMatchObject({ status: "blocked" });
+    expect(
+      data.groups
+        .flatMap((group) => group.actions)
         .some((action) => action.id === "node-install"),
     ).toBe(false);
   });
@@ -104,6 +109,15 @@ describe("normalizeOperationsData", () => {
       "compose-ps",
       "compose-port-verify",
     ]);
+    expect(
+      data.groups
+        .flatMap((group) => group.actions)
+        .find((action) => action.id === "compose-deploy"),
+    ).toMatchObject({
+      label: "Build & start services",
+      commandPreview: "docker compose up -d --build --remove-orphans",
+      status: "ready",
+    });
   });
 
   it("keeps deployment ready while planning an unambiguous Compose entry-port remap", () => {

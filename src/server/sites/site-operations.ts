@@ -1044,6 +1044,25 @@ function actionGroups(
         },
       }),
       makeAction(raw, {
+        id: "compose-deploy",
+        group: "containers",
+        label: "Build & start services",
+        description:
+          "Build or rebuild images, then create or restart the selected Compose services.",
+        iconKey: "build",
+        commandPreview: "docker compose up -d --build --remove-orphans",
+        risk: "disruptive",
+        scope: "host-root",
+        blockers: daemonBlockers,
+        docker: true,
+        confirmation: {
+          title: "Build and start the Compose project as root?",
+          message:
+            "Panelavo will rebuild images from the reviewed Compose configuration, recreate services when required, remove orphaned project containers, and verify the website entry port.",
+          confirmText: "Build & start",
+        },
+      }),
+      makeAction(raw, {
         id: "compose-restart",
         group: "containers",
         label: "Restart services",
