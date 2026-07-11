@@ -6,6 +6,7 @@ import type {
 import { decorateUser } from "@/server/auth/panel-roles";
 import {
   getSiteTypeOverrides,
+  isSiteActionAllowed,
   removeSiteTypeOverride,
   setSiteTypeOverride,
 } from "@/server/sites/site-type-overlay";
@@ -34,6 +35,20 @@ async function withSiteTypes(sites: CloudPanelSite[]) {
         }
       : site;
   });
+}
+
+async function withSiteSectionType(domain: string, section: string, data: unknown) {
+  if (section !== "actions" || !data || typeof data !== "object") return data;
+  const overrides = await getSiteTypeOverrides();
+  const type = overrides[domain.toLowerCase()];
+  return type ? { ...data, type } : data;
+}
+
+async function assertActionAllowedForSiteType(domain: string, section: string, input: Record<string, unknown>) {
+  if (section !== "actions" || input.action !== "run") return;
+  const overrides = await getSiteTypeOverrides();
+  if (!isSiteActionAllowed(overrides[domain.toLowerCase()], String(input.command ?? "")))
+    throw new AppError("INVALID_REQUEST", "Docker sites only allow Docker Compose operations from the panel.", 400);
 }
 
 // Every user object leaving the client carries the panel role overlay
@@ -104,11 +119,12 @@ function withPanelRoles(inner: CloudPanelClient): CloudPanelClient {
     },
     getSiteSection: async (session, domain, section) => {
       assertNotPanelSelf(domain);
-      return inner.getSiteSection(session, domain, section);
+      return withSiteSectionType(domain, section, await inner.getSiteSection(session, domain, section));
     },
     manageSiteSection: async (session, domain, section, input) => {
       assertNotPanelSelf(domain);
-      return inner.manageSiteSection(session, domain, section, input);
+      await assertActionAllowedForSiteType(domain, section, input);
+      return withSiteSectionType(domain, section, await inner.manageSiteSection(session, domain, section, input));
     },
     getServerResources: inner.getServerResources.bind(inner),
     getServerInfo: inner.getServerInfo.bind(inner),

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   getSiteTypeOverrides,
+  isSiteActionAllowed,
   removeSiteTypeOverride,
   setSiteTypeOverride,
 } from "./site-type-overlay";
@@ -41,5 +42,11 @@ describe("site type overlay", () => {
     expect(await getSiteTypeOverrides()).toEqual({});
     await setSiteTypeOverride("b.test", "docker");
     expect(await getSiteTypeOverrides()).toEqual({ "b.test": "docker" });
+  });
+
+  it("limits explicit Docker sites to Compose operations", () => {
+    expect(isSiteActionAllowed("docker", "compose-up")).toBe(true);
+    expect(isSiteActionAllowed("docker", "npm-install")).toBe(false);
+    expect(isSiteActionAllowed("nodejs", "npm-install")).toBe(true);
   });
 });

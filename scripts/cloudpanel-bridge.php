@@ -1029,6 +1029,7 @@ try {
                     case 'artisan-storage-link': $args = ['php', 'artisan', 'storage:link']; break;
                     case 'pip-install': $args = ['python3', '-m', 'pip', 'install', '--user', '-r', 'requirements.txt']; $timeout = 600; break;
                     case 'compose-up': $asRoot = true; $args = ['docker', 'compose', 'up', '-d', '--remove-orphans']; $timeout = 600; break;
+                    case 'compose-deploy': $asRoot = true; $args = ['docker', 'compose', 'up', '-d', '--build', '--remove-orphans']; $timeout = 600; break;
                     case 'compose-down': $asRoot = true; $args = ['docker', 'compose', 'down']; break;
                     case 'compose-restart': $asRoot = true; $args = ['docker', 'compose', 'restart']; break;
                     case 'compose-pull': $asRoot = true; $args = ['docker', 'compose', 'pull']; $timeout = 600; break;

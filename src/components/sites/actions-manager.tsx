@@ -68,6 +68,7 @@ export function ActionsManager({
   const [running, setRunning] = useState<string | null>(null);
   const [output, setOutput] = useState<ActionsData["run"] | null>(null);
   const [pipeline, setPipeline] = useState<{ steps: string[]; current: number } | null>(null);
+  const dockerSite = data.type === "docker";
 
   async function execute(command: string, extra: Record<string, unknown> = {}): Promise<ActionsData["run"] | null> {
     const response = await fetch(`/api/sites/${encodeURIComponent(domain)}/sections/actions`, {
@@ -124,7 +125,7 @@ export function ActionsManager({
     {
       title: "Dependencies",
       description: "Install what the application needs to run.",
-      show: Boolean(data.hasPackageJson || data.hasComposer || data.hasRequirements),
+      show: Boolean(!dockerSite && (data.hasPackageJson || data.hasComposer || data.hasRequirements)),
       actions: [
         ...(data.hasPackageJson
           ? [
@@ -146,7 +147,7 @@ export function ActionsManager({
     {
       title: "Build & scripts",
       description: "Scripts detected in package.json run as the site user.",
-      show: Boolean(data.scripts?.length),
+      show: Boolean(!dockerSite && data.scripts?.length),
       actions: (data.scripts ?? []).map((script) => ({
         id: "npm-run",
         script: script.name,
@@ -160,7 +161,7 @@ export function ActionsManager({
       description: data.hasEcosystem
         ? "An ecosystem.config file was detected — start uses it directly."
         : "Start runs “npm start” under PM2 with this site's name.",
-      show: Boolean(data.pm2Available && (data.hasPackageJson || data.hasEcosystem || data.pm2?.length)),
+      show: Boolean(!dockerSite && data.pm2Available && (data.hasPackageJson || data.hasEcosystem || data.pm2?.length)),
       actions: [
         { id: "pm2-start", label: "Start / reload", description: data.hasEcosystem ? "pm2 startOrReload ecosystem" : `pm2 start npm --name ${data.processName ?? domain}`, icon: Play },
         { id: "pm2-restart", label: "Restart", description: "Restart this site user's processes", icon: RotateCcw },
@@ -173,7 +174,7 @@ export function ActionsManager({
     {
       title: "Laravel",
       description: "Common artisan maintenance commands.",
-      show: Boolean(data.hasArtisan),
+      show: Boolean(!dockerSite && data.hasArtisan),
       actions: [
         { id: "artisan-migrate", label: "Migrate", description: "php artisan migrate --force", icon: Play },
         { id: "artisan-optimize", label: "Clear caches", description: "php artisan optimize:clear", icon: RefreshCw },
@@ -201,7 +202,12 @@ export function ActionsManager({
   const visible = groups.filter((group) => group.show && group.actions.length);
 
   const hasBuildScript = data.scripts?.some((script) => script.name === "build");
-  const deploySteps = data.hasPackageJson
+  const deploySteps = dockerSite && data.hasCompose && canRunDocker
+    ? [
+        { command: "compose-pull", label: "Pull images" },
+        { command: "compose-deploy", label: "Build / start with Docker Compose" },
+      ]
+    : !dockerSite && data.hasPackageJson
     ? [
         { command: "npm-install", label: "npm install" },
         ...(hasBuildScript ? [{ command: "npm-run", extra: { script: "build" }, label: "npm run build" }] : []),
@@ -265,7 +271,7 @@ export function ActionsManager({
         </section>
       )}
 
-      {data.pm2?.length ? (
+      {!dockerSite && data.pm2?.length ? (
         <section className="overflow-hidden rounded-2xl border border-white/60 bg-white/70 shadow-card backdrop-blur-md">
           <div className="border-b border-slate-200/70 px-5 py-4">
             <h3 className="font-bold">Running processes</h3>
@@ -384,7 +390,7 @@ export function ActionsManager({
           <Container className="mx-auto h-10 w-10 text-slate-300" />
           <h3 className="mt-3 font-bold">No actions detected</h3>
           <p className="mt-1 text-sm text-slate-500">
-            Add a package.json, composer.json, requirements.txt, or docker-compose.yml to
+            {dockerSite ? "Add a Compose file to" : "Add a package.json, composer.json, requirements.txt, or Compose file to"}
             <code className="mx-1 rounded bg-slate-100 px-1.5 py-0.5 text-xs">{data.path}</code>
             and the matching actions will appear here.
           </p>

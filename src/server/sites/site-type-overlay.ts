@@ -12,6 +12,10 @@ const storeFile = () => join(dataDir(), "site-types.json");
 
 type Store = { types: Record<string, SiteType> };
 
+export function isSiteActionAllowed(type: SiteType | undefined, command: string) {
+  return type !== "docker" || command.startsWith("compose-");
+}
+
 async function load(): Promise<Store> {
   try {
     const parsed = JSON.parse(await readFile(storeFile(), "utf8")) as Partial<Store>;
