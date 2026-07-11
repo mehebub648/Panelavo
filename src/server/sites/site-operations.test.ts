@@ -189,6 +189,87 @@ describe("normalizeOperationsData", () => {
     ).toMatchObject({ risk: "destructive" });
   });
 
+  it("offers Super Admins a click-to-fix for missing host software", () => {
+    const data = normalizeOperationsData(
+      {
+        ...base,
+        type: "reverse-proxy",
+        permissions: { manage: true, docker: true },
+        hasCompose: true,
+        compose: {
+          file: "compose.yaml",
+          cliAvailable: false,
+          pluginAvailable: false,
+          daemonAvailable: false,
+        },
+      },
+      { typeOverride: "docker" },
+    );
+
+    const cli = data.preflight.checks.find((item) => item.id === "docker-cli");
+    expect(cli?.fix).toMatchObject({
+      id: "install-docker",
+      status: "ready",
+      scope: "host-root",
+    });
+    // Without the CLI, the plugin check routes to the full engine install.
+    expect(
+      data.preflight.checks.find((item) => item.id === "compose-plugin")?.fix,
+    ).toMatchObject({ id: "install-docker" });
+    // The daemon cannot be started before the engine exists.
+    expect(
+      data.preflight.checks.find((item) => item.id === "docker-daemon")?.fix,
+    ).toBeUndefined();
+  });
+
+  it("blocks fixes for admins who are not Super Admins", () => {
+    const data = normalizeOperationsData(
+      {
+        ...base,
+        type: "reverse-proxy",
+        permissions: { manage: true, docker: false },
+        hasCompose: true,
+        compose: {
+          file: "compose.yaml",
+          cliAvailable: true,
+          pluginAvailable: true,
+          daemonAvailable: false,
+        },
+      },
+      { typeOverride: "docker" },
+    );
+
+    const daemon = data.preflight.checks.find(
+      (item) => item.id === "docker-daemon",
+    );
+    expect(daemon?.fix).toMatchObject({
+      id: "start-docker",
+      status: "unauthorized",
+    });
+    expect(daemon?.fix?.blockedBy[0]).toContain("Super Admin");
+  });
+
+  it("attaches a Composer installer fix on PHP sites missing Composer", () => {
+    const data = normalizeOperationsData({
+      ...base,
+      type: "php",
+      permissions: { manage: true, docker: true },
+      hasComposer: true,
+      tools: {
+        ...base.tools,
+        composer: { id: "composer", label: "Composer", available: false },
+      },
+    });
+
+    expect(
+      data.preflight.checks.find((item) => item.id === "composer")?.fix,
+    ).toMatchObject({ id: "install-composer", status: "ready" });
+    // Ready checks never carry a fix.
+    expect(
+      data.preflight.checks.find((item) => item.id === "php-runtime")?.fix,
+    ).toBeUndefined();
+  });
+
   it("keeps assigned read-only users from running otherwise detected actions", () => {
     const data = normalizeOperationsData({
       ...base,

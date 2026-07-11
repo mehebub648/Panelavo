@@ -5,6 +5,7 @@ import type {
   OperationAction,
   OperationActionGroup,
   OperationCheck,
+  OperationFix,
   OperationRisk,
   OperationScope,
   OperationStatus,
@@ -152,7 +153,7 @@ function check(
   readyDetail: string,
   blockedDetail: string,
   remediation?: string,
-  options: { blocker?: boolean; warning?: boolean } = {},
+  options: { blocker?: boolean; warning?: boolean; fix?: OperationFix } = {},
 ): OperationCheck {
   return {
     id,
@@ -161,8 +162,83 @@ function check(
     detail: available ? readyDetail : blockedDetail,
     blocker: !available && options.blocker !== false && !options.warning,
     remediation: available ? undefined : remediation,
+    fix: available ? undefined : options.fix,
   };
 }
+
+// Host software repairs change shared server state, so they carry the same
+// Super Admin boundary as rootful Docker regardless of which check they fix.
+function makeFix(
+  raw: RawOperationsData,
+  fix: Omit<OperationFix, "status" | "blockedBy">,
+): OperationFix {
+  const authorized = Boolean(raw.permissions?.docker);
+  const blockedBy = authorized
+    ? []
+    : ["Host software changes require a Super Admin."];
+  return { ...fix, blockedBy, status: statusFrom(blockedBy, authorized) };
+}
+
+const FIXES: Record<
+  OperationFix["id"],
+  Omit<OperationFix, "status" | "blockedBy">
+> = {
+  "install-docker": {
+    id: "install-docker",
+    label: "Install Docker Engine",
+    description:
+      "Install the latest Docker Engine, CLI, and Compose v2 plugin from Docker's official repository.",
+    risk: "disruptive",
+    scope: "host-root",
+    confirmation: {
+      title: "Install Docker Engine on this server?",
+      message:
+        "Panelavo will configure Docker's official APT repository and install the latest Docker Engine, CLI, Buildx, and Compose v2 plugin, then start the daemon. This changes host-level software.",
+      confirmText: "Install Docker",
+    },
+  },
+  "install-compose-plugin": {
+    id: "install-compose-plugin",
+    label: "Install Compose v2 plugin",
+    description:
+      "Install the latest Docker Compose v2 plugin from Docker's official repository.",
+    risk: "disruptive",
+    scope: "host-root",
+    confirmation: {
+      title: "Install the Docker Compose v2 plugin?",
+      message:
+        "Panelavo will configure Docker's official APT repository and install the latest Compose v2 and Buildx plugins. This changes host-level software.",
+      confirmText: "Install plugin",
+    },
+  },
+  "start-docker": {
+    id: "start-docker",
+    label: "Start Docker daemon",
+    description: "Enable and start the Docker system service.",
+    risk: "disruptive",
+    scope: "host-root",
+    confirmation: {
+      title: "Start the Docker daemon?",
+      message:
+        "Panelavo will enable and start the docker system service so it also survives reboots.",
+      confirmText: "Start Docker",
+    },
+  },
+  "install-composer": {
+    id: "install-composer",
+    label: "Install Composer",
+    description:
+      "Install the latest Composer release from getcomposer.org with installer signature verification.",
+    risk: "disruptive",
+    scope: "host-root",
+    confirmation: {
+      title: "Install Composer on this server?",
+      message:
+        "Panelavo will download the latest Composer installer from getcomposer.org, verify its signature, and install it to /usr/local/bin/composer.",
+      confirmText: "Install Composer",
+    },
+  },
+};
 
 function preflightChecks(raw: RawOperationsData, type: string) {
   const checks: OperationCheck[] = [
@@ -203,6 +279,7 @@ function preflightChecks(raw: RawOperationsData, type: string) {
           : "Docker executable is available.",
         "The Docker executable is not installed on this server.",
         "Install Docker Engine from Docker's official repository as a root administrator.",
+        { fix: makeFix(raw, FIXES["install-docker"]) },
       ),
       check(
         "compose-plugin",
@@ -213,6 +290,16 @@ function preflightChecks(raw: RawOperationsData, type: string) {
           : "Docker Compose v2 is available.",
         "The Docker Compose v2 plugin is unavailable.",
         "Install the docker-compose-plugin package and run the preflight again.",
+        {
+          fix: makeFix(
+            raw,
+            FIXES[
+              raw.compose?.cliAvailable
+                ? "install-compose-plugin"
+                : "install-docker"
+            ],
+          ),
+        },
       ),
       check(
         "docker-daemon",
@@ -221,6 +308,12 @@ function preflightChecks(raw: RawOperationsData, type: string) {
         "The Docker daemon is reachable.",
         "The Docker daemon is stopped or unreachable.",
         "Start Docker and verify it with docker info.",
+        {
+          fix:
+            raw.compose?.cliAvailable && raw.compose?.pluginAvailable
+              ? makeFix(raw, FIXES["start-docker"])
+              : undefined,
+        },
       ),
       check(
         "compose-config",
@@ -326,6 +419,7 @@ function preflightChecks(raw: RawOperationsData, type: string) {
           "Composer is available.",
           "Composer is unavailable.",
           "Install Composer system-wide or through CloudPanel.",
+          { fix: makeFix(raw, FIXES["install-composer"]) },
         ),
         check(
           "composer-lock",

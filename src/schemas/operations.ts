@@ -90,9 +90,24 @@ const deployOperationSchema = z
   })
   .strict();
 
+export const operationFixCommands = [
+  "install-docker",
+  "install-compose-plugin",
+  "start-docker",
+  "install-composer",
+] as const;
+
+const fixOperationSchema = z
+  .object({
+    action: z.literal("fix"),
+    fix: z.enum(operationFixCommands),
+  })
+  .strict();
+
 export const operationsRequestSchema = z.union([
   runOperationSchema,
   deployOperationSchema,
+  fixOperationSchema,
 ]);
 
 export type OperationsRequest = z.infer<typeof operationsRequestSchema>;

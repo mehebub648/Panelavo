@@ -114,6 +114,30 @@ export type ArchitectureDetection = {
   evidence: string[];
 };
 
+export type OperationFixId =
+  | "install-docker"
+  | "install-compose-plugin"
+  | "start-docker"
+  | "install-composer";
+
+// A server-owned remediation for a failed preflight check: one click runs an
+// allow-listed, host-scoped repair (for installs: latest release from the
+// official upstream source, never a stale distribution package).
+export type OperationFix = {
+  id: OperationFixId;
+  label: string;
+  description: string;
+  risk: OperationRisk;
+  scope: OperationScope;
+  status: OperationStatus;
+  blockedBy: string[];
+  confirmation?: {
+    title: string;
+    message: string;
+    confirmText?: string;
+  };
+};
+
 export type OperationCheck = {
   id: string;
   label: string;
@@ -121,6 +145,7 @@ export type OperationCheck = {
   detail: string;
   blocker: boolean;
   remediation?: string;
+  fix?: OperationFix;
 };
 
 export type OperationAction = {

@@ -378,6 +378,7 @@ function runSiteCommand(Site $site, array $args, int $timeout = 300, bool $asRoo
         'LANG=C.UTF-8',
         'CI=1',
         'COMPOSER_NO_INTERACTION=1',
+        'DEBIAN_FRONTEND=noninteractive',
         'PIP_DISABLE_PIP_VERSION_CHECK=1',
         'POETRY_VIRTUALENVS_IN_PROJECT=1',
         'PIPENV_VENV_IN_PROJECT=1',
@@ -1088,6 +1089,109 @@ function resolveDeploymentPlan(Site $site, array $state, string $plan): array
     respond(['ok' => false, 'code' => 'INVALID_ACTION']);
 }
 
+// --- Host software fixes -----------------------------------------------------
+// One-click remediations for failed preflight checks. Super Admin-only, exact
+// argument arrays, and installs always come from the official upstream source
+// (Docker's APT repository, getcomposer.org with signature verification) so
+// the latest supported release is installed instead of a stale distribution
+// package. Each helper appends per-step results and returns false on the
+// first failure.
+
+function runFixStep(Site $site, array &$results, string $command, string $label, array $args, int $timeout): bool
+{
+    $result = runSiteCommand($site, $args, $timeout, true);
+    $results[] = [
+        'command' => $command,
+        'label' => $label,
+        'display' => implode(' ', $args),
+        'exitCode' => $result['code'],
+        'timedOut' => $result['timedOut'],
+        'output' => trim($result['stdout'] . ($result['stderr'] !== '' ? "\n" . $result['stderr'] : '')),
+    ];
+    return $result['code'] === 0;
+}
+
+function syntheticFixStep(array &$results, string $command, string $label, string $display, bool $ok, string $output): bool
+{
+    $results[] = [
+        'command' => $command,
+        'label' => $label,
+        'display' => $display,
+        'exitCode' => $ok ? 0 : 1,
+        'timedOut' => false,
+        'output' => $output,
+    ];
+    return $ok;
+}
+
+// Configures Docker's official APT repository for the detected Debian/Ubuntu
+// release so the newest Docker Engine and Compose plugin are installed, not
+// the distribution's snapshot.
+function configureDockerRepository(Site $site, string $fix, array &$results): bool
+{
+    $os = @parse_ini_file('/etc/os-release') ?: [];
+    $id = strtolower((string) ($os['ID'] ?? ''));
+    $codename = strtolower((string) ($os['VERSION_CODENAME'] ?? ''));
+    if (!in_array($id, ['ubuntu', 'debian'], true) || !preg_match('/^[a-z]+$/', $codename)) {
+        return syntheticFixStep($results, $fix, 'Detect operating system', 'read /etc/os-release', false,
+            'Automatic Docker installation supports Debian and Ubuntu only.');
+    }
+    if (!runFixStep($site, $results, $fix, 'Prepare repository keyring', ['install', '-m', '0755', '-d', '/etc/apt/keyrings'], 60)) return false;
+    if (!runFixStep($site, $results, $fix, "Download Docker's signing key", ['curl', '-fsSL', "https://download.docker.com/linux/$id/gpg", '-o', '/etc/apt/keyrings/docker.asc'], 120)) return false;
+    @chmod('/etc/apt/keyrings/docker.asc', 0644);
+    $arch = runSiteCommand($site, ['dpkg', '--print-architecture'], 30, true);
+    $architecture = trim($arch['stdout']);
+    if ($arch['code'] !== 0 || !preg_match('/^[a-z0-9]+$/', $architecture)) {
+        return syntheticFixStep($results, $fix, 'Detect CPU architecture', 'dpkg --print-architecture', false, trim($arch['stderr']) ?: 'The package architecture could not be detected.');
+    }
+    $line = "deb [arch=$architecture signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/$id $codename stable\n";
+    $written = @file_put_contents('/etc/apt/sources.list.d/docker.list', $line) !== false;
+    if (!syntheticFixStep($results, $fix, 'Configure Docker repository', 'write /etc/apt/sources.list.d/docker.list', $written, $written ? trim($line) : 'The repository definition could not be written.')) return false;
+    return runFixStep($site, $results, $fix, 'Refresh package index', ['apt-get', 'update'], 600);
+}
+
+function executeFix(Site $site, string $fix, array &$results): void
+{
+    switch ($fix) {
+        case 'install-docker':
+            if (!runFixStep($site, $results, $fix, 'Install prerequisites', ['apt-get', 'install', '-y', 'ca-certificates', 'curl'], 600)) return;
+            if (!configureDockerRepository($site, $fix, $results)) return;
+            if (!runFixStep($site, $results, $fix, 'Install Docker Engine and Compose plugin', ['apt-get', 'install', '-y', 'docker-ce', 'docker-ce-cli', 'containerd.io', 'docker-buildx-plugin', 'docker-compose-plugin'], 900)) return;
+            if (!runFixStep($site, $results, $fix, 'Enable and start the daemon', ['systemctl', 'enable', '--now', 'docker'], 120)) return;
+            runFixStep($site, $results, $fix, 'Verify installation', ['docker', 'compose', 'version'], 60);
+            return;
+        case 'install-compose-plugin':
+            if (!runFixStep($site, $results, $fix, 'Install prerequisites', ['apt-get', 'install', '-y', 'ca-certificates', 'curl'], 600)) return;
+            if (!configureDockerRepository($site, $fix, $results)) return;
+            if (!runFixStep($site, $results, $fix, 'Install Compose v2 plugin', ['apt-get', 'install', '-y', 'docker-compose-plugin', 'docker-buildx-plugin'], 900)) return;
+            runFixStep($site, $results, $fix, 'Verify installation', ['docker', 'compose', 'version'], 60);
+            return;
+        case 'start-docker':
+            if (!runFixStep($site, $results, $fix, 'Enable and start the daemon', ['systemctl', 'enable', '--now', 'docker'], 120)) return;
+            runFixStep($site, $results, $fix, 'Verify daemon', ['docker', 'info', '--format', '{{.ServerVersion}}'], 60);
+            return;
+        case 'install-composer':
+            $setup = '/tmp/panelavo-composer-setup.php';
+            $signature = '/tmp/panelavo-composer-setup.sig';
+            try {
+                if (!runFixStep($site, $results, $fix, 'Download installer signature', ['curl', '-fsSL', 'https://composer.github.io/installer.sig', '-o', $signature], 120)) return;
+                if (!runFixStep($site, $results, $fix, 'Download Composer installer', ['curl', '-fsSL', 'https://getcomposer.org/installer', '-o', $setup], 120)) return;
+                $expected = trim((string) @file_get_contents($signature));
+                $actual = is_file($setup) ? hash_file('sha384', $setup) : '';
+                $verified = $expected !== '' && $actual !== '' && hash_equals($expected, $actual);
+                if (!syntheticFixStep($results, $fix, 'Verify installer signature', 'sha384(installer) == installer.sig', $verified,
+                    $verified ? 'The installer matches the published signature.' : 'The downloaded installer does not match the published signature; installation aborted.')) return;
+                if (!runFixStep($site, $results, $fix, 'Install Composer', ['php', $setup, '--quiet', '--install-dir=/usr/local/bin', '--filename=composer'], 300)) return;
+                runFixStep($site, $results, $fix, 'Verify installation', ['composer', '--version'], 60);
+            } finally {
+                @unlink($setup);
+                @unlink($signature);
+            }
+            return;
+    }
+    respond(['ok' => false, 'code' => 'INVALID_ACTION']);
+}
+
 function readMeminfo(): array
 {
     $values = [];
@@ -1696,6 +1800,34 @@ try {
                 }
                 exec('systemctl reload nginx 2>&1');
             } elseif ($section === 'actions') {
+                if ($action === 'fix') {
+                    // Host software repairs are a Super Admin boundary and are
+                    // serialized host-wide: APT and systemd state is shared, so
+                    // two concurrent fixes could corrupt each other.
+                    if ($user->getRole() !== User::ROLE_ADMIN) respond(['ok' => false, 'code' => 'FORBIDDEN']);
+                    $fix = (string) ($operation['fix'] ?? '');
+                    $lock = @fopen('/var/lock/panelavo-host-fix.lock', 'c');
+                    if (!$lock || !flock($lock, LOCK_EX | LOCK_NB)) respond(['ok' => false, 'code' => 'OPERATION_BUSY']);
+                    $startedAt = gmdate(DATE_ATOM);
+                    $results = [];
+                    executeFix($site, $fix, $results);
+                    flock($lock, LOCK_UN);
+                    fclose($lock);
+                    $last = end($results);
+                    respond(['ok' => true, 'data' => ['run' => [
+                        'command' => $fix,
+                        'display' => count($results) . ' repair step(s) executed',
+                        'exitCode' => $last['exitCode'],
+                        'timedOut' => $last['timedOut'],
+                        'output' => implode("\n\n", array_map(
+                            static fn(array $item) => '── ' . $item['label'] . ' (' . $item['display'] . ")\n" . ($item['output'] !== '' ? $item['output'] : '(no output)'),
+                            $results,
+                        )),
+                        'startedAt' => $startedAt,
+                        'finishedAt' => gmdate(DATE_ATOM),
+                        'steps' => $results,
+                    ]] + actionsSection($site, $user)]);
+                }
                 if (!in_array($action, ['run', 'deploy'], true)) respond(['ok' => false, 'code' => 'INVALID_ACTION']);
                 $state = operationsState($site, $user);
                 $plan = null;

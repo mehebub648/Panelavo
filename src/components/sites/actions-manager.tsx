@@ -38,6 +38,7 @@ import { cn } from "@/lib/utils";
 import type {
   DeploymentPlan,
   OperationAction,
+  OperationFix,
   OperationRun,
   OperationStatus,
   OperationsData,
@@ -316,6 +317,26 @@ export function ActionsManager({
     });
   }
 
+  function requestFix(fix: OperationFix, trigger: HTMLButtonElement) {
+    if (busy || fix.status !== "ready") return;
+    confirmationTriggerRef.current = trigger;
+    const run = () =>
+      void postOperation(
+        { action: "fix", fix: fix.id },
+        `fix:${fix.id}`,
+        `${fix.label} completed`,
+      );
+    if (!fix.confirmation) {
+      run();
+      return;
+    }
+    setConfirmation({
+      ...fix.confirmation,
+      variant: fix.risk === "destructive" ? "danger" : "default",
+      run,
+    });
+  }
+
   function requestPm2Action(
     command: "pm2-restart-one" | "pm2-stop-one" | "pm2-delete-one",
     name: string,
@@ -531,6 +552,36 @@ export function ActionsManager({
                       <div className="mt-3 rounded-lg bg-white/80 px-3 py-2 text-xs text-slate-700 ring-1 ring-inset ring-slate-200/80">
                         <span className="font-bold">How to fix:</span>{" "}
                         {check.remediation}
+                      </div>
+                    )}
+                    {check.fix && check.status !== "ready" && (
+                      <div className="mt-3">
+                        <Button
+                          type="button"
+                          size="sm"
+                          disabled={busy || check.fix.status !== "ready"}
+                          aria-busy={running === `fix:${check.fix.id}`}
+                          title={check.fix.description}
+                          onClick={(event) =>
+                            requestFix(check.fix!, event.currentTarget)
+                          }
+                        >
+                          {running === `fix:${check.fix.id}` ? (
+                            <LoaderCircle
+                              className="h-4 w-4 animate-spin"
+                              aria-hidden="true"
+                            />
+                          ) : (
+                            <Zap className="h-4 w-4" aria-hidden="true" />
+                          )}
+                          {check.fix.label}
+                        </Button>
+                        {check.fix.status !== "ready" &&
+                          check.fix.blockedBy[0] && (
+                            <p className="mt-1.5 text-xs text-slate-500">
+                              {check.fix.blockedBy[0]}
+                            </p>
+                          )}
                       </div>
                     )}
                   </div>

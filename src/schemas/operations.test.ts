@@ -38,6 +38,22 @@ describe("operationsRequestSchema", () => {
     ).toThrow();
   });
 
+  it("accepts only allow-listed fix identifiers", () => {
+    expect(
+      operationsRequestSchema.parse({ action: "fix", fix: "install-docker" }),
+    ).toEqual({ action: "fix", fix: "install-docker" });
+    expect(() =>
+      operationsRequestSchema.parse({ action: "fix", fix: "install-anything" }),
+    ).toThrow();
+    expect(() =>
+      operationsRequestSchema.parse({
+        action: "fix",
+        fix: "install-docker",
+        args: ["--force"],
+      }),
+    ).toThrow();
+  });
+
   it("requires the matching script or process target and rejects extras", () => {
     expect(() =>
       operationsRequestSchema.parse({ action: "run", command: "node-run" }),

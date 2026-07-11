@@ -86,11 +86,13 @@ The Operations tab manages applications hosted by CloudPanel; it is separate fro
 
 The root contracts currently cover npm, pnpm, Yarn, and Bun projects; Composer, Laravel, and WordPress; uv, Poetry, Pipenv, pip virtual environments, and Django; direct static roots; reverse-proxy checks; PM2; and Docker Compose. A workspace needs usable root scripts or explicit root-level configuration. For a generated static site, configure CloudPanel to serve a verified build directory yourself: Panelavo does not infer `dist`, `build`, `out`, or another output and does not change the document root.
 
-Every Operations request sends a validated action or plan identifier to the server. The server chooses the executable and arguments, fixes the working directory, runs without a shell, bounds runtime and output, and holds a per-site lock. Recommended plans execute synchronously, stop after the first failed step, and expose each step's result. A missing executable, ambiguous dependency manager, invalid configuration, insufficient role, or failed safety rule remains a visible blocker; Operations never installs a missing tool as a fallback.
+Every Operations request sends a validated action, plan, or fix identifier to the server. The server chooses the executable and arguments, fixes the working directory, runs without a shell, bounds runtime and output, and holds a per-site lock. Recommended plans execute synchronously, stop after the first failed step, and expose each step's result. A missing executable, ambiguous dependency manager, invalid configuration, insufficient role, or failed safety rule remains a visible blocker; Operations never installs a missing tool silently or as a fallback.
+
+Some blocked preflight checks additionally offer an explicit one-click fix. Fixes are Super Admin-only, individually confirmed, serialized host-wide, and always install the latest supported release from the official upstream source rather than a potentially outdated distribution package: Docker Engine and the Compose v2 plugin come from Docker's official APT repository (Debian/Ubuntu), the daemon start uses systemd, and Composer comes from getcomposer.org with installer signature verification.
 
 ### Docker Compose prerequisite and policy
 
-Docker is optional and is never installed by `setup.sh` or the Operations page. Provision Docker Engine and the Compose v2 plugin separately using Docker's [official installation instructions](https://docs.docker.com/engine/install/) and verify the host as an administrator:
+Docker is optional and is never installed automatically or by `setup.sh`. A Super Admin can either use the explicit "Install Docker Engine" fix on the Operations preflight (which configures Docker's official APT repository and installs the latest Engine, CLI, Buildx, and Compose v2 plugin) or provision Docker separately using Docker's [official installation instructions](https://docs.docker.com/engine/install/), then verify the host as an administrator:
 
 ```bash
 docker compose version
