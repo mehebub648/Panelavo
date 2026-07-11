@@ -27,6 +27,8 @@ type BridgeResult = {
 };
 
 export function siteSectionBridgeError(result: BridgeResult) {
+  if (result.code === "UPLOAD_TOO_LARGE")
+    return new AppError("INVALID_REQUEST", "The upload is too large. Files must be 64 MiB or smaller.", 413);
   if (result.code === "DIRECTORY_NOT_EMPTY")
     return new AppError("INVALID_REQUEST", "The website root is not empty. Initialize Git there or remove the existing files before cloning.", 409);
   if (result.code === "GIT_FAILED") {

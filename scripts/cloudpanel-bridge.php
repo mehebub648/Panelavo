@@ -1071,8 +1071,10 @@ try {
                 if ($action === 'new-file' && !file_exists($path)) file_put_contents($path, '');
                 elseif ($action === 'new-folder' && !file_exists($path)) mkdir($path, 0770);
                 elseif ($action === 'upload' && !is_dir($path)) {
-                    $decoded = base64_decode((string) ($operation['content'] ?? ''), true);
-                    if ($decoded === false) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                    $encoded = (string) ($operation['content'] ?? '');
+                    if (strlen($encoded) > 89478488) respond(['ok' => false, 'code' => 'UPLOAD_TOO_LARGE']);
+                    $decoded = base64_decode($encoded, true);
+                    if ($decoded === false || strlen($decoded) > 64 * 1024 * 1024) respond(['ok' => false, 'code' => 'UPLOAD_TOO_LARGE']);
                     file_put_contents($path, $decoded);
                 }
                 elseif ($action === 'save-file' && is_file($path)) file_put_contents($path, (string) ($operation['content'] ?? ''));

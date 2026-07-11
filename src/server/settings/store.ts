@@ -13,13 +13,16 @@ import { join } from "node:path";
 // managed by ippointer (see server/network/ippointer.ts), so a fresh install
 // can register *.<ip>.mehebub.com without the operator owning a domain.
 export const DEFAULT_BASE_DOMAIN = "mehebub.com";
+export const DEFAULT_UPDATE_REPOSITORY = "https://github.com/mehebub648/Panelavo.git";
 
 type StoredSettings = {
   baseDomain?: string;
+  updateRepository?: string;
 };
 
 export type PanelSettings = {
   baseDomain: string;
+  updateRepository: string;
 };
 
 const dataDir = () => process.env.PANEL_DATA_DIR || join(process.cwd(), ".data");
@@ -47,6 +50,10 @@ export async function getPanelSettings(): Promise<PanelSettings> {
       stored.baseDomain ||
       process.env.PANEL_BASE_DOMAIN?.trim().toLowerCase() ||
       DEFAULT_BASE_DOMAIN,
+    updateRepository:
+      stored.updateRepository ||
+      process.env.PANEL_UPDATE_REPOSITORY?.trim() ||
+      DEFAULT_UPDATE_REPOSITORY,
   };
 }
 
@@ -57,5 +64,11 @@ export async function getBaseDomain(): Promise<string> {
 export async function setBaseDomain(baseDomain: string) {
   const stored = await load();
   stored.baseDomain = baseDomain.trim().toLowerCase();
+  await save(stored);
+}
+
+export async function setUpdateRepository(updateRepository: string) {
+  const stored = await load();
+  stored.updateRepository = updateRepository.trim();
   await save(stored);
 }

@@ -2,6 +2,12 @@ import { describe, expect, it } from "vitest";
 import { siteSectionBridgeError } from "./live-client";
 
 describe("siteSectionBridgeError", () => {
+  it("returns the file-manager upload limit", () => {
+    const error = siteSectionBridgeError({ ok: false, code: "UPLOAD_TOO_LARGE" });
+    expect(error.status).toBe(413);
+    expect(error.message).toContain("64 MiB");
+  });
+
   it("explains a non-empty clone target", () => {
     const error = siteSectionBridgeError({
       ok: false,

@@ -42,6 +42,7 @@ export type FileManagerItem = {
   name: string; type: "file" | "directory"; size: number; modified: string; permissions?: string;
 };
 export type FileManagerData = { path: string; relativePath?: string; items?: FileManagerItem[] };
+const MAX_UPLOAD_BYTES = 64 * 1024 * 1024;
 
 function formatSize(bytes: number) {
   if (!bytes) return "—";
@@ -84,6 +85,7 @@ export function FileManager({ domain, initialData }: { domain: string; initialDa
       const response = await fetch(`/api/sites/${encodeURIComponent(domain)}/sections/file-manager`, {
         method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input),
       });
+      if (response.status === 413) throw new Error("The upload is too large. Files must be 64 MiB or smaller.");
       const result = await response.json();
       if (!result.success) throw new Error(result.error?.message || "File operation failed.");
       if (result.data?.items) setData(result.data);
@@ -120,6 +122,10 @@ export function FileManager({ domain, initialData }: { domain: string; initialDa
   async function upload(files: FileList | null) {
     if (!files) return;
     for (const file of Array.from(files)) {
+      if (file.size > MAX_UPLOAD_BYTES) {
+        toast.error(`${file.name} is larger than the 64 MiB upload limit.`);
+        continue;
+      }
       const content = await new Promise<string>((resolve) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(",")[1] ?? ""); reader.readAsDataURL(file); });
       await request({ action: "upload", path: current, name: file.name, content });
     }

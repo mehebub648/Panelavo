@@ -132,6 +132,16 @@ CloudPanel does not document a public REST API for site creation. Version 2.5.4'
 
 The Git section can initialize an existing site root or clone into an empty one. A root containing only the ACME-managed `.well-known` directory is also accepted; that directory is preserved while the repository is checked out. SSH clones use the site user's deployment key, accept and persist a previously unseen host key on first connection, and run non-interactively. Add the public deployment key shown under SSH/FTP to private repositories before cloning. Repository operations have a five-minute limit and return actionable errors for other non-empty roots, authentication failure, and an invalid repository or branch.
 
+### File uploads
+
+The file manager accepts individual files up to 64 MiB. Because uploads are base64-encoded JSON, `setup.sh` idempotently configures the panel's Nginx vhost with a 96 MiB request-body allowance and validates the configuration before reloading Nginx.
+
+### Panel updates
+
+Super Admins can check and install Panelavo updates from Settings. The default source is the public `https://github.com/mehebub648/Panelavo.git` repository on `main`; the public HTTPS repository URL can be changed and is persisted in `.data/panel-settings.json`. Panelavo clones into a private staging directory, installs the locked dependencies, and requires a successful production build before synchronizing the release. `.data` and `.env.local` are preserved. Only the `panelavo` PM2 process reloads, so managed websites are not restarted.
+
+The updater intentionally runs as the panel site user, not root. Host-level migrations are never executed automatically; release notes must identify any required root maintenance. Update progress and failures persist in `.data/update-state.json` and `.data/update.log`.
+
 The installer grants the CloudPanel site user narrow passwordless sudo for:
 
 ```text

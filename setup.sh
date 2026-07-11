@@ -363,6 +363,19 @@ mkdir -p "${SITE_ROOT}/.data"
 chown -R "${SITE_USER}:${SITE_USER}" "${SITE_ROOT}"
 chmod 700 "${SITE_ROOT}/.data"
 chmod 600 "${SITE_ROOT}/.env.local"
+if [ ! -f "${SITE_ROOT}/.data/update-state.json" ]; then
+  SOURCE_COMMIT="$(git -C "${SRC_DIR}" rev-parse HEAD 2>/dev/null || true)"
+  SOURCE_VERSION="$(node -p "require('${SRC_DIR}/package.json').version")"
+  sudo -u "${SITE_USER}" env UPDATE_STATE_FILE="${SITE_ROOT}/.data/update-state.json" SOURCE_COMMIT="${SOURCE_COMMIT}" SOURCE_VERSION="${SOURCE_VERSION}" PANEL_UPDATE_REPOSITORY="${PANEL_UPDATE_REPOSITORY:-https://github.com/mehebub648/Panelavo.git}" node <<'NODE'
+const fs = require('node:fs');
+fs.writeFileSync(process.env.UPDATE_STATE_FILE, JSON.stringify({
+  status: 'idle', currentVersion: process.env.SOURCE_VERSION,
+  repository: process.env.PANEL_UPDATE_REPOSITORY || 'https://github.com/mehebub648/Panelavo.git',
+  branch: 'main', installedCommit: process.env.SOURCE_COMMIT || undefined,
+  logFile: '.data/update.log'
+}), { mode: 0o600 });
+NODE
+fi
 
 log "Installing dependencies and building (as ${SITE_USER}) ..."
 sudo -u "${SITE_USER}" bash -c "cd '${SITE_ROOT}' && export PATH=/usr/local/bin:\$PATH && npx -y pnpm@10.12.1 install --frozen-lockfile && npx -y pnpm@10.12.1 build"
@@ -449,6 +462,27 @@ if [ -n "${PANEL_BASE_DOMAIN}" ]; then
     warn "The panel will show a setup screen until it does; SSL for ${PANEL_DOMAIN} can then be issued with:"
     warn "  clpctl lets-encrypt:install:certificate --domainName=${PANEL_DOMAIN}"
   fi
+fi
+
+# File-manager uploads are base64-encoded JSON, so the proxy allowance must be
+# larger than the 64 MiB decoded-file limit enforced by the browser and bridge.
+PANEL_VHOST="/etc/nginx/sites-enabled/${PANEL_DOMAIN}.conf"
+if [ -f "${PANEL_VHOST}" ]; then
+  log "Configuring the panel upload limit ..."
+  PANEL_VHOST_BACKUP="$(mktemp)"
+  cp "${PANEL_VHOST}" "${PANEL_VHOST_BACKUP}"
+  sed -i '/# panelavo-upload-limit$/d' "${PANEL_VHOST}"
+  sed -i '/^[[:space:]]*server[[:space:]]*{/a\    client_max_body_size 96m; # panelavo-upload-limit' "${PANEL_VHOST}"
+  if nginx -t >/dev/null 2>&1; then
+    systemctl reload nginx
+    rm -f "${PANEL_VHOST_BACKUP}"
+  else
+    cp "${PANEL_VHOST_BACKUP}" "${PANEL_VHOST}"
+    rm -f "${PANEL_VHOST_BACKUP}"
+    die "The panel upload-limit configuration failed nginx validation; the previous vhost was restored."
+  fi
+else
+  warn "Panel vhost ${PANEL_VHOST} was not found; file uploads through nginx may retain its default size limit."
 fi
 
 # ---------------------------------------------------------------------------

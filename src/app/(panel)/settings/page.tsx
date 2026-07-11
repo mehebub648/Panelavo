@@ -4,6 +4,7 @@ import { requireUserOrRedirect } from "@/server/auth/require-user";
 import { SITE_CATEGORIES } from "@/server/sites/site-meta";
 import { getSystemStatus } from "@/server/network/system-status";
 import { PanelSettingsForm } from "@/components/settings/panel-settings-form";
+import { getUpdateState } from "@/server/updates/panel-updater";
 
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Settings" };
@@ -17,6 +18,7 @@ export default async function SettingsPage() {
   // The card below is therefore a read-only status view; reconfiguring the base
   // domain happens on the dedicated /setup screen.
   const status = await getSystemStatus();
+  const update = await getUpdateState();
 
   return (
     <PanelSettingsForm
@@ -26,6 +28,7 @@ export default async function SettingsPage() {
       isDefault={status.canAutoRegister}
       pointed={status.pointed}
       categories={SITE_CATEGORIES}
+      update={update}
     />
   );
 }
