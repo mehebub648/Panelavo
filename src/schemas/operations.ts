@@ -28,6 +28,7 @@ export const operationCommands = [
   "django-collectstatic",
   "compose-validate",
   "compose-up",
+  "compose-deploy",
   "compose-restart",
   "compose-pull",
   "compose-ps",

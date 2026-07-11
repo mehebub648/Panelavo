@@ -17,6 +17,12 @@ describe("operationsRequestSchema", () => {
     expect(
       operationsRequestSchema.parse({ action: "deploy", plan: "compose" }),
     ).toEqual({ action: "deploy", plan: "compose" });
+    expect(
+      operationsRequestSchema.parse({
+        action: "run",
+        command: "compose-deploy",
+      }),
+    ).toEqual({ action: "run", command: "compose-deploy" });
   });
 
   it("rejects arbitrary commands, arguments, and unknown fields", () => {
