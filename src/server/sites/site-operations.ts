@@ -166,16 +166,24 @@ function check(
   };
 }
 
-// Host software repairs change shared server state, so they carry the same
-// Super Admin boundary as rootful Docker regardless of which check they fix.
+// Host-root fixes change shared server state, so they carry the same Super
+// Admin boundary as rootful Docker. Site-scoped fixes only edit files inside
+// the site root, so they need the ordinary Operations permission instead.
 function makeFix(
   raw: RawOperationsData,
   fix: Omit<OperationFix, "status" | "blockedBy">,
 ): OperationFix {
-  const authorized = Boolean(raw.permissions?.docker);
+  const hostRoot = fix.scope === "host-root";
+  const authorized = hostRoot
+    ? Boolean(raw.permissions?.docker)
+    : Boolean(raw.permissions?.manage);
   const blockedBy = authorized
     ? []
-    : ["Host software changes require a Super Admin."];
+    : [
+        hostRoot
+          ? "Host software changes require a Super Admin."
+          : "Operations permission is required.",
+      ];
   return { ...fix, blockedBy, status: statusFrom(blockedBy, authorized) };
 }
 
@@ -236,6 +244,20 @@ const FIXES: Record<
       message:
         "Panelavo will download the latest Composer installer from getcomposer.org, verify its signature, and install it to /usr/local/bin/composer.",
       confirmText: "Install Composer",
+    },
+  },
+  "bind-ports-loopback": {
+    id: "bind-ports-loopback",
+    label: "Bind published ports to localhost",
+    description:
+      "Rewrite the Compose file so every published port binds to 127.0.0.1, then re-validate.",
+    risk: "disruptive",
+    scope: "site-user",
+    confirmation: {
+      title: "Bind published ports to 127.0.0.1?",
+      message:
+        "Panelavo will edit the Compose file so each published port binds to the loopback address (127.0.0.1) that this site's reverse proxy already targets, keeping the same port numbers. The original file is backed up next to it, and the change is re-validated against the host-safety policy before it is kept.",
+      confirmText: "Bind to localhost",
     },
   },
 };
@@ -332,6 +354,12 @@ function preflightChecks(raw: RawOperationsData, type: string) {
         raw.compose?.detail ||
           "The Compose configuration uses a host-level feature Panelavo will not run as root.",
         "Use loopback-only ports and keep bind mounts, build contexts, configs, and secrets inside the site root.",
+        {
+          fix:
+            raw.compose?.safe !== true && raw.compose?.portFixable
+              ? makeFix(raw, FIXES["bind-ports-loopback"])
+              : undefined,
+        },
       ),
       check(
         "docker-permission",

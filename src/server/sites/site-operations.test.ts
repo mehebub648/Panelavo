@@ -270,6 +270,65 @@ describe("normalizeOperationsData", () => {
     ).toBeUndefined();
   });
 
+  it("offers a site-scoped port-binding fix on a port-only safety failure", () => {
+    const data = normalizeOperationsData(
+      {
+        ...base,
+        // A site manager (manage) who is not a Super Admin (docker: false)
+        // can still edit the site's own Compose file.
+        permissions: { manage: true, docker: false },
+        hasCompose: true,
+        compose: {
+          file: "compose.yaml",
+          cliAvailable: true,
+          pluginAvailable: true,
+          daemonAvailable: true,
+          configValid: true,
+          safe: false,
+          portFixable: true,
+          detail: 'Service "backend" publishes a port without binding it to 127.0.0.1.',
+          services: ["backend"],
+        },
+      },
+      { typeOverride: "docker" },
+    );
+
+    const safety = data.preflight.checks.find(
+      (item) => item.id === "compose-safety",
+    );
+    expect(safety?.status).toBe("blocked");
+    expect(safety?.fix).toMatchObject({
+      id: "bind-ports-loopback",
+      scope: "site-user",
+      status: "ready",
+    });
+  });
+
+  it("does not offer the port fix when a non-port feature also fails safety", () => {
+    const data = normalizeOperationsData(
+      {
+        ...base,
+        permissions: { manage: true, docker: true },
+        hasCompose: true,
+        compose: {
+          file: "compose.yaml",
+          cliAvailable: true,
+          pluginAvailable: true,
+          daemonAvailable: true,
+          configValid: true,
+          safe: false,
+          portFixable: false,
+          detail: 'Service "backend" requests privileged mode.',
+        },
+      },
+      { typeOverride: "docker" },
+    );
+
+    expect(
+      data.preflight.checks.find((item) => item.id === "compose-safety")?.fix,
+    ).toBeUndefined();
+  });
+
   it("keeps assigned read-only users from running otherwise detected actions", () => {
     const data = normalizeOperationsData({
       ...base,

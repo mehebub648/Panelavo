@@ -38,6 +38,7 @@ export type ComposeCapability = {
   daemonAvailable: boolean;
   configValid?: boolean;
   safe?: boolean;
+  portFixable?: boolean;
   version?: string;
   services?: string[];
   runningServices?: number;
@@ -118,7 +119,8 @@ export type OperationFixId =
   | "install-docker"
   | "install-compose-plugin"
   | "start-docker"
-  | "install-composer";
+  | "install-composer"
+  | "bind-ports-loopback";
 
 // A server-owned remediation for a failed preflight check: one click runs an
 // allow-listed, host-scoped repair (for installs: latest release from the

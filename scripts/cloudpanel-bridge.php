@@ -593,30 +593,37 @@ function composeProjectName(Site $site): string
 
 // Host-safety policy for rootful Compose: everything the project touches must
 // stay inside the site root, published ports must bind to loopback only, and
-// no privilege- or namespace-escalating feature is accepted. First violation
-// wins; warnings are advisory only.
+// no privilege- or namespace-escalating feature is accepted. All violations
+// are collected so Panelavo can tell the difference between a project whose
+// only problem is public port bindings (which it can safely rewrite to
+// loopback) and one that also uses a feature only the operator can resolve.
+// Warnings are advisory only.
 function composeSafetyScan(array $config, string $root): array
 {
     $warnings = [];
+    $portViolation = null;
+    $otherViolation = null;
     $inRoot = static function ($path) use ($root): bool {
         return is_string($path) && $path !== '' && pathIsContained($path, $root);
     };
-    $fail = static fn(string $detail) => ['safe' => false, 'detail' => $detail, 'warnings' => []];
+    $other = static function (string $detail) use (&$otherViolation): void {
+        $otherViolation ??= $detail;
+    };
     foreach (($config['services'] ?? []) as $name => $service) {
         if (!is_array($service)) continue;
-        if (!empty($service['privileged'])) return $fail("Service \"$name\" requests privileged mode.");
-        if (!empty($service['cap_add'])) return $fail("Service \"$name\" adds Linux capabilities.");
-        if (!empty($service['devices'])) return $fail("Service \"$name\" maps host devices.");
-        if (!empty($service['sysctls'])) return $fail("Service \"$name\" sets host sysctls.");
+        if (!empty($service['privileged'])) $other("Service \"$name\" requests privileged mode.");
+        if (!empty($service['cap_add'])) $other("Service \"$name\" adds Linux capabilities.");
+        if (!empty($service['devices'])) $other("Service \"$name\" maps host devices.");
+        if (!empty($service['sysctls'])) $other("Service \"$name\" sets host sysctls.");
         foreach (['network_mode', 'pid', 'ipc', 'userns_mode', 'cgroup'] as $key) {
             $value = $service[$key] ?? null;
             if (is_string($value) && ($value === 'host' || str_starts_with($value, 'container:') || str_starts_with($value, 'service:'))) {
-                return $fail("Service \"$name\" shares the host or another container's $key namespace.");
+                $other("Service \"$name\" shares the host or another container's $key namespace.");
             }
         }
         foreach ((array) ($service['security_opt'] ?? []) as $option) {
             if (!is_string($option) || !str_starts_with($option, 'no-new-privileges')) {
-                return $fail("Service \"$name\" sets a security option Panelavo will not run as root.");
+                $other("Service \"$name\" sets a security option Panelavo will not run as root.");
             }
         }
         foreach ((array) ($service['ports'] ?? []) as $port) {
@@ -624,18 +631,18 @@ function composeSafetyScan(array $config, string $root): array
             $published = is_array($port) ? ($port['published'] ?? null) : $port;
             if ($published === null || $published === '') continue;
             if (!in_array($hostIp, ['127.0.0.1', '::1', 'localhost'], true)) {
-                return $fail("Service \"$name\" publishes a port without binding it to 127.0.0.1.");
+                $portViolation ??= "Service \"$name\" publishes a port without binding it to 127.0.0.1.";
             }
         }
         foreach ((array) ($service['volumes'] ?? []) as $volume) {
             if (is_array($volume) && ($volume['type'] ?? '') === 'bind' && !$inRoot($volume['source'] ?? '')) {
-                return $fail("Service \"$name\" bind-mounts a path outside the website root.");
+                $other("Service \"$name\" bind-mounts a path outside the website root.");
             }
         }
         $build = $service['build'] ?? null;
         $context = is_array($build) ? ($build['context'] ?? '') : (is_string($build) ? $build : null);
         if ($context !== null && $context !== '' && !$inRoot($context)) {
-            return $fail("Service \"$name\" builds from a context outside the website root.");
+            $other("Service \"$name\" builds from a context outside the website root.");
         }
         if (empty($service['restart'])) {
             $warnings[] = "Service \"$name\" declares no restart policy; it will not come back after a host reboot.";
@@ -644,11 +651,20 @@ function composeSafetyScan(array $config, string $root): array
     foreach (['secrets', 'configs'] as $section) {
         foreach ((array) ($config[$section] ?? []) as $name => $entry) {
             if (is_array($entry) && isset($entry['file']) && !$inRoot($entry['file'])) {
-                return $fail(ucfirst($section) . " entry \"$name\" reads a file outside the website root.");
+                $other(ucfirst($section) . " entry \"$name\" reads a file outside the website root.");
             }
         }
     }
-    return ['safe' => true, 'detail' => null, 'warnings' => $warnings];
+    // A non-fixable violation is reported first so the operator sees the
+    // blocker the port rewrite will not resolve; port-only projects surface
+    // the port message together with the one-click fix.
+    $detail = $otherViolation ?? $portViolation;
+    return [
+        'safe' => $detail === null,
+        'detail' => $detail,
+        'warnings' => $warnings,
+        'portFixable' => $portViolation !== null && $otherViolation === null,
+    ];
 }
 
 // Full Compose readiness probe: CLI, v2 plugin, daemon, resolved
@@ -692,6 +708,7 @@ function composeCapability(Site $site, string $root, ?string $file): array
     $safety = composeSafetyScan($parsed, $root);
     $capability['safe'] = $safety['safe'];
     if (!$safety['safe']) $capability['detail'] = $safety['detail'];
+    $capability['portFixable'] = $safety['portFixable'];
     $capability['warnings'] = $safety['warnings'];
     return $capability;
 }
@@ -1190,6 +1207,158 @@ function executeFix(Site $site, string $fix, array &$results): void
             return;
     }
     respond(['ok' => false, 'code' => 'INVALID_ACTION']);
+}
+
+// --- Compose port loopback rewrite ------------------------------------------
+// Binds a short-syntax published port to 127.0.0.1 without changing the port
+// number that the site's reverse proxy targets. Returns the rewritten value,
+// or null when the entry is already loopback-bound or in a form Panelavo will
+// not rewrite textually (IPv6 host, non-numeric host). The published port is
+// never altered — only the host interface it binds to.
+function rewriteShortPort(string $value): ?string
+{
+    $proto = '';
+    $core = $value;
+    if (($slash = strrpos($value, '/')) !== false) {
+        $proto = substr($value, $slash);
+        $core = substr($value, 0, $slash);
+    }
+    if (str_contains($core, '[')) return null; // bracketed IPv6 host — leave to the operator
+    $parts = explode(':', $core);
+    $loopback = ['127.0.0.1', '::1'];
+    if (count($parts) === 3) {
+        if (in_array($parts[0], $loopback, true)) return null;
+        if ($parts[0] === '' || $parts[0] === '*' || $parts[0] === '0.0.0.0' || $parts[0] === '::'
+            || filter_var($parts[0], FILTER_VALIDATE_IP) !== false) {
+            $parts[0] = '127.0.0.1';
+            return implode(':', $parts) . $proto;
+        }
+        return null;
+    }
+    if (count($parts) === 2) {
+        return preg_match('/^\d/', $parts[0]) ? '127.0.0.1:' . $core . $proto : null;
+    }
+    if (count($parts) === 1) {
+        return preg_match('/^\d/', $parts[0]) ? '127.0.0.1::' . $core . $proto : null;
+    }
+    return null;
+}
+
+// Line-oriented rewrite that only touches entries inside a `ports:` block, so
+// container ports, environment values, and comments are never modified. Short
+// list syntax and long-syntax `host_ip:` lines are handled; anything else is
+// left untouched and caught by the post-rewrite validation before any change
+// is committed.
+function rewriteComposePorts(string $text): string
+{
+    $lines = explode("\n", $text);
+    $portsIndent = null;
+    $loopback = ['127.0.0.1', '::1'];
+    foreach ($lines as $index => $rawLine) {
+        $eol = '';
+        $line = $rawLine;
+        if (str_ends_with($line, "\r")) { $eol = "\r"; $line = substr($line, 0, -1); }
+        $indent = strlen($line) - strlen(ltrim($line, ' '));
+        $trimmed = trim($line);
+
+        if ($portsIndent !== null && $trimmed !== '' && $indent <= $portsIndent) {
+            $portsIndent = null;
+        }
+        if ($portsIndent === null) {
+            if (preg_match('/^(\s*)ports:\s*(#.*)?$/', $line, $m)) $portsIndent = strlen($m[1]);
+            continue;
+        }
+        if ($indent <= $portsIndent) continue;
+
+        if (preg_match('/^(\s*host_ip:\s*)(["\']?)([^"\'#\s]+)\2(\s*(?:#.*)?)$/', $line, $m)) {
+            if (!in_array($m[3], $loopback, true)) {
+                $lines[$index] = $m[1] . $m[2] . '127.0.0.1' . $m[2] . $m[4] . $eol;
+            }
+            continue;
+        }
+        if (preg_match('/^(\s*-\s*)(["\']?)([^"\'#]+?)\2(\s*(?:#.*)?)$/', $line, $m)) {
+            $val = trim($m[3]);
+            if (preg_match('/^[A-Za-z_]+:\s/', $val)) continue; // long-syntax key line (e.g. "target: 80")
+            $rewritten = rewriteShortPort($val);
+            if ($rewritten !== null && $rewritten !== $val) {
+                $lines[$index] = $m[1] . $m[2] . $rewritten . $m[2] . $m[4] . $eol;
+            }
+        }
+    }
+    return implode("\n", $lines);
+}
+
+function composeDiffSummary(string $before, string $after): string
+{
+    $old = explode("\n", $before);
+    $new = explode("\n", $after);
+    $changes = [];
+    foreach ($old as $i => $line) {
+        if (($new[$i] ?? null) !== $line) {
+            $changes[] = '- ' . trim((string) $line);
+            $changes[] = '+ ' . trim((string) ($new[$i] ?? ''));
+        }
+        if (count($changes) >= 40) { $changes[] = '…'; break; }
+    }
+    return $changes ? implode("\n", $changes) : '(no line changes)';
+}
+
+// Site-scoped repair for the "publishes a port without binding it to
+// 127.0.0.1" host-safety blocker. The edited file is validated with
+// `docker compose config` and re-scanned against the full safety policy; the
+// change is committed only when the result is fully safe, so the file is never
+// left broken or still-unsafe. A one-time backup is written next to it.
+function bindComposePortsToLoopback(Site $site, array &$results): void
+{
+    $fix = 'bind-ports-loopback';
+    $root = siteRootPath($site);
+    $compose = null;
+    foreach (['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml'] as $candidate) {
+        if (is_file($root . '/' . $candidate)) { $compose = $candidate; break; }
+    }
+    if (!$compose) { syntheticFixStep($results, $fix, 'Locate Compose file', 'find compose file', false, 'No Compose file was found in the site root.'); return; }
+    $path = $root . '/' . $compose;
+    $original = (string) @file_get_contents($path);
+    if ($original === '') { syntheticFixStep($results, $fix, 'Read Compose file', 'read ' . $compose, false, 'The Compose file could not be read.'); return; }
+
+    $rewritten = rewriteComposePorts($original);
+    if ($rewritten === $original) {
+        syntheticFixStep($results, $fix, 'Rewrite published ports', 'edit ' . $compose, false,
+            'Panelavo could not automatically rewrite the published ports — they may use the long mapping or flow syntax. Bind each published port manually: short syntax "127.0.0.1:8080:80", or long syntax with "host_ip: 127.0.0.1".');
+        return;
+    }
+
+    $tmpName = '.panelavo-compose-check.yaml';
+    $tmpPath = $root . '/' . $tmpName;
+    if (@file_put_contents($tmpPath, $rewritten) === false) {
+        syntheticFixStep($results, $fix, 'Stage rewritten Compose', 'write ' . $tmpName, false, 'A temporary Compose file could not be written to the site root.');
+        return;
+    }
+    @chown($tmpPath, $site->getUser());
+    @chgrp($tmpPath, $site->getUser());
+    try {
+        $config = runSiteCommand($site, ['docker', 'compose', '-f', $tmpName, '-p', composeProjectName($site), 'config', '--format', 'json'], 60, true);
+        if ($config['code'] !== 0) {
+            syntheticFixStep($results, $fix, 'Validate rewritten Compose', 'docker compose config', false,
+                (trim($config['stderr'] !== '' ? $config['stderr'] : $config['stdout']) ?: 'The rewritten Compose file failed validation.') . "\nNo changes were made.");
+            return;
+        }
+        $parsed = json_decode($config['stdout'], true);
+        $scan = is_array($parsed) ? composeSafetyScan($parsed, $root) : ['safe' => false, 'detail' => 'The rewritten configuration could not be parsed.'];
+        if (($scan['safe'] ?? false) !== true) {
+            syntheticFixStep($results, $fix, 'Verify host-safety policy', 're-scan resolved config', false,
+                'The automatic rewrite did not fully satisfy the host-safety policy' . (!empty($scan['detail']) ? ': ' . $scan['detail'] : '') . ". No changes were made; please adjust the Compose file manually.");
+            return;
+        }
+        @copy($path, $path . '.panelavo.bak');
+        $ok = @file_put_contents($path, $rewritten) !== false;
+        if ($ok) { @chown($path, $site->getUser()); @chgrp($path, $site->getUser()); }
+        syntheticFixStep($results, $fix, 'Bind published ports to 127.0.0.1', 'edit ' . $compose, $ok,
+            $ok ? "Updated $compose (backup saved as $compose.panelavo.bak).\n" . composeDiffSummary($original, $rewritten)
+                : 'The validated Compose file could not be written back.');
+    } finally {
+        @unlink($tmpPath);
+    }
 }
 
 function readMeminfo(): array
@@ -1801,16 +1970,26 @@ try {
                 exec('systemctl reload nginx 2>&1');
             } elseif ($section === 'actions') {
                 if ($action === 'fix') {
-                    // Host software repairs are a Super Admin boundary and are
-                    // serialized host-wide: APT and systemd state is shared, so
-                    // two concurrent fixes could corrupt each other.
-                    if ($user->getRole() !== User::ROLE_ADMIN) respond(['ok' => false, 'code' => 'FORBIDDEN']);
                     $fix = (string) ($operation['fix'] ?? '');
-                    $lock = @fopen('/var/lock/panelavo-host-fix.lock', 'c');
+                    $results = [];
+                    // A site-scoped fix only edits files inside the site root,
+                    // so the site-write access proven above is enough and it
+                    // takes the per-site lock. Host-software repairs are a
+                    // Super Admin boundary serialized host-wide, because shared
+                    // APT and systemd state could otherwise be corrupted by two
+                    // concurrent fixes.
+                    if ($fix === 'bind-ports-loopback') {
+                        $lockPath = '/var/lock/panelavo-operations-' . $site->getUser() . '.lock';
+                        $runner = static function () use ($site, &$results): void { bindComposePortsToLoopback($site, $results); };
+                    } else {
+                        if ($user->getRole() !== User::ROLE_ADMIN) respond(['ok' => false, 'code' => 'FORBIDDEN']);
+                        $lockPath = '/var/lock/panelavo-host-fix.lock';
+                        $runner = static function () use ($site, $fix, &$results): void { executeFix($site, $fix, $results); };
+                    }
+                    $lock = @fopen($lockPath, 'c');
                     if (!$lock || !flock($lock, LOCK_EX | LOCK_NB)) respond(['ok' => false, 'code' => 'OPERATION_BUSY']);
                     $startedAt = gmdate(DATE_ATOM);
-                    $results = [];
-                    executeFix($site, $fix, $results);
+                    $runner();
                     flock($lock, LOCK_UN);
                     fclose($lock);
                     $last = end($results);
