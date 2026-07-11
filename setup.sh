@@ -5,8 +5,8 @@
 # Turns a fresh Debian/Ubuntu server into a fully working panel host:
 #   1. Detects the OS and installs CloudPanel if it is not present.
 #   2. Creates the initial CloudPanel admin user.
-#   3. Installs nvm + the latest Node.js for root and a shared PM2 in
-#      /usr/local that every user can run.
+#   3. Installs the latest Node.js with nvm, publishes a complete shared copy
+#      under /usr/local, and installs a shared PM2 that every user can run.
 #   4. Creates a CloudPanel Node.js site owned by a dedicated system user,
 #      deploys this application into it, builds it, and hosts it with PM2
 #      (systemd resurrect on boot).
@@ -26,6 +26,10 @@
 #   ADMIN_PASSWORD=...               CloudPanel admin password (default random)
 #   ADMIN_EMAIL=...                  CloudPanel admin e-mail
 #   DB_ENGINE=MYSQL_8.4              CloudPanel database engine override
+#   KEEP_FAIL2BAN_SSHD_RUNNING=true Keep fail2ban's sshd jail active during
+#                                   setup and temporarily exempt this client
+#   FAIL2BAN_SSHD_PREPAUSED=true    Jail was stopped in the provider console;
+#                                   setup must restore it when finished
 #
 # The panel is reachable on http://<server-ip>:10443 (primary) and on the
 # site domain through nginx once DNS points at the server.
@@ -45,6 +49,63 @@ die()  { echo -e "\033[1;31m${LOG_PREFIX}\033[0m $*" >&2; exit 1; }
 [ "$(id -u)" = "0" ] || die "Run this script as root: sudo bash setup.sh"
 [ -f "${SRC_DIR}/package.json" ] || die "Run setup.sh from the application directory (package.json not found)."
 [[ "${SITE_USER}" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || die "PANEL_SITE_USER must be a valid Linux user name."
+
+# Protect the connection running this installer. Mobile/carrier NAT addresses
+# can change during a session, so allowlisting one source address is not a
+# reliable maintenance strategy. By default, pause only fail2ban's sshd jail
+# and restore it on every normal or error exit. The SSH service remains up.
+# sudo may remove SSH_CONNECTION. Recover it from this process's ancestors,
+# where the login shell/sshd child still has the original value.
+detect_ssh_connection() {
+  local value="${SSH_CONNECTION:-}" pid data
+  if [ -n "${value}" ]; then printf '%s\n' "${value}"; return; fi
+  pid="${PPID}"
+  while [[ "${pid}" =~ ^[0-9]+$ ]] && [ "${pid}" -gt 1 ]; do
+    data="$(tr '\0' '\n' < "/proc/${pid}/environ" 2>/dev/null | sed -n 's/^SSH_CONNECTION=//p' | head -1 || true)"
+    if [ -n "${data}" ]; then printf '%s\n' "${data}"; return; fi
+    pid="$(awk '/^PPid:/ {print $2}' "/proc/${pid}/status" 2>/dev/null || true)"
+  done
+}
+
+SSH_CONNECTION_VALUE="$(detect_ssh_connection)"
+SSH_CLIENT_IP="${SSH_CONNECTION_VALUE%% *}"
+SSH_SERVER_PORT="$(awk '{print $4}' <<<"${SSH_CONNECTION_VALUE}")"
+[ -n "${SSH_SERVER_PORT}" ] || SSH_SERVER_PORT="$(sshd -T 2>/dev/null | awk '$1 == "port" {print $2; exit}' || true)"
+FAIL2BAN_SSH_GUARD_ADDED=false
+FAIL2BAN_SSH_JAIL_PAUSED=false
+
+remove_ssh_guard() {
+  if [ "${FAIL2BAN_SSH_JAIL_PAUSED}" = "true" ]; then
+    fail2ban-client start sshd >/dev/null 2>&1 || warn "Could not restart fail2ban's sshd jail; run: fail2ban-client start sshd"
+    FAIL2BAN_SSH_JAIL_PAUSED=false
+    [ -n "${SSH_CLIENT_IP}" ] && fail2ban-client set sshd unbanip "${SSH_CLIENT_IP}" >/dev/null 2>&1 || true
+  elif [ "${FAIL2BAN_SSH_GUARD_ADDED}" = "true" ]; then
+    fail2ban-client set sshd delignoreip "${SSH_CLIENT_IP}" >/dev/null 2>&1 || true
+  fi
+}
+trap remove_ssh_guard EXIT INT TERM
+
+if command -v fail2ban-client >/dev/null 2>&1 && fail2ban-client status sshd >/dev/null 2>&1; then
+  fail2ban-client set sshd unbanip "${SSH_CLIENT_IP}" >/dev/null 2>&1 || true
+  if [ "${KEEP_FAIL2BAN_SSHD_RUNNING:-false}" = "true" ]; then
+    if fail2ban-client get sshd ignoreip 2>/dev/null | tr ' ' '\n' | grep -Fqx "${SSH_CLIENT_IP}"; then
+      log "Current SSH client ${SSH_CLIENT_IP} is already exempt from fail2ban."
+    elif fail2ban-client set sshd addignoreip "${SSH_CLIENT_IP}" >/dev/null 2>&1; then
+      FAIL2BAN_SSH_GUARD_ADDED=true
+      log "Protected current SSH client ${SSH_CLIENT_IP} from fail2ban during setup."
+    else
+      die "Could not protect the current SSH client in fail2ban."
+    fi
+  elif fail2ban-client stop sshd >/dev/null 2>&1; then
+    FAIL2BAN_SSH_JAIL_PAUSED=true
+    log "Paused fail2ban's sshd jail for this setup run; it will be restored automatically."
+  else
+    die "Could not pause fail2ban's sshd jail. Use the provider console and run: fail2ban-client stop sshd"
+  fi
+elif [ "${FAIL2BAN_SSHD_PREPAUSED:-false}" = "true" ] && command -v fail2ban-client >/dev/null 2>&1; then
+  FAIL2BAN_SSH_JAIL_PAUSED=true
+  log "Using the fail2ban sshd maintenance window opened in the provider console; the jail will be restored automatically."
+fi
 
 export DEBIAN_FRONTEND=noninteractive
 
@@ -188,7 +249,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 6. nvm + latest Node.js for root, shared PM2 in /usr/local
+# 6. Latest Node.js via nvm + shared Node/PM2 in /usr/local
 # ---------------------------------------------------------------------------
 export NVM_DIR="/root/.nvm"
 if [ ! -s "${NVM_DIR}/nvm.sh" ]; then
@@ -206,14 +267,28 @@ nvm alias default node >/dev/null
 NODE_BIN="$(dirname "$(nvm which default)")"
 log "Node.js $("${NODE_BIN}/node" -v) installed for root."
 
-# Expose node to every user (PM2, panelavo builds, systemd) via /usr/local/bin.
+# A symlink into /root/.nvm is unusable by site users because /root is not
+# traversable. Publish the complete distribution (bin + lib) in /usr/local so
+# npm/npx relative links and their JavaScript entrypoints remain available.
+NODE_ROOT="$(dirname "${NODE_BIN}")"
+SHARED_NODE_ROOT="/usr/local/lib/panelavo-node"
+log "Publishing shared Node.js runtime in ${SHARED_NODE_ROOT} ..."
+mkdir -p "${SHARED_NODE_ROOT}"
+rsync -a --delete "${NODE_ROOT}/" "${SHARED_NODE_ROOT}/"
+chmod -R a+rX "${SHARED_NODE_ROOT}"
+
+# Expose Node commands to every user (PM2, builds, and systemd).
 for bin in node npm npx corepack; do
-  ln -sf "${NODE_BIN}/${bin}" "/usr/local/bin/${bin}"
+  [ -e "${SHARED_NODE_ROOT}/bin/${bin}" ] || die "Shared Node.js command is missing: ${bin}"
+  ln -sf "${SHARED_NODE_ROOT}/bin/${bin}" "/usr/local/bin/${bin}"
 done
+
+sudo -u nobody env PATH="/usr/local/bin:/usr/bin:/bin" node --version >/dev/null 2>&1 || die "Shared Node.js runtime is not executable by non-root users."
+sudo -u nobody env PATH="/usr/local/bin:/usr/bin:/bin" npx --version >/dev/null 2>&1 || die "Shared npx is not executable by non-root users."
 
 if [ ! -x /usr/local/bin/pm2 ]; then
   log "Installing shared PM2 into /usr/local ..."
-  "${NODE_BIN}/npm" install -g --prefix /usr/local pm2 >/dev/null
+  "${SHARED_NODE_ROOT}/bin/npm" install -g --prefix /usr/local pm2 >/dev/null
 fi
 log "PM2 $(/usr/local/bin/pm2 -v | tail -1) available system-wide."
 
@@ -297,9 +372,15 @@ sudo -u "${SITE_USER}" /usr/local/bin/pm2 save >/dev/null
 # ---------------------------------------------------------------------------
 CLOUDPANEL_PORT="8443"
 if command -v ufw >/dev/null 2>&1; then
+  # Preserve the actual port used by this SSH session before making any UFW
+  # change. This also supports servers whose sshd does not listen on port 22.
+  if [[ "${SSH_SERVER_PORT}" =~ ^[0-9]+$ ]] && [ "${SSH_SERVER_PORT}" -ge 1 ] && [ "${SSH_SERVER_PORT}" -le 65535 ]; then
+    ufw allow "${SSH_SERVER_PORT}/tcp" >/dev/null 2>&1 || die "Could not preserve SSH port ${SSH_SERVER_PORT} in ufw."
+  else
+    ufw allow OpenSSH >/dev/null 2>&1 || ufw allow 22/tcp >/dev/null 2>&1 || die "Could not preserve SSH access in ufw."
+  fi
   if ! ufw status 2>/dev/null | grep -q "Status: active"; then
     log "Enabling ufw (SSH, HTTP/HTTPS, and port ${APP_PORT} stay open) ..."
-    ufw allow OpenSSH >/dev/null 2>&1 || ufw allow 22/tcp >/dev/null 2>&1 || true
     ufw allow 80/tcp >/dev/null 2>&1 || true
     ufw allow 443/tcp >/dev/null 2>&1 || true
     ufw --force enable >/dev/null 2>&1 || true

@@ -14,7 +14,7 @@ cd panelavo
 sudo bash setup.sh
 ```
 
-The script detects the OS, installs CloudPanel if it is missing, creates the initial CloudPanel admin, installs nvm plus the latest Node.js for root, installs a shared PM2 into `/usr/local`, creates a CloudPanel Node.js site, deploys and builds panelavo inside it, and hosts it with PM2 with systemd persistence across reboots.
+The script detects the OS, installs CloudPanel if it is missing, creates the initial CloudPanel admin, installs the latest Node.js and publishes a non-root-readable runtime under `/usr/local/lib/panelavo-node`, installs a shared PM2 into `/usr/local`, creates a CloudPanel Node.js site, deploys and builds panelavo inside it, and hosts it with PM2 with systemd persistence across reboots.
 
 When it finishes, it prints the panel URL (`http://<server-ip>:10443`) and generated credentials. By default, the CloudPanel site/system user is `panelavo`. Overrides: `PANEL_DOMAIN`, `PANEL_BASE_DOMAIN`, `PANEL_SITE_USER`, `ADMIN_USER`, `ADMIN_PASSWORD`, `ADMIN_EMAIL`, `DB_ENGINE`. Example:
 
@@ -23,6 +23,37 @@ sudo PANEL_DOMAIN=panelavo.example.com PANEL_BASE_DOMAIN=example.com bash setup.
 ```
 
 The script is idempotent: re-running skips resources that already exist.
+
+### SSH lockout protection and recovery
+
+The normal customer workflow remains `git clone` followed by `sudo bash setup.sh`; no security preflight is required. Setup automatically pauses only fail2ban's `sshd` jail before lengthy work. The SSH service and authentication stay running, and an exit/error/signal trap restores the jail when setup ends. This avoids racing changing mobile or carrier-NAT addresses. Because `sudo` can remove `SSH_CONNECTION`, setup recovers the live connection from its process ancestry and preserves the actual SSH port in UFW before changing the firewall. Set `KEEP_FAIL2BAN_SSHD_RUNNING=true` only to opt into a temporary single-IP exemption from a known stable address.
+
+The provider-console procedure below is recovery only for a machine whose client was already banned before the corrected installer could be cloned or started; it is not part of normal installation:
+
+```bash
+fail2ban-client stop sshd
+fail2ban-client unban --all
+```
+
+Copy/update `setup.sh`, connect through SSH, and tell the corrected installer that the jail is already paused so it restores protection when it exits:
+
+```bash
+cd /root/Panelavo
+sudo FAIL2BAN_SSHD_PREPAUSED=true bash setup.sh
+```
+
+After setup, confirm `fail2ban-client status sshd`. If setup was killed with `SIGKILL` or the machine lost power before its cleanup trap ran, restore the jail manually with `fail2ban-client start sshd`.
+
+If SSH times out, use the hosting provider's VNC/serial/web console. Do not assume fail2ban without checking:
+
+```bash
+fail2ban-client status sshd
+journalctl -u fail2ban --since "30 minutes ago"
+ufw status numbered
+ss -lntp | grep -E ':(22|2222)\\b'
+```
+
+If the client IP appears in `Banned IP list`, recover with `fail2ban-client set sshd unbanip <client-ip>`. If it is not banned, check the provider firewall/security group and `journalctl -u ssh --since "30 minutes ago"`. A timeout means packets are being dropped or cannot reach sshd; it does not by itself prove a fail2ban ban. Do not leave the `sshd` jail stopped after maintenance.
 
 ## Roles
 
