@@ -7,7 +7,7 @@ import { requireUserOrRedirect } from "@/server/auth/require-user";
 
 export const metadata: Metadata = { title: "Add website" };
 export default async function AddSitePage() {
-  const session = await requireUserOrRedirect();
+  const session = await requireUserOrRedirect({ allowDuringUpdate: true });
   if (!session.user.canCreateSites)
     return (
       <div className="mx-auto grid min-h-[450px] max-w-3xl place-items-center rounded-2xl border border-slate-200 bg-white p-10 text-center shadow-card">

@@ -7,7 +7,7 @@ import { ResourcesView } from "@/components/server/resources-view";
 export const dynamic = "force-dynamic";
 
 export default async function ResourcesPage() {
-  const session = await requireUserOrRedirect();
+  const session = await requireUserOrRedirect({ allowDuringUpdate: true });
   if (!["super-admin", "manager"].includes(session.user.panelRole ?? "")) notFound();
   const [resources, history] = await Promise.all([
     getCloudPanelClient().getServerResources(session.record.cloudPanel),

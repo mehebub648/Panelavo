@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rename, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { isIP } from "node:net";
@@ -11,7 +11,7 @@ const dataDir = () => process.env.PANEL_DATA_DIR || join(process.cwd(), ".data")
 const stateFile = () => join(dataDir(), "update-state.json");
 
 export type UpdateState = {
-  status: "idle" | "checking" | "available" | "current" | "queued" | "updating" | "failed" | "complete";
+  status: "idle" | "checking" | "available" | "current" | "queued" | "updating" | "reloading" | "failed" | "complete";
   currentVersion: string;
   repository: string;
   branch: string;
@@ -20,6 +20,7 @@ export type UpdateState = {
   startedAt?: string;
   completedAt?: string;
   error?: string;
+  previousPid?: number;
   logFile: string;
 };
 
@@ -27,9 +28,25 @@ export function isUpdateCurrent(state: Pick<UpdateState, "installedCommit" | "re
   return Boolean(state.installedCommit && state.remoteCommit && state.installedCommit === state.remoteCommit);
 }
 
-export async function isPanelUpdateRunning() {
+export function shouldCompleteUpdateHandoff(state: Partial<UpdateState>, currentPid = process.pid) {
+  if (state.status === "reloading") return Boolean(state.previousPid && state.previousPid !== currentPid);
+  // Recovery for releases before 0.1.17, whose worker was killed by PM2
+  // after recording the installed commit but before recording completion.
+  return state.status === "updating" && isUpdateCurrent(state);
+}
+
+async function effectiveState() {
   const state = await loadState();
-  return state.status === "queued" || state.status === "updating";
+  if (!shouldCompleteUpdateHandoff(state)) return state;
+  const complete = { ...state, status: "complete", completedAt: new Date().toISOString(), previousPid: undefined } as Partial<UpdateState>;
+  await saveStoredState(complete);
+  await rm(join(dataDir(), "update.lock"), { recursive: true, force: true }).catch(() => undefined);
+  return complete;
+}
+
+export async function isPanelUpdateRunning() {
+  const state = await effectiveState();
+  return state.status === "queued" || state.status === "updating" || state.status === "reloading";
 }
 
 export function validateUpdateRepository(value: string) {
@@ -50,12 +67,14 @@ async function loadState(): Promise<Partial<UpdateState>> {
   try { return JSON.parse(await readFile(stateFile(), "utf8")) as Partial<UpdateState>; } catch { return {}; }
 }
 
-async function saveState(state: UpdateState) {
+async function saveStoredState(state: Partial<UpdateState>) {
   await mkdir(dataDir(), { recursive: true, mode: 0o700 });
   const temporary = `${stateFile()}.${randomUUID()}.tmp`;
   await writeFile(temporary, JSON.stringify(state), { mode: 0o600 });
   await rename(temporary, stateFile());
 }
+
+async function saveState(state: UpdateState) { await saveStoredState(state); }
 
 function gitRemoteCommit(repository: string) {
   return new Promise<string>((resolve, reject) => {
@@ -77,15 +96,16 @@ function gitRemoteCommit(repository: string) {
 export async function getUpdateState(checkRemote = false): Promise<UpdateState> {
   const settings = await getPanelSettings();
   const repository = validateUpdateRepository(settings.updateRepository);
-  const stored = await loadState();
+  const stored = await effectiveState();
   const base: UpdateState = {
     status: stored.status || "idle", currentVersion: await currentVersion(), repository,
     branch: UPDATE_BRANCH, installedCommit: stored.installedCommit,
     remoteCommit: stored.remoteCommit, startedAt: stored.startedAt,
     completedAt: stored.completedAt, error: stored.error,
+    previousPid: stored.previousPid,
     logFile: join(dataDir(), "update.log"),
   };
-  if (!checkRemote || ["queued", "updating"].includes(base.status)) return base;
+  if (!checkRemote || ["queued", "updating", "reloading"].includes(base.status)) return base;
   try {
     const remoteCommit = await gitRemoteCommit(repository);
     const state = { ...base, remoteCommit, status: base.installedCommit === remoteCommit ? "current" : "available", error: undefined } as UpdateState;
@@ -97,11 +117,11 @@ export async function getUpdateState(checkRemote = false): Promise<UpdateState> 
 
 export async function queueUpdate() {
   const state = await getUpdateState(true);
-  if (["queued", "updating"].includes(state.status))
+  if (["queued", "updating", "reloading"].includes(state.status))
     throw new AppError("INVALID_REQUEST", "An update is already running.", 409);
   if (isUpdateCurrent(state))
     throw new AppError("INVALID_REQUEST", "Panelavo is already up to date.", 409);
-  const queued: UpdateState = { ...state, status: "queued", startedAt: new Date().toISOString(), completedAt: undefined, error: undefined };
+  const queued: UpdateState = { ...state, status: "queued", startedAt: new Date().toISOString(), completedAt: undefined, error: undefined, previousPid: process.pid };
   await saveState(queued);
   const child = spawn("/usr/bin/bash", [join(process.cwd(), "scripts", "self-update.sh"), state.repository, UPDATE_BRANCH, process.cwd()], {
     cwd: process.cwd(), detached: true, stdio: "ignore", shell: false,

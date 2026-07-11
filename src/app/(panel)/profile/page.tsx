@@ -6,6 +6,6 @@ export const metadata: Metadata = { title: "My profile" };
 export const dynamic = "force-dynamic";
 
 export default async function ProfilePage() {
-  const session = await requireUserOrRedirect();
+  const session = await requireUserOrRedirect({ allowDuringUpdate: true });
   return <ProfileForm user={session.user} />;
 }

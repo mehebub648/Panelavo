@@ -29,7 +29,7 @@ function formatUptime(seconds: number) {
 }
 
 export default async function InformationPage() {
-  const session = await requireUserOrRedirect();
+  const session = await requireUserOrRedirect({ allowDuringUpdate: true });
   if (!["super-admin", "manager"].includes(session.user.panelRole ?? "")) notFound();
   const info = await getCloudPanelClient().getServerInfo(session.record.cloudPanel);
 

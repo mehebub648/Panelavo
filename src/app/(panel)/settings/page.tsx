@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Settings" };
 
 export default async function SettingsPage() {
-  const session = await requireUserOrRedirect();
+  const session = await requireUserOrRedirect({ allowDuringUpdate: true });
   if (session.user.panelRole !== "super-admin") redirect("/sites");
 
   // Reaching this page means the readiness gate in (panel)/layout.tsx already

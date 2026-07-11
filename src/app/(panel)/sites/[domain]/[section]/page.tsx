@@ -45,7 +45,7 @@ export default async function SiteSectionPage({
   const { domain: encodedDomain, section } = await params;
   if (!titles[section]) notFound();
   const domain = decodeURIComponent(encodedDomain);
-  const session = await requireUserOrRedirect();
+  const session = await requireUserOrRedirect({ allowDuringUpdate: true });
   const cloudPanel = getCloudPanelClient();
   if (section === "settings") {
     const sites = await cloudPanel.listSites(session.record.cloudPanel);

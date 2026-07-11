@@ -51,9 +51,15 @@ echo "[$(date -Is)] Deploying staged build"
 INSTALLED_COMMIT="${COMMIT}" STATE_FILE="${STATE_FILE}" node <<'NODE'
 const fs = require('node:fs'); const state = JSON.parse(fs.readFileSync(process.env.STATE_FILE, 'utf8'));
 state.installedCommit = process.env.INSTALLED_COMMIT; state.remoteCommit = process.env.INSTALLED_COMMIT;
+state.status = 'reloading';
 fs.writeFileSync(process.env.STATE_FILE, JSON.stringify(state), { mode: 0o600 });
 NODE
 echo "[$(date -Is)] Reloading Panelavo"
-/usr/local/bin/pm2 startOrReload "${APP_ROOT}/ecosystem.config.js"
 /usr/local/bin/pm2 save
-write_state complete
+# PM2 terminates the old panel's process tree during reload, including this
+# worker. Clean staging first and let the new process complete the persisted
+# reloading handoff by comparing its PID with previousPid.
+cleanup
+TEMP_DIR=""
+LOCK_ACQUIRED=false
+/usr/local/bin/pm2 startOrReload "${APP_ROOT}/ecosystem.config.js"
