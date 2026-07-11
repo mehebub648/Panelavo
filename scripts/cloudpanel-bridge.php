@@ -331,6 +331,31 @@ function nodeBinPath(string $home): string
     return $candidates ? (string) end($candidates) : '';
 }
 
+// Directories searched for site-user tools, in the same order as the PATH
+// runSiteCommand builds, so availability reported by the preflight always
+// matches what an execution would actually resolve.
+function sitePathDirs(string $home, bool $asRoot = false): array
+{
+    if ($asRoot) return ['/usr/local/bin', '/usr/bin', '/bin'];
+    return array_values(array_filter([
+        nodeBinPath($home),
+        $home . '/.local/bin',
+        $home . '/.bun/bin',
+        $home . '/.config/composer/vendor/bin',
+        '/usr/local/bin',
+        '/usr/bin',
+        '/bin',
+    ]));
+}
+
+function findSiteTool(string $home, string $binary, bool $asRoot = false): ?string
+{
+    foreach (sitePathDirs($home, $asRoot) as $dir) {
+        if (is_executable($dir . '/' . $binary)) return $dir . '/' . $binary;
+    }
+    return null;
+}
+
 // Runs an allow-listed maintenance command inside the site root as the site
 // user, through env(1) so PATH/HOME survive sudo's environment reset.
 function runSiteCommand(Site $site, array $args, int $timeout = 300, bool $asRoot = false): array
@@ -340,17 +365,22 @@ function runSiteCommand(Site $site, array $args, int $timeout = 300, bool $asRoo
     $timeout = max(1, min($timeout, 900));
     $home = $asRoot ? '/root' : '/home/' . $site->getUser();
     $runUser = $asRoot ? 'root' : (string) $site->getUser();
-    $nodeBin = nodeBinPath($home);
     // Start from an empty environment. In particular, a site-owned Compose
     // file must never interpolate CloudPanel or Panelavo process secrets.
+    // Dependency managers are pinned to project-local environments so nothing
+    // they create ever lands outside the site root.
     $env = [
         '/usr/bin/env', '-i',
-        'PATH=' . ($nodeBin ? $nodeBin . ':' : '') . '/usr/local/bin:/usr/bin:/bin',
+        'PATH=' . implode(':', sitePathDirs($home, $asRoot)),
         'HOME=' . $home,
         'USER=' . $runUser,
         'LOGNAME=' . $runUser,
         'LANG=C.UTF-8',
         'CI=1',
+        'COMPOSER_NO_INTERACTION=1',
+        'PIP_DISABLE_PIP_VERSION_CHECK=1',
+        'POETRY_VIRTUALENVS_IN_PROJECT=1',
+        'PIPENV_VENV_IN_PROJECT=1',
     ];
     $command = array_merge(
         ['/usr/bin/timeout', '--signal=KILL', $timeout . 's'],
@@ -425,15 +455,16 @@ function runSiteCommand(Site $site, array $args, int $timeout = 300, bool $asRoo
     ];
 }
 
-function detectFramework(string $root): string
+function detectFramework(string $root, ?array $package = null): string
 {
-    $package = is_file($root . '/package.json') ? json_decode((string) file_get_contents($root . '/package.json'), true) : null;
+    $package ??= is_file($root . '/package.json') ? json_decode((string) file_get_contents($root . '/package.json'), true) : null;
     $deps = is_array($package) ? array_merge($package['dependencies'] ?? [], $package['devDependencies'] ?? []) : [];
     foreach ([
         'next' => 'Next.js', 'nuxt' => 'Nuxt', '@remix-run/node' => 'Remix', 'astro' => 'Astro',
-        '@sveltejs/kit' => 'SvelteKit', 'vite' => 'Vite', '@angular/core' => 'Angular',
-        'react-scripts' => 'Create React App', 'express' => 'Express', 'fastify' => 'Fastify',
-        '@nestjs/core' => 'NestJS', 'koa' => 'Koa',
+        '@sveltejs/kit' => 'SvelteKit', 'gatsby' => 'Gatsby', '@angular/core' => 'Angular',
+        '@adonisjs/core' => 'AdonisJS', '@strapi/strapi' => 'Strapi', '@nestjs/core' => 'NestJS',
+        'react-scripts' => 'Create React App', 'vite' => 'Vite', 'express' => 'Express',
+        'fastify' => 'Fastify', 'koa' => 'Koa', 'hono' => 'Hono',
     ] as $dep => $label) {
         if (isset($deps[$dep])) return $label;
     }
@@ -443,23 +474,315 @@ function detectFramework(string $root): string
     if (isset($phpDeps['symfony/framework-bundle'])) return 'Symfony';
     if (is_file($root . '/wp-config.php') || is_file($root . '/wp-load.php')) return 'WordPress';
     if (is_file($root . '/artisan')) return 'Laravel';
+    if (is_file($root . '/bin/console')) return 'Symfony';
+    if (is_file($root . '/craft')) return 'Craft CMS';
     if (is_file($root . '/manage.py')) return 'Django';
-    if (is_file($root . '/docker-compose.yml') || is_file($root . '/compose.yaml')) return 'Docker Compose';
+    $pythonManifest = '';
+    foreach (['pyproject.toml', 'requirements.txt', 'Pipfile'] as $manifest) {
+        if (is_file($root . '/' . $manifest)) $pythonManifest .= (string) @file_get_contents($root . '/' . $manifest, false, null, 0, 65536);
+    }
+    if ($pythonManifest !== '') {
+        foreach (['fastapi' => 'FastAPI', 'flask' => 'Flask', 'django' => 'Django'] as $needle => $label) {
+            if (preg_match('/^\s*(?:"|\')?' . $needle . '\b/im', $pythonManifest)) return $label;
+        }
+    }
+    foreach (['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml'] as $file) {
+        if (is_file($root . '/' . $file)) return 'Docker Compose';
+    }
     return '';
 }
 
-function actionsSection(Site $site): array
+// Picks the one Node package manager the project unambiguously declares:
+// package.json "packageManager" wins, otherwise a single lockfile decides,
+// otherwise npm is the safe default. Two disagreeing lockfiles are reported
+// as ambiguous instead of guessing. "detail" carries the exact install
+// command so the UI previews exactly what would run.
+function detectNodeManager(string $root, ?array $package, string $home): array
 {
-    $root = siteRootPath($site);
-    $scripts = [];
-    if (is_file($root . '/package.json')) {
-        $package = json_decode((string) file_get_contents($root . '/package.json'), true);
-        foreach ((is_array($package) ? ($package['scripts'] ?? []) : []) as $name => $command) {
-            if (is_string($command)) $scripts[] = ['name' => (string) $name, 'command' => $command];
+    $locks = [];
+    if (is_file($root . '/package-lock.json')) $locks['npm'] = 'package-lock.json';
+    if (is_file($root . '/pnpm-lock.yaml')) $locks['pnpm'] = 'pnpm-lock.yaml';
+    if (is_file($root . '/yarn.lock')) $locks['yarn'] = 'yarn.lock';
+    if (is_file($root . '/bun.lock')) $locks['bun'] = 'bun.lock';
+    elseif (is_file($root . '/bun.lockb')) $locks['bun'] = 'bun.lockb';
+
+    $declared = null;
+    $field = $package['packageManager'] ?? null;
+    if (is_string($field) && preg_match('/^(npm|pnpm|yarn|bun)@/', $field, $match)) $declared = $match[1];
+
+    $id = $declared ?? (count($locks) === 1 ? array_key_first($locks) : (count($locks) === 0 ? 'npm' : null));
+    if ($id === null) {
+        return [
+            'id' => 'unknown',
+            'label' => 'Package manager',
+            'available' => false,
+            'ambiguous' => true,
+            'detail' => 'Multiple lockfiles were found (' . implode(', ', $locks)
+                . '). Keep exactly one lockfile or declare "packageManager" in package.json.',
+        ];
+    }
+    $labels = ['npm' => 'npm', 'pnpm' => 'pnpm', 'yarn' => 'Yarn', 'bun' => 'Bun'];
+    $lockfile = $locks[$id] ?? null;
+    $command = match ($id) {
+        'npm' => $lockfile ? 'npm ci' : 'npm install',
+        'pnpm' => $lockfile ? 'pnpm install --frozen-lockfile' : 'pnpm install',
+        'yarn' => is_file($root . '/.yarnrc.yml') ? 'yarn install --immutable'
+            : ($lockfile ? 'yarn install --frozen-lockfile' : 'yarn install'),
+        'bun' => $lockfile ? 'bun install --frozen-lockfile' : 'bun install',
+    };
+    return array_filter([
+        'id' => $id,
+        'label' => $labels[$id],
+        'available' => findSiteTool($home, $id) !== null,
+        'lockfile' => $lockfile,
+        'detail' => $command,
+    ], static fn($value) => $value !== null);
+}
+
+// Same idea for Python: an explicit lockfile (uv.lock, poetry.lock,
+// Pipfile.lock) selects the tool; without one the manifest decides, and pip
+// with requirements.txt into a project-owned .venv is the fallback.
+function detectPythonManager(string $root, string $home): ?array
+{
+    $locks = [];
+    if (is_file($root . '/uv.lock')) $locks['uv'] = 'uv.lock';
+    if (is_file($root . '/poetry.lock')) $locks['poetry'] = 'poetry.lock';
+    if (is_file($root . '/Pipfile.lock')) $locks['pipenv'] = 'Pipfile.lock';
+    if (count($locks) > 1) {
+        return [
+            'id' => 'unknown',
+            'label' => 'Python dependency manager',
+            'available' => false,
+            'ambiguous' => true,
+            'detail' => 'Multiple Python lockfiles were found (' . implode(', ', $locks)
+                . '). Keep the lockfile of one tool only.',
+        ];
+    }
+    $pyproject = is_file($root . '/pyproject.toml') ? (string) @file_get_contents($root . '/pyproject.toml', false, null, 0, 65536) : '';
+    $id = count($locks) === 1 ? array_key_first($locks) : null;
+    if ($id === null && $pyproject !== '' && str_contains($pyproject, '[tool.poetry]')) $id = 'poetry';
+    if ($id === null && is_file($root . '/Pipfile')) $id = 'pipenv';
+    if ($id === null && is_file($root . '/requirements.txt')) $id = 'pip';
+    if ($id === null && $pyproject !== '') $id = 'uv';
+    if ($id === null) return null;
+    $labels = ['uv' => 'uv', 'poetry' => 'Poetry', 'pipenv' => 'Pipenv', 'pip' => 'pip'];
+    $command = match ($id) {
+        'uv' => isset($locks['uv']) ? 'uv sync --frozen' : 'uv sync',
+        'poetry' => 'poetry install --only main --no-interaction',
+        'pipenv' => isset($locks['pipenv']) ? 'pipenv sync' : 'pipenv install',
+        'pip' => '.venv/bin/python -m pip install -r requirements.txt',
+    };
+    $binary = $id === 'pip' ? 'python3' : $id;
+    return array_filter([
+        'id' => $id,
+        'label' => $labels[$id],
+        'available' => findSiteTool($home, $binary) !== null,
+        'lockfile' => $locks[$id] ?? null,
+        'detail' => $command,
+    ], static fn($value) => $value !== null);
+}
+
+// Stable, deterministic Compose project name per site so root Compose
+// commands always address exactly this site's containers.
+function composeProjectName(Site $site): string
+{
+    $name = trim(strtolower((string) preg_replace('/[^a-z0-9]+/i', '-', $site->getDomainName())), '-');
+    return 'panelavo-' . ($name !== '' ? $name : 'site');
+}
+
+// Host-safety policy for rootful Compose: everything the project touches must
+// stay inside the site root, published ports must bind to loopback only, and
+// no privilege- or namespace-escalating feature is accepted. First violation
+// wins; warnings are advisory only.
+function composeSafetyScan(array $config, string $root): array
+{
+    $warnings = [];
+    $inRoot = static function ($path) use ($root): bool {
+        return is_string($path) && $path !== '' && pathIsContained($path, $root);
+    };
+    $fail = static fn(string $detail) => ['safe' => false, 'detail' => $detail, 'warnings' => []];
+    foreach (($config['services'] ?? []) as $name => $service) {
+        if (!is_array($service)) continue;
+        if (!empty($service['privileged'])) return $fail("Service \"$name\" requests privileged mode.");
+        if (!empty($service['cap_add'])) return $fail("Service \"$name\" adds Linux capabilities.");
+        if (!empty($service['devices'])) return $fail("Service \"$name\" maps host devices.");
+        if (!empty($service['sysctls'])) return $fail("Service \"$name\" sets host sysctls.");
+        foreach (['network_mode', 'pid', 'ipc', 'userns_mode', 'cgroup'] as $key) {
+            $value = $service[$key] ?? null;
+            if (is_string($value) && ($value === 'host' || str_starts_with($value, 'container:') || str_starts_with($value, 'service:'))) {
+                return $fail("Service \"$name\" shares the host or another container's $key namespace.");
+            }
+        }
+        foreach ((array) ($service['security_opt'] ?? []) as $option) {
+            if (!is_string($option) || !str_starts_with($option, 'no-new-privileges')) {
+                return $fail("Service \"$name\" sets a security option Panelavo will not run as root.");
+            }
+        }
+        foreach ((array) ($service['ports'] ?? []) as $port) {
+            $hostIp = is_array($port) ? (string) ($port['host_ip'] ?? '') : '';
+            $published = is_array($port) ? ($port['published'] ?? null) : $port;
+            if ($published === null || $published === '') continue;
+            if (!in_array($hostIp, ['127.0.0.1', '::1', 'localhost'], true)) {
+                return $fail("Service \"$name\" publishes a port without binding it to 127.0.0.1.");
+            }
+        }
+        foreach ((array) ($service['volumes'] ?? []) as $volume) {
+            if (is_array($volume) && ($volume['type'] ?? '') === 'bind' && !$inRoot($volume['source'] ?? '')) {
+                return $fail("Service \"$name\" bind-mounts a path outside the website root.");
+            }
+        }
+        $build = $service['build'] ?? null;
+        $context = is_array($build) ? ($build['context'] ?? '') : (is_string($build) ? $build : null);
+        if ($context !== null && $context !== '' && !$inRoot($context)) {
+            return $fail("Service \"$name\" builds from a context outside the website root.");
+        }
+        if (empty($service['restart'])) {
+            $warnings[] = "Service \"$name\" declares no restart policy; it will not come back after a host reboot.";
         }
     }
+    foreach (['secrets', 'configs'] as $section) {
+        foreach ((array) ($config[$section] ?? []) as $name => $entry) {
+            if (is_array($entry) && isset($entry['file']) && !$inRoot($entry['file'])) {
+                return $fail(ucfirst($section) . " entry \"$name\" reads a file outside the website root.");
+            }
+        }
+    }
+    return ['safe' => true, 'detail' => null, 'warnings' => $warnings];
+}
+
+// Full Compose readiness probe: CLI, v2 plugin, daemon, resolved
+// configuration, and host-safety policy — each reported separately so the
+// preflight can show exactly which layer is missing.
+function composeCapability(Site $site, string $root, ?string $file): array
+{
+    $cli = null;
+    foreach (['/usr/bin/docker', '/usr/local/bin/docker'] as $candidate) {
+        if (is_executable($candidate)) { $cli = $candidate; break; }
+    }
+    $capability = [
+        'file' => $file,
+        'cliAvailable' => $cli !== null,
+        'pluginAvailable' => false,
+        'daemonAvailable' => false,
+        'warnings' => [],
+    ];
+    if (!$file || !$cli) return $capability;
+    $version = runSiteCommand($site, ['docker', 'compose', 'version', '--short'], 15, true);
+    if ($version['code'] !== 0) return $capability;
+    $capability['pluginAvailable'] = true;
+    $capability['version'] = trim($version['stdout']);
+    $info = runSiteCommand($site, ['docker', 'info', '--format', '{{.ServerVersion}}'], 15, true);
+    $capability['daemonAvailable'] = $info['code'] === 0;
+    $config = runSiteCommand($site, ['docker', 'compose', '-f', $file, '-p', composeProjectName($site), 'config', '--format', 'json'], 60, true);
+    if ($config['code'] !== 0) {
+        $capability['configValid'] = false;
+        $detail = trim($config['stderr'] !== '' ? $config['stderr'] : $config['stdout']);
+        $capability['detail'] = $detail !== '' ? substr($detail, 0, 500) : 'The Compose configuration could not be validated.';
+        return $capability;
+    }
+    $parsed = json_decode($config['stdout'], true);
+    if (!is_array($parsed)) {
+        $capability['configValid'] = false;
+        $capability['detail'] = 'The resolved Compose configuration could not be parsed for the host-safety review.';
+        return $capability;
+    }
+    $capability['configValid'] = true;
+    $capability['services'] = array_map('strval', array_keys($parsed['services'] ?? []));
+    $safety = composeSafetyScan($parsed, $root);
+    $capability['safe'] = $safety['safe'];
+    if (!$safety['safe']) $capability['detail'] = $safety['detail'];
+    $capability['warnings'] = $safety['warnings'];
+    return $capability;
+}
+
+// One server-owned snapshot of everything Operations needs: manifests,
+// lockfiles, runtimes, managers, and the Compose capability. The same
+// snapshot backs the preflight response and every execution precondition, so
+// what the UI shows and what the server enforces can never drift apart.
+function operationsState(Site $site, User $user): array
+{
+    $root = siteRootPath($site);
+    $home = '/home/' . $site->getUser();
+    $package = is_file($root . '/package.json') ? json_decode((string) file_get_contents($root . '/package.json'), true) : null;
+    $package = is_array($package) ? $package : null;
+    $scripts = [];
+    foreach (($package['scripts'] ?? []) as $name => $command) {
+        if (is_string($command)) $scripts[] = ['name' => (string) $name, 'command' => $command];
+    }
+    $composeFile = null;
+    foreach (['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml'] as $candidate) {
+        if (is_file($root . '/' . $candidate)) { $composeFile = $candidate; break; }
+    }
+    $ecosystem = null;
+    foreach (['ecosystem.config.js', 'ecosystem.config.cjs', 'ecosystem.config.json'] as $candidate) {
+        if (is_file($root . '/' . $candidate)) { $ecosystem = $candidate; break; }
+    }
+    $venvPython = null;
+    foreach (['.venv/bin/python', 'venv/bin/python'] as $candidate) {
+        if (is_file($root . '/' . $candidate)) { $venvPython = $root . '/' . $candidate; break; }
+    }
+    $tools = [];
+    foreach ([
+        'node' => ['Node.js', 'node'], 'npm' => ['npm', 'npm'], 'pnpm' => ['pnpm', 'pnpm'],
+        'yarn' => ['Yarn', 'yarn'], 'bun' => ['Bun', 'bun'], 'pm2' => ['PM2', 'pm2'],
+        'php' => ['PHP', 'php'], 'composer' => ['Composer', 'composer'], 'wp' => ['WP-CLI', 'wp'],
+        'python' => ['Python', 'python3'], 'uv' => ['uv', 'uv'], 'poetry' => ['Poetry', 'poetry'],
+        'pipenv' => ['Pipenv', 'pipenv'], 'docker' => ['Docker', 'docker'], 'curl' => ['curl', 'curl'],
+    ] as $id => [$label, $binary]) {
+        $path = findSiteTool($home, $binary);
+        $tools[$id] = ['id' => $id, 'label' => $label, 'available' => $path !== null];
+    }
+    $nodeBin = nodeBinPath($home);
+    if ($nodeBin && preg_match('#/node/v?([0-9.]+)/bin$#', $nodeBin, $match)) $tools['node']['version'] = $match[1];
+    $pythonManifest = is_file($root . '/requirements.txt') || is_file($root . '/pyproject.toml') || is_file($root . '/Pipfile');
+    return [
+        'type' => $site->getType(),
+        'path' => $root,
+        'framework' => detectFramework($root, $package),
+        'processName' => preg_replace('/[^a-zA-Z0-9._-]/', '-', $site->getDomainName()),
+        'reverseProxyUrl' => $site->getReverseProxyUrl(),
+        'checkedAt' => gmdate(DATE_ATOM),
+        'hasPackageJson' => $package !== null,
+        'hasPackageLock' => is_file($root . '/package-lock.json'),
+        'hasBuildScript' => is_string($package['scripts']['build'] ?? null),
+        'hasStartScript' => is_string($package['scripts']['start'] ?? null),
+        'scripts' => $scripts,
+        'hasComposer' => is_file($root . '/composer.json'),
+        'hasComposerLock' => is_file($root . '/composer.lock'),
+        'hasArtisan' => is_file($root . '/artisan'),
+        'hasSymfonyConsole' => is_file($root . '/bin/console'),
+        'hasWordPress' => is_file($root . '/wp-config.php') || is_file($root . '/wp-load.php'),
+        'hasRequirements' => is_file($root . '/requirements.txt'),
+        'hasPyproject' => is_file($root . '/pyproject.toml'),
+        'hasPipfile' => is_file($root . '/Pipfile'),
+        'hasPythonVenv' => $venvPython !== null,
+        'hasManagePy' => is_file($root . '/manage.py'),
+        'hasCompose' => $composeFile !== null,
+        'hasEcosystem' => $ecosystem !== null,
+        'hasIndexHtml' => is_file($root . '/index.html'),
+        'hasWorkspace' => isset($package['workspaces']) || is_file($root . '/pnpm-workspace.yaml'),
+        'hasEnvFile' => is_file($root . '/.env'),
+        'packageManager' => $package !== null ? detectNodeManager($root, $package, $home) : null,
+        'pythonManager' => $pythonManifest ? detectPythonManager($root, $home) : null,
+        'tools' => $tools,
+        'compose' => $composeFile !== null ? composeCapability($site, $root, $composeFile) : null,
+        'permissions' => [
+            'manage' => in_array($user->getRole(), [User::ROLE_ADMIN, User::ROLE_SITE_MANAGER], true),
+            'docker' => $user->getRole() === User::ROLE_ADMIN,
+        ],
+        'ecosystemFile' => $ecosystem,
+        'venvPython' => $venvPython,
+        'composeProject' => composeProjectName($site),
+        'pm2Available' => $tools['pm2']['available'],
+        'dockerAvailable' => $tools['docker']['available'],
+    ];
+}
+
+function actionsSection(Site $site, User $user): array
+{
+    $state = operationsState($site, $user);
     $processes = [];
-    if (is_executable('/usr/local/bin/pm2') && is_dir($root)) {
+    if ($state['pm2Available'] && is_dir($state['path'])) {
         $pm2 = runSiteCommand($site, ['pm2', 'jlist'], 20);
         $start = strpos($pm2['stdout'], '[');
         $list = $start === false ? null : json_decode(substr($pm2['stdout'], $start), true);
@@ -474,23 +797,295 @@ function actionsSection(Site $site): array
             ];
         }
     }
-    return [
-        'type' => $site->getType(),
-        'path' => $root,
-        'framework' => detectFramework($root),
-        'processName' => preg_replace('/[^a-zA-Z0-9._-]/', '-', $site->getDomainName()),
-        'hasPackageJson' => is_file($root . '/package.json'),
-        'scripts' => $scripts,
-        'hasComposer' => is_file($root . '/composer.json'),
-        'hasArtisan' => is_file($root . '/artisan'),
-        'hasRequirements' => is_file($root . '/requirements.txt'),
-        'hasCompose' => is_file($root . '/docker-compose.yml') || is_file($root . '/docker-compose.yaml')
-            || is_file($root . '/compose.yml') || is_file($root . '/compose.yaml'),
-        'hasEcosystem' => is_file($root . '/ecosystem.config.js') || is_file($root . '/ecosystem.config.cjs'),
-        'pm2Available' => is_executable('/usr/local/bin/pm2'),
-        'dockerAvailable' => is_executable('/usr/bin/docker') || is_executable('/usr/local/bin/docker'),
-        'pm2' => $processes,
+    unset($state['ecosystemFile'], $state['venvPython'], $state['composeProject']);
+    return $state + ['pm2' => $processes];
+}
+
+// Maps one validated operation identifier to an exact executable argument
+// array with a fixed working directory, bounded timeout, and no shell. Every
+// precondition the preflight reports is re-verified here at execution time:
+// a stale UI can never run a command whose manifest, tool, or safety check
+// has since disappeared.
+function resolveOperationStep(array $state, string $command, array $operation): array
+{
+    $root = $state['path'];
+    $tools = $state['tools'];
+    $available = static fn(string $id): bool => !empty($tools[$id]['available']);
+    $require = static function (bool $ok, string $code = 'ACTION_UNAVAILABLE'): void {
+        if (!$ok) respond(['ok' => false, 'code' => $code]);
+    };
+    $manager = $state['packageManager'];
+    $python = $state['pythonManager'];
+    $py = $state['venvPython'] ?? 'python3';
+    $step = static fn(string $label, array $args, int $timeout = 300, bool $asRoot = false) => [
+        'command' => $command,
+        'label' => $label,
+        'args' => $args,
+        'timeout' => $timeout,
+        'asRoot' => $asRoot,
     ];
+
+    $nodeManagerArgs = static function (array $verb) use ($state, $manager, $require, $available): array {
+        $require($state['hasPackageJson'] && is_array($manager) && empty($manager['ambiguous']));
+        $require($available($manager['id']), 'TOOL_UNAVAILABLE');
+        return array_merge([$manager['id']], $verb, $manager['id'] === 'npm' ? ['--no-audit', '--no-fund'] : []);
+    };
+    $composeStep = static function (string $label, array $verb, int $timeout, bool $needsDaemon = true, bool $needsSafety = true) use ($state, $require, $command): array {
+        $compose = $state['compose'];
+        $require(is_array($compose) && $state['hasCompose']);
+        $require($compose['cliAvailable'] && $compose['pluginAvailable'], 'TOOL_UNAVAILABLE');
+        if ($needsDaemon) $require($compose['daemonAvailable'], 'TOOL_UNAVAILABLE');
+        if ($needsSafety) {
+            $require($compose['configValid'] === true);
+            if (($compose['safe'] ?? false) !== true) respond(['ok' => false, 'code' => 'UNSAFE_COMPOSE']);
+        }
+        return [
+            'command' => $command,
+            'label' => $label,
+            'args' => array_merge(['docker', 'compose', '-f', $compose['file'], '-p', $state['composeProject']], $verb),
+            'timeout' => $timeout,
+            'asRoot' => true,
+        ];
+    };
+    $script = (string) ($operation['script'] ?? '');
+    $declaredScripts = array_column($state['scripts'], 'command', 'name');
+
+    switch ($command) {
+        case 'node-install':
+            $verb = match ($manager['id'] ?? '') {
+                'npm' => isset($manager['lockfile']) ? ['ci'] : ['install'],
+                'pnpm' => isset($manager['lockfile']) ? ['install', '--frozen-lockfile'] : ['install'],
+                'yarn' => is_file($root . '/.yarnrc.yml') ? ['install', '--immutable']
+                    : (isset($manager['lockfile']) ? ['install', '--frozen-lockfile'] : ['install']),
+                'bun' => isset($manager['lockfile']) ? ['install', '--frozen-lockfile'] : ['install'],
+                default => null,
+            };
+            $require($verb !== null);
+            return $step('Install Node.js dependencies', $nodeManagerArgs($verb), 900);
+        case 'node-run':
+            $require(preg_match('/^[A-Za-z0-9:._-]{1,64}$/', $script) === 1, 'INVALID_REQUEST');
+            $require(isset($declaredScripts[$script]));
+            return $step('Run script: ' . $script, $nodeManagerArgs(['run', $script]), 900);
+        case 'npm-install':
+            $require($state['hasPackageJson']);
+            $require($available('npm'), 'TOOL_UNAVAILABLE');
+            return $step('Install Node.js dependencies', ['npm', 'install', '--no-audit', '--no-fund'], 900);
+        case 'npm-ci':
+            $require($state['hasPackageJson'] && $state['hasPackageLock']);
+            $require($available('npm'), 'TOOL_UNAVAILABLE');
+            return $step('Install locked Node.js dependencies', ['npm', 'ci', '--no-audit', '--no-fund'], 900);
+        case 'npm-run':
+            $require(preg_match('/^[A-Za-z0-9:._-]{1,64}$/', $script) === 1, 'INVALID_REQUEST');
+            $require(isset($declaredScripts[$script]));
+            $require($available('npm'), 'TOOL_UNAVAILABLE');
+            return $step('Run script: ' . $script, ['npm', 'run', $script], 900);
+        case 'composer-install':
+            $require($state['hasComposer']);
+            $require($available('composer'), 'TOOL_UNAVAILABLE');
+            return $step('Install PHP dependencies', ['composer', 'install', '--no-interaction', '--no-progress'], 900);
+        case 'composer-install-production':
+            $require($state['hasComposer'] && $state['hasComposerLock']);
+            $require($available('composer'), 'TOOL_UNAVAILABLE');
+            return $step('Install PHP dependencies', ['composer', 'install', '--no-dev', '--prefer-dist', '--optimize-autoloader', '--no-interaction', '--no-progress'], 900);
+        case 'composer-validate':
+            $require($state['hasComposer']);
+            $require($available('composer'), 'TOOL_UNAVAILABLE');
+            return $step('Validate Composer files', ['composer', 'validate', '--no-check-publish', '--no-interaction'], 120);
+        case 'python-create-venv':
+            $require($available('python'), 'TOOL_UNAVAILABLE');
+            return $step('Create virtual environment', ['python3', '-m', 'venv', '.venv'], 120);
+        case 'python-install':
+            $require(is_array($python) && empty($python['ambiguous']));
+            $require(!empty($python['available']), 'TOOL_UNAVAILABLE');
+            [$label, $args] = match ($python['id']) {
+                'uv' => ['Sync Python dependencies', isset($python['lockfile']) ? ['uv', 'sync', '--frozen'] : ['uv', 'sync']],
+                'poetry' => ['Install Python dependencies', ['poetry', 'install', '--only', 'main', '--no-interaction']],
+                'pipenv' => ['Sync Python dependencies', isset($python['lockfile']) ? ['pipenv', 'sync'] : ['pipenv', 'install']],
+                'pip' => ['Install Python dependencies', [$py, '-m', 'pip', 'install', '-r', 'requirements.txt']],
+                default => [null, null],
+            };
+            $require($args !== null);
+            if ($python['id'] === 'pip') $require($state['hasPythonVenv']);
+            return $step($label, $args, 900);
+        case 'pip-install':
+            $require($state['hasRequirements']);
+            $require($available('python'), 'TOOL_UNAVAILABLE');
+            return $step('Install Python dependencies', ['python3', '-m', 'pip', 'install', '--user', '-r', 'requirements.txt'], 900);
+        case 'artisan-optimize':
+        case 'artisan-optimize-clear':
+        case 'artisan-migrate-status':
+        case 'artisan-migrate':
+        case 'artisan-storage-link':
+        case 'artisan-queue-restart':
+            $require($state['hasArtisan']);
+            $require($available('php'), 'TOOL_UNAVAILABLE');
+            [$label, $args] = match ($command) {
+                'artisan-optimize' => ['Build Laravel caches', ['php', 'artisan', 'optimize']],
+                'artisan-optimize-clear' => ['Clear Laravel caches', ['php', 'artisan', 'optimize:clear']],
+                'artisan-migrate-status' => ['Migration status', ['php', 'artisan', 'migrate:status']],
+                'artisan-migrate' => ['Apply migrations', ['php', 'artisan', 'migrate', '--force']],
+                'artisan-storage-link' => ['Create storage link', ['php', 'artisan', 'storage:link']],
+                'artisan-queue-restart' => ['Restart queue workers', ['php', 'artisan', 'queue:restart']],
+            };
+            return $step($label, $args, $command === 'artisan-migrate' ? 600 : 300);
+        case 'symfony-cache-clear':
+            $require($state['hasSymfonyConsole']);
+            $require($available('php'), 'TOOL_UNAVAILABLE');
+            return $step('Clear Symfony cache', ['php', 'bin/console', 'cache:clear', '--env=prod', '--no-debug'], 300);
+        case 'wp-core-checksums':
+        case 'wp-cache-flush':
+        case 'wp-cron-run':
+            $require($state['hasWordPress']);
+            $require($available('wp'), 'TOOL_UNAVAILABLE');
+            [$label, $args] = match ($command) {
+                'wp-core-checksums' => ['Verify WordPress core', ['wp', 'core', 'verify-checksums']],
+                'wp-cache-flush' => ['Flush WordPress cache', ['wp', 'cache', 'flush']],
+                'wp-cron-run' => ['Run due WordPress cron events', ['wp', 'cron', 'event', 'run', '--due-now']],
+            };
+            return $step($label, $args, 300);
+        case 'django-check-deploy':
+        case 'django-migrate-status':
+        case 'django-migrate':
+        case 'django-collectstatic':
+            $require($state['hasManagePy']);
+            $require($available('python'), 'TOOL_UNAVAILABLE');
+            if (is_array($python) && ($python['id'] ?? '') === 'pip') $require($state['hasPythonVenv']);
+            [$label, $args] = match ($command) {
+                'django-check-deploy' => ['Run Django deployment checks', [$py, 'manage.py', 'check', '--deploy']],
+                'django-migrate-status' => ['Django migration plan', [$py, 'manage.py', 'migrate', '--plan']],
+                'django-migrate' => ['Apply Django migrations', [$py, 'manage.py', 'migrate', '--noinput']],
+                'django-collectstatic' => ['Collect Django static files', [$py, 'manage.py', 'collectstatic', '--noinput']],
+            };
+            return $step($label, $args, $command === 'django-check-deploy' ? 120 : 600);
+        case 'compose-validate':
+            return $composeStep('Validate configuration', ['config', '--quiet'], 60, false, false);
+        case 'compose-up':
+            return $composeStep('Start services', ['up', '-d', '--remove-orphans'], 900);
+        case 'compose-deploy':
+            return $composeStep('Build and start services', ['up', '-d', '--build', '--remove-orphans'], 900);
+        case 'compose-restart':
+            return $composeStep('Restart services', ['restart'], 300);
+        case 'compose-pull':
+            return $composeStep('Pull service images', ['pull', '--ignore-buildable'], 900);
+        case 'compose-ps':
+            return $composeStep('Verify service state', ['ps'], 60);
+        case 'compose-logs':
+            return $composeStep('Recent service logs', ['logs', '--tail', '200', '--no-color'], 60);
+        case 'compose-down':
+            return $composeStep('Stop project', ['down'], 300);
+        case 'pm2-start':
+            $require($available('pm2'), 'TOOL_UNAVAILABLE');
+            if ($state['ecosystemFile'] !== null) {
+                return $step('Start or reload ecosystem', ['pm2', 'startOrReload', $state['ecosystemFile']], 300);
+            }
+            $require($state['hasStartScript'] && is_array($manager) && empty($manager['ambiguous']));
+            $require($available($manager['id']), 'TOOL_UNAVAILABLE');
+            return $step('Start or reload application', ['pm2', 'start', $manager['id'], '--name', $state['processName'], '--', 'start'], 300);
+        case 'pm2-restart':
+            $require($available('pm2'), 'TOOL_UNAVAILABLE');
+            return $step('Restart processes', ['pm2', 'restart', 'all', '--update-env'], 300);
+        case 'pm2-stop':
+            $require($available('pm2'), 'TOOL_UNAVAILABLE');
+            return $step('Stop processes', ['pm2', 'stop', 'all'], 300);
+        case 'pm2-delete':
+            $require($available('pm2'), 'TOOL_UNAVAILABLE');
+            return $step('Delete processes', ['pm2', 'delete', 'all'], 300);
+        case 'pm2-restart-one':
+        case 'pm2-stop-one':
+        case 'pm2-delete-one':
+            $require($available('pm2'), 'TOOL_UNAVAILABLE');
+            $target = (string) ($operation['name'] ?? '');
+            $require(preg_match('/^[A-Za-z0-9._-]{1,100}$/', $target) === 1, 'INVALID_REQUEST');
+            $verb = substr($command, 4, -4);
+            return $step(ucfirst($verb) . ' process', ['pm2', $verb, $target], 300);
+        case 'pm2-save':
+            $require($available('pm2'), 'TOOL_UNAVAILABLE');
+            return $step('Persist process state', ['pm2', 'save', '--force'], 60);
+        case 'pm2-status':
+            $require($available('pm2'), 'TOOL_UNAVAILABLE');
+            return $step('Process status', ['pm2', 'status'], 60);
+        case 'pm2-logs':
+            $require($available('pm2'), 'TOOL_UNAVAILABLE');
+            return $step('Recent PM2 logs', ['pm2', 'logs', '--nostream', '--lines', '200'], 30);
+        case 'upstream-check':
+            $url = (string) $state['reverseProxyUrl'];
+            $require(preg_match('#^https?://\S+$#', $url) === 1);
+            $require($available('curl'), 'TOOL_UNAVAILABLE');
+            return $step('Check upstream', ['curl', '-sS', '-o', '/dev/null', '--max-time', '10', '-w', 'HTTP %{http_code} in %{time_total}s\n', $url], 30);
+    }
+    respond(['ok' => false, 'code' => 'INVALID_ACTION']);
+}
+
+// Server-owned deployment plans. The client only names a plan; the exact
+// steps, order, and arguments are decided here from the current detection
+// snapshot and CloudPanel's configured site type. Destructive steps
+// (database migrations) are deliberately never part of a plan.
+function resolveDeploymentPlan(Site $site, array $state, string $plan): array
+{
+    $steps = static function (array $pairs) use (&$state): array {
+        $resolved = [];
+        foreach ($pairs as [$command, $label, $operation]) {
+            $step = resolveOperationStep($state, $command, $operation ?? []);
+            $step['label'] = $label;
+            $resolved[] = $step;
+        }
+        return $resolved;
+    };
+    switch ($plan) {
+        case 'compose':
+            return $steps([
+                ['compose-validate', 'Validate configuration', null],
+                ['compose-deploy', 'Build and start services', null],
+                ['compose-ps', 'Verify service state', null],
+            ]);
+        case 'node':
+            if ($site->getType() !== Site::TYPE_NODEJS) respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE']);
+            return $steps(array_merge(
+                [['node-install', 'Install dependencies', null]],
+                $state['hasBuildScript'] ? [['node-run', 'Build application', ['script' => 'build']]] : [],
+                [
+                    ['pm2-start', 'Start or reload process', null],
+                    ['pm2-save', 'Persist process state', null],
+                ],
+            ));
+        case 'static-build':
+            if ($site->getType() !== Site::TYPE_STATIC) respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE']);
+            return $steps([
+                ['node-install', 'Install dependencies', null],
+                ['node-run', 'Build static assets', ['script' => 'build']],
+            ]);
+        case 'php':
+            if ($site->getType() !== Site::TYPE_PHP) respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE']);
+            $pairs = [];
+            if ($state['hasPackageJson']) {
+                $pairs[] = ['node-install', 'Install frontend dependencies', null];
+                if ($state['hasBuildScript']) $pairs[] = ['node-run', 'Build frontend assets', ['script' => 'build']];
+            }
+            if ($state['hasComposer']) $pairs[] = ['composer-install-production', 'Install PHP dependencies', null];
+            if ($state['hasArtisan']) $pairs[] = ['artisan-optimize', 'Build Laravel caches', null];
+            if (!$pairs) respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE']);
+            return $steps($pairs);
+        case 'python':
+            if ($site->getType() !== Site::TYPE_PYTHON) respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE']);
+            $python = $state['pythonManager'];
+            if (!is_array($python)) respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE']);
+            $pairs = [];
+            if (($python['id'] ?? '') === 'pip' && !$state['hasPythonVenv']) {
+                $pairs[] = ['python-create-venv', 'Create virtual environment', null];
+                // The venv is created by the first step; let the install step
+                // resolve against the state it will find at execution time.
+                $state['hasPythonVenv'] = true;
+                $state['venvPython'] = $state['path'] . '/.venv/bin/python';
+            }
+            $pairs[] = ['python-install', 'Sync Python dependencies', null];
+            if ($state['hasManagePy']) $pairs[] = ['django-check-deploy', 'Run Django deployment checks', null];
+            if ($state['hasEcosystem']) {
+                $pairs[] = ['pm2-start', 'Start or reload process', null];
+                $pairs[] = ['pm2-save', 'Persist process state', null];
+            }
+            return $steps($pairs);
+    }
+    respond(['ok' => false, 'code' => 'INVALID_ACTION']);
 }
 
 function readMeminfo(): array
@@ -909,7 +1504,7 @@ try {
                 ],
                 'file-manager' => fileManagerListing($site, null),
                 'git' => gitSection($site),
-                'actions' => actionsSection($site),
+                'actions' => actionsSection($site, $user),
                 'cron-jobs' => ['sitePath' => '/home/' . $site->getUser() . '/htdocs/' . $site->getRootDirectory(), 'items' => array_map(fn($item) => ['id' => (string) $item->getId(), 'schedule' => $item->getSchedule(), 'command' => $item->getCommand(), 'expression' => $item->getCrontabExpression()], $site->getCronJobs()->toArray())],
                 'logs' => (function () use ($site) {
                     $base = '/home/' . $site->getUser() . '/logs';
@@ -1101,77 +1696,63 @@ try {
                 }
                 exec('systemctl reload nginx 2>&1');
             } elseif ($section === 'actions') {
-                if ($action !== 'run') respond(['ok' => false, 'code' => 'INVALID_ACTION']);
-                $command = (string) ($operation['command'] ?? '');
-                $script = (string) ($operation['script'] ?? '');
-                if ($script !== '' && !preg_match('/^[A-Za-z0-9:._-]{1,64}$/', $script)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
-                $root = siteRootPath($site);
-                $name = preg_replace('/[^a-zA-Z0-9._-]/', '-', $site->getDomainName());
-                $composeFile = null;
-                foreach (['docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml'] as $candidate) {
-                    if (is_file($root . '/' . $candidate)) { $composeFile = $candidate; break; }
+                if (!in_array($action, ['run', 'deploy'], true)) respond(['ok' => false, 'code' => 'INVALID_ACTION']);
+                $state = operationsState($site, $user);
+                $plan = null;
+                if ($action === 'run') {
+                    $steps = [resolveOperationStep($state, (string) ($operation['command'] ?? ''), $operation)];
+                } else {
+                    $plan = (string) ($operation['plan'] ?? '');
+                    $steps = resolveDeploymentPlan($site, $state, $plan);
                 }
-                $ecosystem = is_file($root . '/ecosystem.config.js') ? 'ecosystem.config.js'
-                    : (is_file($root . '/ecosystem.config.cjs') ? 'ecosystem.config.cjs' : null);
-                // Allow-listed commands only — nothing user-supplied is ever
-                // passed to a shell. Docker runs as root, so those commands are
-                // reserved for CloudPanel admins and site managers.
-                $asRoot = false;
-                $timeout = 300;
-                switch ($command) {
-                    case 'npm-install': $args = ['npm', 'install', '--no-audit', '--no-fund']; $timeout = 600; break;
-                    case 'npm-ci': $args = ['npm', 'ci', '--no-audit', '--no-fund']; $timeout = 600; break;
-                    case 'npm-run':
-                        $package = is_file($root . '/package.json') ? json_decode((string) file_get_contents($root . '/package.json'), true) : null;
-                        if ($script === '' || !is_array($package) || !isset($package['scripts'][$script])) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
-                        $args = ['npm', 'run', $script];
-                        $timeout = 600;
-                        break;
-                    case 'pm2-start':
-                        $args = $ecosystem ? ['pm2', 'startOrReload', $ecosystem] : ['pm2', 'start', 'npm', '--name', $name, '--', 'start'];
-                        break;
-                    case 'pm2-restart': $args = ['pm2', 'restart', 'all', '--update-env']; break;
-                    case 'pm2-stop': $args = ['pm2', 'stop', 'all']; break;
-                    case 'pm2-delete': $args = ['pm2', 'delete', 'all']; break;
-                    case 'pm2-restart-one':
-                    case 'pm2-stop-one':
-                    case 'pm2-delete-one':
-                        $target = (string) ($operation['name'] ?? '');
-                        if (!preg_match('/^[A-Za-z0-9._-]{1,100}$/', $target)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
-                        $args = ['pm2', substr($command, 4, -4), $target];
-                        break;
-                    case 'pm2-save': $args = ['pm2', 'save', '--force']; break;
-                    case 'pm2-status': $args = ['pm2', 'status']; break;
-                    case 'pm2-logs': $args = ['pm2', 'logs', '--nostream', '--lines', '200']; $timeout = 30; break;
-                    case 'composer-install': $args = ['composer', 'install', '--no-interaction', '--no-progress']; $timeout = 600; break;
-                    case 'composer-update': $args = ['composer', 'update', '--no-interaction', '--no-progress']; $timeout = 600; break;
-                    case 'artisan-migrate': $args = ['php', 'artisan', 'migrate', '--force']; break;
-                    case 'artisan-optimize': $args = ['php', 'artisan', 'optimize:clear']; break;
-                    case 'artisan-storage-link': $args = ['php', 'artisan', 'storage:link']; break;
-                    case 'pip-install': $args = ['python3', '-m', 'pip', 'install', '--user', '-r', 'requirements.txt']; $timeout = 600; break;
-                    case 'compose-up': $asRoot = true; $args = ['docker', 'compose', 'up', '-d', '--remove-orphans']; $timeout = 600; break;
-                    case 'compose-deploy': $asRoot = true; $args = ['docker', 'compose', 'up', '-d', '--build', '--remove-orphans']; $timeout = 600; break;
-                    case 'compose-down': $asRoot = true; $args = ['docker', 'compose', 'down']; break;
-                    case 'compose-restart': $asRoot = true; $args = ['docker', 'compose', 'restart']; break;
-                    case 'compose-pull': $asRoot = true; $args = ['docker', 'compose', 'pull']; $timeout = 600; break;
-                    case 'compose-ps': $asRoot = true; $args = ['docker', 'compose', 'ps']; $timeout = 30; break;
-                    case 'compose-logs': $asRoot = true; $args = ['docker', 'compose', 'logs', '--tail', '200', '--no-color']; $timeout = 30; break;
-                    default: respond(['ok' => false, 'code' => 'INVALID_ACTION']);
+                // Rootful Docker Compose is a Super Admin (CloudPanel admin)
+                // boundary; everything else needs the site-write access the
+                // manage-section gate above already proved.
+                foreach ($steps as $stepDefinition) {
+                    if (!empty($stepDefinition['asRoot']) && $user->getRole() !== User::ROLE_ADMIN) {
+                        respond(['ok' => false, 'code' => 'FORBIDDEN']);
+                    }
                 }
-                if ($asRoot) {
-                    if (!in_array($user->getRole(), [User::ROLE_ADMIN, User::ROLE_SITE_MANAGER], true)) respond(['ok' => false, 'code' => 'FORBIDDEN']);
-                    if (!$composeFile) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
-                }
-                $result = runSiteCommand($site, $args, $timeout, $asRoot);
-                respond(['ok' => true, 'data' => [
-                    'run' => [
-                        'command' => $command,
-                        'display' => implode(' ', $args),
+                // One operation per site at a time. The lock is released when
+                // this process exits, so a crashed run can never wedge a site.
+                $lock = @fopen('/var/lock/panelavo-operations-' . $site->getUser() . '.lock', 'c');
+                if (!$lock || !flock($lock, LOCK_EX | LOCK_NB)) respond(['ok' => false, 'code' => 'OPERATION_BUSY']);
+                $startedAt = gmdate(DATE_ATOM);
+                $results = [];
+                foreach ($steps as $stepDefinition) {
+                    $result = runSiteCommand($site, $stepDefinition['args'], $stepDefinition['timeout'], !empty($stepDefinition['asRoot']));
+                    $results[] = [
+                        'command' => $stepDefinition['command'],
+                        'label' => $stepDefinition['label'],
+                        'display' => implode(' ', $stepDefinition['args']),
                         'exitCode' => $result['code'],
                         'timedOut' => $result['timedOut'],
                         'output' => trim($result['stdout'] . ($result['stderr'] !== '' ? "\n" . $result['stderr'] : '')),
-                    ],
-                ] + actionsSection($site)]);
+                    ];
+                    if ($result['code'] !== 0) break;
+                }
+                flock($lock, LOCK_UN);
+                fclose($lock);
+                $last = end($results);
+                $run = [
+                    'command' => $action === 'run' ? $results[0]['command'] : 'deploy',
+                    'display' => $action === 'run' ? $results[0]['display'] : count($results) . ' of ' . count($steps) . ' plan step(s) executed',
+                    'exitCode' => $last['exitCode'],
+                    'timedOut' => $last['timedOut'],
+                    'output' => $action === 'run' && count($results) === 1
+                        ? $results[0]['output']
+                        : implode("\n\n", array_map(
+                            static fn(array $item) => '── ' . $item['label'] . ' (' . $item['display'] . ")\n" . ($item['output'] !== '' ? $item['output'] : '(no output)'),
+                            $results,
+                        )),
+                    'startedAt' => $startedAt,
+                    'finishedAt' => gmdate(DATE_ATOM),
+                ];
+                if ($action === 'deploy') {
+                    $run['plan'] = $plan;
+                    $run['steps'] = $results;
+                }
+                respond(['ok' => true, 'data' => ['run' => $run] + actionsSection($site, $user)]);
             } elseif ($section === 'file-manager') {
                 $base = fileManagerBase($site);
                 $relative = trim((string) ($operation['path'] ?? ''), '/');

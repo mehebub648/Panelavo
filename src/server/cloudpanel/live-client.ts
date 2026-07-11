@@ -50,6 +50,8 @@ export function siteSectionBridgeError(result: BridgeResult) {
     return new AppError("INVALID_REQUEST", "The Compose configuration does not satisfy Panelavo's host safety policy. Review the preflight blocker and update the project configuration.", 422);
   if (result.code === "ACTION_UNAVAILABLE")
     return new AppError("INVALID_REQUEST", "That action is no longer available for the detected website architecture. Run the preflight again.", 409);
+  if (result.code === "FORBIDDEN")
+    return new AppError("FORBIDDEN", "This operation requires a Super Admin.", 403);
   if (result.code === "INVALID_REQUEST" || result.code === "INVALID_ACTION")
     return new AppError("INVALID_REQUEST", "The website operation is not valid.", 400);
   return new AppError("SITE_UPDATE_FAILED", "CloudPanel could not apply the change.", 502);
