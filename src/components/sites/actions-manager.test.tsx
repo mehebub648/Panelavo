@@ -53,6 +53,15 @@ function dockerData(ready: boolean): OperationsData {
       configValid: ready,
       safe: ready,
       services: ready ? ["web", "database"] : [],
+      expectedPort: 24001,
+      entryService: ready ? "web" : undefined,
+      containerPort: ready ? 3000 : undefined,
+      publishedPort: ready ? 24001 : undefined,
+      portMatches: ready,
+      canAutoRemap: false,
+      portDetail: ready
+        ? 'Entry service "web" maps container port 3000 to 127.0.0.1:24001, matching CloudPanel.'
+        : undefined,
     },
   };
   return normalizeOperationsData(raw, { typeOverride: "docker" });
@@ -61,9 +70,8 @@ function dockerData(ready: boolean): OperationsData {
 describe("ActionsManager", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.stubGlobal(
-      "requestAnimationFrame",
-      (callback: FrameRequestCallback) => window.setTimeout(callback, 0),
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) =>
+      window.setTimeout(callback, 0),
     );
     vi.stubGlobal("cancelAnimationFrame", (id: number) =>
       window.clearTimeout(id),
@@ -77,17 +85,23 @@ describe("ActionsManager", () => {
   });
 
   it("shows a Docker blocker and never enables deploy when only a Compose file was detected", () => {
-    render(<ActionsManager domain="example.test" initialData={dockerData(false)} />);
+    render(
+      <ActionsManager domain="example.test" initialData={dockerData(false)} />,
+    );
 
     expect(screen.getByText("Docker Compose")).toBeInTheDocument();
     expect(
-      screen.getAllByText("The Docker executable is not installed on this server."),
+      screen.getAllByText(
+        "The Docker executable is not installed on this server.",
+      ),
     ).not.toHaveLength(0);
     expect(screen.getByRole("button", { name: "Deploy now" })).toBeDisabled();
     expect(
       screen.getByRole("button", { name: /^Start services/i }),
     ).toBeDisabled();
-    expect(screen.queryByText("No managed actions for this architecture")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("No managed actions for this architecture"),
+    ).not.toBeInTheDocument();
     expect(fetch).not.toHaveBeenCalled();
   });
 
@@ -124,7 +138,9 @@ describe("ActionsManager", () => {
       name: "Deploy this Compose project as root?",
     });
     expect(fetch).not.toHaveBeenCalled();
-    fireEvent.click(within(dialog).getByRole("button", { name: "Deploy project" }));
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Deploy project" }),
+    );
 
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
     const [, request] = vi.mocked(fetch).mock.calls[0];
@@ -137,13 +153,17 @@ describe("ActionsManager", () => {
   });
 
   it("requires confirmation before a destructive Compose action", async () => {
-    render(<ActionsManager domain="example.test" initialData={dockerData(true)} />);
+    render(
+      <ActionsManager domain="example.test" initialData={dockerData(true)} />,
+    );
 
     fireEvent.click(screen.getByRole("button", { name: /Stop project/i }));
     const dialog = await screen.findByRole("dialog", {
       name: "Stop the entire Compose project?",
     });
     expect(fetch).not.toHaveBeenCalled();
-    expect(within(dialog).getByText(/Named volumes are preserved/i)).toBeInTheDocument();
+    expect(
+      within(dialog).getByText(/Named volumes are preserved/i),
+    ).toBeInTheDocument();
   });
 });

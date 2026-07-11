@@ -79,6 +79,14 @@ describe("normalizeOperationsData", () => {
           configValid: true,
           safe: true,
           services: ["web", "worker"],
+          expectedPort: 24001,
+          entryService: "web",
+          containerPort: 3000,
+          publishedPort: 24001,
+          portMatches: true,
+          canAutoRemap: false,
+          portDetail:
+            'Entry service "web" maps container port 3000 to 127.0.0.1:24001, matching CloudPanel.',
         },
       },
       { typeOverride: "docker" },
@@ -94,7 +102,51 @@ describe("normalizeOperationsData", () => {
       "compose-validate",
       "compose-deploy",
       "compose-ps",
+      "compose-port-verify",
     ]);
+  });
+
+  it("keeps deployment ready while planning an unambiguous Compose entry-port remap", () => {
+    const data = normalizeOperationsData(
+      {
+        ...base,
+        permissions: { manage: true, docker: true },
+        hasCompose: true,
+        compose: {
+          file: "compose.yaml",
+          cliAvailable: true,
+          pluginAvailable: true,
+          daemonAvailable: true,
+          configValid: true,
+          safe: true,
+          services: ["backend", "frontend"],
+          expectedPort: 24001,
+          entryService: "frontend",
+          containerPort: 3000,
+          publishedPort: 3000,
+          portMatches: false,
+          canAutoRemap: true,
+          portDetail:
+            'Entry service "frontend" currently uses host port 3000; deployment will map container port 3000 to 127.0.0.1:24001 for CloudPanel.',
+          additionalPorts: [
+            {
+              service: "backend",
+              containerPort: 4000,
+              publishedPort: 4000,
+              hostIp: "127.0.0.1",
+            },
+          ],
+        },
+      },
+      { typeOverride: "docker" },
+    );
+
+    expect(data.preflight.status).toBe("warning");
+    expect(
+      data.preflight.checks.find((item) => item.id === "entry-port"),
+    ).toMatchObject({ status: "warning", blocker: false });
+    expect(data.plan).toMatchObject({ id: "compose", status: "ready" });
+    expect(data.plan?.warnings.join(" ")).toContain("127.0.0.1:24001");
   });
 
   it("uses the detected Node package manager and includes deterministic build and PM2 steps", () => {
@@ -129,6 +181,56 @@ describe("normalizeOperationsData", () => {
         .flatMap((group) => group.actions)
         .find((action) => action.id === "node-install")?.label,
     ).toContain("pnpm");
+  });
+
+  it("warns about a Node port mismatch and verifies the configured port after deployment", () => {
+    const data = normalizeOperationsData({
+      ...base,
+      expectedPort: 24001,
+      port: {
+        expected: 24001,
+        listening: false,
+        detected: [3000],
+        detail:
+          "CloudPanel expects port 24001, but site-owned processes currently listen on 3000.",
+      },
+      hasPackageJson: true,
+      hasStartScript: true,
+      packageManager: {
+        id: "npm",
+        label: "npm",
+        available: true,
+        lockfile: "package-lock.json",
+      },
+    });
+
+    expect(
+      data.preflight.checks.find((item) => item.id === "runtime-port"),
+    ).toMatchObject({ status: "warning", blocker: false });
+    expect(data.plan).toMatchObject({ id: "node", status: "ready" });
+    expect(data.plan?.steps.at(-1)?.command).toBe("runtime-port-verify");
+    expect(data.plan?.warnings.join(" ")).toContain("listen on 3000");
+  });
+
+  it("blocks a reverse-proxy site when its configured local upstream is not listening", () => {
+    const data = normalizeOperationsData({
+      ...base,
+      type: "reverse-proxy",
+      reverseProxyUrl: "http://127.0.0.1:24001",
+      expectedPort: 24001,
+      port: {
+        expected: 24001,
+        listening: false,
+        detected: [3000],
+        detail:
+          "CloudPanel expects port 24001, but site-owned processes currently listen on 3000.",
+      },
+    });
+
+    expect(
+      data.preflight.checks.find((item) => item.id === "upstream-port"),
+    ).toMatchObject({ status: "blocked", blocker: true });
+    expect(data.preflight.status).toBe("blocked");
   });
 
   it("blocks an ambiguous Node lockfile selection instead of guessing", () => {
@@ -270,40 +372,6 @@ describe("normalizeOperationsData", () => {
     ).toBeUndefined();
   });
 
-  it("offers a site-scoped port-binding fix on a port-only safety failure", () => {
-    const data = normalizeOperationsData(
-      {
-        ...base,
-        // A site manager (manage) who is not a Super Admin (docker: false)
-        // can still edit the site's own Compose file.
-        permissions: { manage: true, docker: false },
-        hasCompose: true,
-        compose: {
-          file: "compose.yaml",
-          cliAvailable: true,
-          pluginAvailable: true,
-          daemonAvailable: true,
-          configValid: true,
-          safe: false,
-          portFixable: true,
-          detail: 'Service "backend" publishes a port without binding it to 127.0.0.1.',
-          services: ["backend"],
-        },
-      },
-      { typeOverride: "docker" },
-    );
-
-    const safety = data.preflight.checks.find(
-      (item) => item.id === "compose-safety",
-    );
-    expect(safety?.status).toBe("blocked");
-    expect(safety?.fix).toMatchObject({
-      id: "bind-ports-loopback",
-      scope: "site-user",
-      status: "ready",
-    });
-  });
-
   it("does not offer the port fix when a non-port feature also fails safety", () => {
     const data = normalizeOperationsData(
       {
@@ -317,7 +385,6 @@ describe("normalizeOperationsData", () => {
           daemonAvailable: true,
           configValid: true,
           safe: false,
-          portFixable: false,
           detail: 'Service "backend" requests privileged mode.',
         },
       },

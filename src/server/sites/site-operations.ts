@@ -6,8 +6,6 @@ import type {
   OperationActionGroup,
   OperationCheck,
   OperationFix,
-  OperationRisk,
-  OperationScope,
   OperationStatus,
   OperationsData,
   RawOperationsData,
@@ -246,20 +244,6 @@ const FIXES: Record<
       confirmText: "Install Composer",
     },
   },
-  "bind-ports-loopback": {
-    id: "bind-ports-loopback",
-    label: "Bind published ports to localhost",
-    description:
-      "Rewrite the Compose file so every published port binds to 127.0.0.1, then re-validate.",
-    risk: "disruptive",
-    scope: "site-user",
-    confirmation: {
-      title: "Bind published ports to 127.0.0.1?",
-      message:
-        "Panelavo will edit the Compose file so each published port binds to the loopback address (127.0.0.1) that this site's reverse proxy already targets, keeping the same port numbers. The original file is backed up next to it, and the change is re-validated against the host-safety policy before it is kept.",
-      confirmText: "Bind to localhost",
-    },
-  },
 };
 
 function preflightChecks(raw: RawOperationsData, type: string) {
@@ -354,13 +338,35 @@ function preflightChecks(raw: RawOperationsData, type: string) {
         raw.compose?.detail ||
           "The Compose configuration uses a host-level feature Panelavo will not run as root.",
         "Use loopback-only ports and keep bind mounts, build contexts, configs, and secrets inside the site root.",
-        {
-          fix:
-            raw.compose?.safe !== true && raw.compose?.portFixable
-              ? makeFix(raw, FIXES["bind-ports-loopback"])
-              : undefined,
-        },
+        {},
       ),
+      {
+        id: "entry-port",
+        label: "Website entry port",
+        status:
+          raw.compose?.configValid !== true
+            ? "warning"
+            : raw.compose?.portMatches
+              ? "ready"
+              : raw.compose?.canAutoRemap
+                ? "warning"
+                : "blocked",
+        detail:
+          raw.compose?.configValid !== true
+            ? "Entry-service and port matching will run after the Compose configuration can be resolved."
+            : raw.compose?.portDetail ||
+              "Panelavo could not match a Compose service to CloudPanel's configured upstream port.",
+        blocker:
+          raw.compose?.configValid === true &&
+          !raw.compose?.portMatches &&
+          !raw.compose?.canAutoRemap,
+        remediation:
+          raw.compose?.configValid !== true ||
+          raw.compose?.portMatches ||
+          raw.compose?.canAutoRemap
+            ? undefined
+            : "Label exactly one service io.panelavo.entrypoint=true and, when it exposes multiple container ports, set io.panelavo.container-port=<port>.",
+      },
       check(
         "docker-permission",
         "Root deployment approval",
@@ -517,6 +523,30 @@ function preflightChecks(raw: RawOperationsData, type: string) {
       ),
     );
   }
+  if (["nodejs", "python"].includes(type) && raw.port?.expected) {
+    checks.push(
+      check(
+        "runtime-port",
+        "Application listening port",
+        raw.port.listening,
+        raw.port.detail,
+        raw.port.detail,
+        `The deployment will provide PORT=${raw.port.expected} and verify 127.0.0.1:${raw.port.expected}. If an ecosystem file overrides PORT, update it to match CloudPanel.`,
+        { warning: true },
+      ),
+    );
+  } else if (type === "reverse-proxy" && raw.port?.expected) {
+    checks.push(
+      check(
+        "upstream-port",
+        "Reverse-proxy upstream",
+        raw.port.listening,
+        raw.port.detail,
+        raw.port.detail,
+        `Start the upstream on 127.0.0.1:${raw.port.expected}, or change the reverse-proxy URL in Settings.`,
+      ),
+    );
+  }
   return checks;
 }
 
@@ -540,7 +570,9 @@ function makeAction(
     blockedBy.unshift("Operations permission is required.");
   else if (action.docker && !raw.permissions?.docker)
     blockedBy.unshift("Rootful Docker operations require a Super Admin.");
-  const { blockers: _blockers, docker: _docker, ...rest } = action;
+  const rest = { ...action };
+  delete rest.blockers;
+  delete rest.docker;
   return { ...rest, blockedBy, status: statusFrom(blockedBy, authorized) };
 }
 
@@ -1227,6 +1259,14 @@ function planFor(
         ]
       : []),
     ...(raw.compose?.warnings ?? []),
+    ...(raw.compose?.canAutoRemap && raw.compose.portDetail
+      ? [raw.compose.portDetail]
+      : []),
+    ...(["nodejs", "python"].includes(type) &&
+    raw.port?.expected &&
+    !raw.port.listening
+      ? [raw.port.detail]
+      : []),
   ];
   const finish = (
     plan: Omit<DeploymentPlan, "status" | "blockedBy" | "warnings"> & {
@@ -1235,7 +1275,10 @@ function planFor(
     },
   ): DeploymentPlan => {
     const blockedBy = [...commonBlockers, ...(plan.blockers ?? [])];
-    const { blockers: _blockers, warnings: planWarnings, ...rest } = plan;
+    const planWarnings = plan.warnings;
+    const rest = { ...plan };
+    delete rest.blockers;
+    delete rest.warnings;
     return {
       ...rest,
       blockedBy: [...new Set(blockedBy)],
@@ -1272,6 +1315,16 @@ function planFor(
           label: "Verify service state",
           description: "Report containers, ports, and available health state.",
         },
+        ...(raw.compose?.expectedPort
+          ? [
+              {
+                command: "compose-port-verify",
+                label: "Verify website entry port",
+                description:
+                  "Confirm CloudPanel can connect to the expected loopback port.",
+              },
+            ]
+          : []),
       ],
       confirmation: {
         title: "Deploy this Compose project as root?",
@@ -1308,6 +1361,16 @@ function planFor(
         label: "Persist process state",
         description: "Save the site-user PM2 process list.",
       },
+      ...(raw.expectedPort
+        ? [
+            {
+              command: "runtime-port-verify",
+              label: "Verify application port",
+              description:
+                "Confirm the app accepts traffic on CloudPanel's configured port.",
+            },
+          ]
+        : []),
     ];
     return finish({
       id: "node",
@@ -1473,6 +1536,16 @@ function planFor(
                 label: "Persist process state",
                 description: "Save the site-user PM2 process list.",
               },
+              ...(raw.expectedPort
+                ? [
+                    {
+                      command: "runtime-port-verify",
+                      label: "Verify application port",
+                      description:
+                        "Confirm the app accepts traffic on CloudPanel's configured port.",
+                    },
+                  ]
+                : []),
             ]
           : []),
       ],

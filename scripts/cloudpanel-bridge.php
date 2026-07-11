@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-// Read-only bridge for functionality that CloudPanel's public clpctl does not
-// expose (password verification and authorized site reads). It is invoked as a
-// root CLI process by the Next.js server; it never handles an HTTP request.
+// Allow-listed local bridge for functionality that CloudPanel's public clpctl
+// does not expose. The Next.js server invokes it as a root CLI process for
+// authorized reads and tightly-scoped mutations; it never handles HTTP.
 
 use App\Entity\Site;
 use App\Entity\User;
@@ -29,9 +29,6 @@ use App\Site\Updater\StaticSite as StaticSiteUpdater;
 use Symfony\Component\Dotenv\Dotenv;
 
 const CLOUDPANEL_ROOT = '/home/clp/htdocs/app/files';
-
-require CLOUDPANEL_ROOT . '/vendor/autoload.php';
-(new Dotenv())->bootEnv(CLOUDPANEL_ROOT . '/.env');
 
 function respond(array $value, int $status = 0): never
 {
@@ -358,7 +355,7 @@ function findSiteTool(string $home, string $binary, bool $asRoot = false): ?stri
 
 // Runs an allow-listed maintenance command inside the site root as the site
 // user, through env(1) so PATH/HOME survive sudo's environment reset.
-function runSiteCommand(Site $site, array $args, int $timeout = 300, bool $asRoot = false): array
+function runSiteCommand(Site $site, array $args, int $timeout = 300, bool $asRoot = false, array $extraEnv = []): array
 {
     $cwd = realpath(siteRootPath($site));
     if (!$cwd) respond(['ok' => false, 'code' => 'SITE_NOT_FOUND']);
@@ -383,6 +380,12 @@ function runSiteCommand(Site $site, array $args, int $timeout = 300, bool $asRoo
         'POETRY_VIRTUALENVS_IN_PROJECT=1',
         'PIPENV_VENV_IN_PROJECT=1',
     ];
+    foreach ($extraEnv as $key => $value) {
+        if (!is_string($key) || !preg_match('/^[A-Z_][A-Z0-9_]{0,63}$/', $key)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+        $value = (string) $value;
+        if (strlen($value) > 500 || str_contains($value, "\0")) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+        $env[] = $key . '=' . $value;
+    }
     $command = array_merge(
         ['/usr/bin/timeout', '--signal=KILL', $timeout . 's'],
         $asRoot ? $env : array_merge(['/usr/bin/sudo', '-n', '-u', $site->getUser(), '--'], $env),
@@ -591,6 +594,259 @@ function composeProjectName(Site $site): string
     return 'panelavo-' . ($name !== '' ? $name : 'site');
 }
 
+function expectedSitePort(Site $site): ?int
+{
+    $port = $site->getNodejsSettings()?->getPort() ?? $site->getPythonSettings()?->getPort();
+    if (is_numeric($port) && (int) $port >= 1 && (int) $port <= 65535) return (int) $port;
+    $url = (string) ($site->getReverseProxyUrl() ?? '');
+    if ($url === '') return null;
+    $parts = parse_url($url);
+    $host = strtolower(trim((string) ($parts['host'] ?? ''), '[]'));
+    if (!in_array($host, ['127.0.0.1', 'localhost', '::1'], true)) return null;
+    $port = $parts['port'] ?? (($parts['scheme'] ?? '') === 'https' ? 443 : 80);
+    return is_numeric($port) && (int) $port >= 1 && (int) $port <= 65535 ? (int) $port : null;
+}
+
+// Read listening sockets once from the host and mark the processes that are
+// owned by this site's Unix user. The UI receives only port numbers and a safe
+// summary; PIDs and command lines never leave the bridge.
+function hostListeningPorts(Site $site): array
+{
+    $binary = is_executable('/usr/bin/ss') ? '/usr/bin/ss' : (is_executable('/usr/sbin/ss') ? '/usr/sbin/ss' : null);
+    if (!$binary) return [];
+    $result = runSiteCommand($site, [$binary, '-H', '-ltnp'], 15, true);
+    if ($result['code'] !== 0) return [];
+    $account = function_exists('posix_getpwnam') ? posix_getpwnam((string) $site->getUser()) : false;
+    $siteUid = is_array($account) ? (int) ($account['uid'] ?? -1) : -1;
+    $root = siteRootPath($site);
+    $items = [];
+    foreach (preg_split('/\R/', trim($result['stdout'])) ?: [] as $line) {
+        $parts = preg_split('/\s+/', trim($line), 6);
+        if (count($parts) < 4 || !preg_match('/:(\d+)$/', (string) $parts[3], $match)) continue;
+        $port = (int) $match[1];
+        if ($port < 1 || $port > 65535) continue;
+        $siteOwned = false;
+        $process = '';
+        if (isset($parts[5])) {
+            if (preg_match('/\(\("([^"]{1,80})"/', $parts[5], $name)) $process = $name[1];
+            preg_match_all('/pid=(\d+)/', $parts[5], $pids);
+            foreach ($pids[1] ?? [] as $pidText) {
+                $pid = (int) $pidText;
+                $uid = @fileowner('/proc/' . $pid);
+                $cwd = @realpath('/proc/' . $pid . '/cwd');
+                if (($siteUid >= 0 && $uid === $siteUid) || (is_string($cwd) && pathIsContained($cwd, $root))) {
+                    $siteOwned = true;
+                    break;
+                }
+            }
+        }
+        $items[] = ['port' => $port, 'address' => (string) $parts[3], 'siteOwned' => $siteOwned, 'process' => $process];
+    }
+    return $items;
+}
+
+function sitePortCapability(Site $site, array $listeners): array
+{
+    $expected = expectedSitePort($site);
+    $sitePorts = array_values(array_unique(array_map(
+        static fn(array $item): int => (int) $item['port'],
+        array_filter($listeners, static fn(array $item): bool => !empty($item['siteOwned'])),
+    )));
+    sort($sitePorts);
+    $listening = $expected !== null && count(array_filter($listeners, static fn(array $item): bool => (int) $item['port'] === $expected)) > 0;
+    if ($expected === null) $detail = 'This CloudPanel site is served directly and has no application upstream port.';
+    elseif ($listening) $detail = "A process is listening on the configured upstream port $expected.";
+    elseif ($sitePorts) $detail = 'CloudPanel expects port ' . $expected . ', but site-owned processes currently listen on ' . implode(', ', $sitePorts) . '.';
+    else $detail = "CloudPanel expects port $expected, but no process is listening there yet.";
+    return ['expected' => $expected, 'listening' => $listening, 'detected' => $sitePorts, 'detail' => $detail];
+}
+
+function composeLabels(array $service): array
+{
+    $labels = $service['labels'] ?? [];
+    if (!is_array($labels)) return [];
+    $normalized = [];
+    foreach ($labels as $key => $value) {
+        if (is_int($key) && is_string($value) && str_contains($value, '=')) {
+            [$key, $value] = explode('=', $value, 2);
+        }
+        if (is_string($key)) $normalized[strtolower($key)] = is_scalar($value) ? (string) $value : '';
+    }
+    return $normalized;
+}
+
+function composeServicePorts(array $service): array
+{
+    $targets = [];
+    $published = [];
+    foreach ((array) ($service['ports'] ?? []) as $port) {
+        if (!is_array($port)) continue;
+        $target = (int) ($port['target'] ?? 0);
+        if ($target < 1 || $target > 65535) continue;
+        $targets[] = $target;
+        $hostPort = (int) ($port['published'] ?? 0);
+        if ($hostPort >= 1 && $hostPort <= 65535) {
+            $published[] = [
+                'containerPort' => $target,
+                'publishedPort' => $hostPort,
+                'hostIp' => (string) ($port['host_ip'] ?? ''),
+            ];
+        }
+    }
+    foreach ((array) ($service['expose'] ?? []) as $value) {
+        if (preg_match('/^(\d{1,5})/', (string) $value, $match)) $targets[] = (int) $match[1];
+    }
+    $environment = $service['environment'] ?? [];
+    if (is_array($environment)) {
+        foreach (['PORT', 'APP_PORT', 'HTTP_PORT'] as $key) {
+            $value = $environment[$key] ?? null;
+            if (is_numeric($value) && (int) $value >= 1 && (int) $value <= 65535) $targets[] = (int) $value;
+        }
+    }
+    $health = $service['healthcheck']['test'] ?? [];
+    $healthText = is_array($health) ? implode(' ', array_map('strval', $health)) : (string) $health;
+    if (preg_match_all('#https?://(?:localhost|127\.0\.0\.1|\[::1\]):(\d{1,5})#i', $healthText, $matches)) {
+        foreach ($matches[1] as $value) $targets[] = (int) $value;
+    }
+    $targets = array_values(array_unique(array_filter($targets, static fn(int $port): bool => $port >= 1 && $port <= 65535)));
+    return ['targets' => $targets, 'published' => $published];
+}
+
+// Select the one service that represents this CloudPanel site's public entry
+// point. Explicit labels win. Otherwise use an already-correct publication,
+// a single candidate, the Compose dependency graph, then conventional gateway
+// names. Ambiguity is a blocker rather than a guess.
+function composePortRouting(?int $expected, array $config): array
+{
+    $candidates = [];
+    $allPublished = [];
+    $dependedOn = [];
+    $explicit = [];
+    foreach ((array) ($config['services'] ?? []) as $name => $service) {
+        if (!is_array($service)) continue;
+        $ports = composeServicePorts($service);
+        if ($ports['targets']) $candidates[(string) $name] = ['service' => (string) $name] + $ports;
+        foreach ($ports['published'] as $port) $allPublished[] = ['service' => (string) $name] + $port;
+        foreach (array_keys((array) ($service['depends_on'] ?? [])) as $dependency) $dependedOn[(string) $dependency] = true;
+        $labels = composeLabels($service);
+        if (in_array(strtolower($labels['io.panelavo.entrypoint'] ?? $labels['panelavo.entrypoint'] ?? ''), ['1', 'true', 'yes'], true)) {
+            $explicit[] = (string) $name;
+        }
+        $labelPort = $labels['io.panelavo.container-port'] ?? $labels['panelavo.container-port'] ?? null;
+        if (isset($candidates[(string) $name]) && is_numeric($labelPort)) $candidates[(string) $name]['labelPort'] = (int) $labelPort;
+    }
+
+    $selected = null;
+    if ($expected !== null) {
+        $matches = array_values(array_filter($allPublished, static fn(array $item): bool => (int) $item['publishedPort'] === $expected));
+        if (count($matches) === 1) $selected = $matches[0]['service'];
+    }
+    if ($selected === null && count($explicit) === 1 && isset($candidates[$explicit[0]])) $selected = $explicit[0];
+    if ($selected === null && count($candidates) === 1) $selected = array_key_first($candidates);
+    if ($selected === null && $candidates) {
+        $roots = array_values(array_filter(array_keys($candidates), static fn(string $name): bool => !isset($dependedOn[$name])));
+        if (count($roots) === 1) $selected = $roots[0];
+    }
+    if ($selected === null && $candidates) {
+        $rank = ['frontend' => 100, 'web' => 90, 'gateway' => 80, 'proxy' => 70, 'nginx' => 60, 'app' => 50];
+        $scores = [];
+        foreach (array_keys($candidates) as $name) {
+            $lower = strtolower($name);
+            foreach ($rank as $needle => $score) {
+                if ($lower === $needle || str_contains($lower, $needle)) { $scores[$name] = max($scores[$name] ?? 0, $score); break; }
+            }
+        }
+        if ($scores) {
+            arsort($scores);
+            $top = (int) reset($scores);
+            $leaders = array_keys(array_filter($scores, static fn(int $score): bool => $score === $top));
+            if (count($leaders) === 1) $selected = $leaders[0];
+        }
+    }
+
+    $containerPort = null;
+    $publishedPort = null;
+    if ($selected !== null) {
+        $candidate = $candidates[$selected];
+        if (!empty($candidate['labelPort']) && in_array($candidate['labelPort'], $candidate['targets'], true)) {
+            $containerPort = (int) $candidate['labelPort'];
+        } else {
+            $matchingPublished = $expected === null ? [] : array_values(array_filter(
+                $candidate['published'],
+                static fn(array $item): bool => (int) $item['publishedPort'] === $expected,
+            ));
+            if (count($matchingPublished) === 1) $containerPort = (int) $matchingPublished[0]['containerPort'];
+            elseif (count($candidate['targets']) === 1) $containerPort = (int) $candidate['targets'][0];
+            else {
+                $environmentPort = null;
+                $service = $config['services'][$selected] ?? [];
+                foreach (['PORT', 'APP_PORT', 'HTTP_PORT'] as $key) {
+                    $value = is_array($service['environment'] ?? null) ? ($service['environment'][$key] ?? null) : null;
+                    if (is_numeric($value) && in_array((int) $value, $candidate['targets'], true)) { $environmentPort = (int) $value; break; }
+                }
+                if ($environmentPort !== null) $containerPort = $environmentPort;
+            }
+        }
+        if ($containerPort !== null) {
+            foreach ($candidate['published'] as $port) {
+                if ((int) $port['containerPort'] === $containerPort) { $publishedPort = (int) $port['publishedPort']; break; }
+            }
+        }
+    }
+    $portMatches = $expected !== null && $containerPort !== null && count(array_filter(
+        $allPublished,
+        static fn(array $item): bool => $item['service'] === $selected
+            && (int) $item['containerPort'] === $containerPort
+            && (int) $item['publishedPort'] === $expected
+            && in_array((string) ($item['hostIp'] ?? ''), ['127.0.0.1', '::1', 'localhost'], true),
+    )) > 0;
+    $canAutoRemap = $expected !== null && $selected !== null && $containerPort !== null && !$portMatches;
+    $additional = array_values(array_filter($allPublished, static fn(array $item): bool => !(
+        $item['service'] === $selected && (int) $item['containerPort'] === $containerPort
+    )));
+    if ($expected === null) $detail = 'CloudPanel has no local reverse-proxy port configured for this project.';
+    elseif ($selected === null) $detail = 'CloudPanel expects port ' . $expected . ', but the Compose entry service is ambiguous. Add label io.panelavo.entrypoint=true to exactly one service.';
+    elseif ($containerPort === null) $detail = 'Entry service "' . $selected . '" was detected, but its container port is ambiguous. Add label io.panelavo.container-port=<port>.';
+    elseif ($portMatches) $detail = 'Entry service "' . $selected . '" maps container port ' . $containerPort . ' to 127.0.0.1:' . $expected . ', matching CloudPanel.';
+    else $detail = 'Entry service "' . $selected . '" currently uses host port ' . ($publishedPort ?: 'none') . '; deployment will map container port ' . $containerPort . ' to 127.0.0.1:' . $expected . ' for CloudPanel.';
+    return [
+        'expectedPort' => $expected,
+        'entryService' => $selected,
+        'containerPort' => $containerPort,
+        'publishedPort' => $publishedPort,
+        'portMatches' => $portMatches,
+        'canAutoRemap' => $canAutoRemap,
+        'portDetail' => $detail,
+        'additionalPorts' => $additional,
+    ];
+}
+
+function remapResolvedCompose(array $config, array $routing): array
+{
+    // Rootful Compose is always forced onto loopback at runtime, including
+    // secondary service ports. The source file remains untouched.
+    foreach ((array) ($config['services'] ?? []) as $name => $service) {
+        if (!is_array($service)) continue;
+        foreach ((array) ($service['ports'] ?? []) as $index => $port) {
+            if (is_array($port) && isset($port['published'])) {
+                $config['services'][$name]['ports'][$index]['host_ip'] = '127.0.0.1';
+            }
+        }
+    }
+    if (empty($routing['canAutoRemap'])) return $config;
+    $service = (string) $routing['entryService'];
+    $target = (int) $routing['containerPort'];
+    $expected = (int) $routing['expectedPort'];
+    if (!isset($config['services'][$service]) || !is_array($config['services'][$service])) return $config;
+    $ports = array_values(array_filter(
+        (array) ($config['services'][$service]['ports'] ?? []),
+        static fn($port): bool => !is_array($port) || (int) ($port['target'] ?? 0) !== $target,
+    ));
+    $ports[] = ['mode' => 'ingress', 'target' => $target, 'published' => (string) $expected, 'protocol' => 'tcp', 'host_ip' => '127.0.0.1'];
+    $config['services'][$service]['ports'] = $ports;
+    return $config;
+}
+
 // Host-safety policy for rootful Compose: everything the project touches must
 // stay inside the site root, published ports must bind to loopback only, and
 // no privilege- or namespace-escalating feature is accepted. All violations
@@ -678,6 +934,7 @@ function composeCapability(Site $site, string $root, ?string $file): array
     }
     $capability = [
         'file' => $file,
+        'expectedPort' => expectedSitePort($site),
         'cliAvailable' => $cli !== null,
         'pluginAvailable' => false,
         'daemonAvailable' => false,
@@ -705,11 +962,29 @@ function composeCapability(Site $site, string $root, ?string $file): array
     }
     $capability['configValid'] = true;
     $capability['services'] = array_map('strval', array_keys($parsed['services'] ?? []));
-    $safety = composeSafetyScan($parsed, $root);
-    $capability['safe'] = $safety['safe'];
-    if (!$safety['safe']) $capability['detail'] = $safety['detail'];
-    $capability['portFixable'] = $safety['portFixable'];
-    $capability['warnings'] = $safety['warnings'];
+    $routing = composePortRouting(expectedSitePort($site), $parsed);
+    $capability = array_merge($capability, $routing);
+    $sourceSafety = composeSafetyScan($parsed, $root);
+    $runtimeConfig = remapResolvedCompose($parsed, $routing);
+    $runtimeSafety = composeSafetyScan($runtimeConfig, $root);
+    $capability['safe'] = $runtimeSafety['safe'];
+    if (!$runtimeSafety['safe']) $capability['detail'] = $runtimeSafety['detail'];
+    $capability['portFixable'] = false;
+    $capability['runtimeOverride'] = $runtimeConfig !== $parsed;
+    $capability['warnings'] = array_values(array_unique(array_merge($sourceSafety['warnings'], $runtimeSafety['warnings'])));
+    if (!$sourceSafety['safe'] && $sourceSafety['portFixable'] && $runtimeSafety['safe']) {
+        $capability['warnings'][] = 'Published Compose ports will be restricted to 127.0.0.1 in Panelavo\'s ephemeral runtime model; the source Compose file is not edited.';
+    }
+    if (!empty($routing['additionalPorts'])) {
+        $summary = implode(', ', array_map(
+            static fn(array $port): string => $port['service'] . ':' . $port['containerPort'] . ' on ' . (($port['hostIp'] ?? '') !== '' ? $port['hostIp'] : '*') . ':' . $port['publishedPort'],
+            $routing['additionalPorts'],
+        ));
+        $capability['warnings'][] = 'Additional loopback service ports were detected (' . $summary . '). Create a connected reverse-proxy site for each additional public service endpoint.';
+    }
+    // Internal only: Operations uses this resolved model to apply an ephemeral
+    // port mapping. actionsSection() removes it before any browser response.
+    $capability['_runtimeConfig'] = $runtimeConfig;
     return $capability;
 }
 
@@ -753,12 +1028,16 @@ function operationsState(Site $site, User $user): array
     $nodeBin = nodeBinPath($home);
     if ($nodeBin && preg_match('#/node/v?([0-9.]+)/bin$#', $nodeBin, $match)) $tools['node']['version'] = $match[1];
     $pythonManifest = is_file($root . '/requirements.txt') || is_file($root . '/pyproject.toml') || is_file($root . '/Pipfile');
+    $listeners = hostListeningPorts($site);
+    $port = sitePortCapability($site, $listeners);
     return [
         'type' => $site->getType(),
         'path' => $root,
         'framework' => detectFramework($root, $package),
         'processName' => preg_replace('/[^a-zA-Z0-9._-]/', '-', $site->getDomainName()),
         'reverseProxyUrl' => $site->getReverseProxyUrl(),
+        'expectedPort' => $port['expected'],
+        'port' => $port,
         'checkedAt' => gmdate(DATE_ATOM),
         'hasPackageJson' => $package !== null,
         'hasPackageLock' => is_file($root . '/package-lock.json'),
@@ -816,6 +1095,7 @@ function actionsSection(Site $site, User $user): array
         }
     }
     unset($state['ecosystemFile'], $state['venvPython'], $state['composeProject']);
+    if (is_array($state['compose'] ?? null)) unset($state['compose']['_runtimeConfig']);
     return $state + ['pm2' => $processes];
 }
 
@@ -857,13 +1137,17 @@ function resolveOperationStep(array $state, string $command, array $operation): 
             $require($compose['configValid'] === true);
             if (($compose['safe'] ?? false) !== true) respond(['ok' => false, 'code' => 'UNSAFE_COMPOSE']);
         }
+        if (in_array($command, ['compose-up', 'compose-deploy'], true)) {
+            $require(!empty($compose['portMatches']) || !empty($compose['canAutoRemap']));
+        }
+        $mapped = !empty($compose['runtimeOverride']) && is_array($compose['_runtimeConfig'] ?? null);
         return [
             'command' => $command,
             'label' => $label,
-            'args' => array_merge(['docker', 'compose', '-f', $compose['file'], '-p', $state['composeProject']], $verb),
+            'args' => array_merge(['docker', 'compose', '-f', $mapped ? '@PANELAVO_COMPOSE_CONFIG@' : $compose['file'], '-p', $state['composeProject']], $verb),
             'timeout' => $timeout,
             'asRoot' => true,
-        ];
+        ] + ($mapped ? ['composeConfig' => $compose['_runtimeConfig']] : []);
     };
     $script = (string) ($operation['script'] ?? '');
     $declaredScripts = array_column($state['scripts'], 'command', 'name');
@@ -991,17 +1275,33 @@ function resolveOperationStep(array $state, string $command, array $operation): 
             return $composeStep('Recent service logs', ['logs', '--tail', '200', '--no-color'], 60);
         case 'compose-down':
             return $composeStep('Stop project', ['down'], 300);
+        case 'compose-port-verify':
+        case 'runtime-port-verify':
+            $expected = (int) ($state['expectedPort'] ?? 0);
+            $require($expected >= 1 && $expected <= 65535);
+            $require($available('curl'), 'TOOL_UNAVAILABLE');
+            return $step(
+                'Verify configured upstream port',
+                ['curl', '--silent', '--show-error', '--output', '/dev/null', '--retry', '12', '--retry-delay', '5', '--retry-all-errors', '--connect-timeout', '3', '--max-time', '90', '--write-out', 'HTTP %{http_code} from 127.0.0.1:' . $expected . "\n", 'http://127.0.0.1:' . $expected . '/'],
+                120,
+            );
         case 'pm2-start':
             $require($available('pm2'), 'TOOL_UNAVAILABLE');
             if ($state['ecosystemFile'] !== null) {
-                return $step('Start or reload ecosystem', ['pm2', 'startOrReload', $state['ecosystemFile']], 300);
+                $definition = $step('Start or reload ecosystem', ['pm2', 'startOrReload', $state['ecosystemFile']], 300);
+                if (!empty($state['expectedPort'])) $definition['env'] = ['PORT' => (string) $state['expectedPort'], 'HOST' => '127.0.0.1', 'HOSTNAME' => '127.0.0.1'];
+                return $definition;
             }
             $require($state['hasStartScript'] && is_array($manager) && empty($manager['ambiguous']));
             $require($available($manager['id']), 'TOOL_UNAVAILABLE');
-            return $step('Start or reload application', ['pm2', 'start', $manager['id'], '--name', $state['processName'], '--', 'start'], 300);
+            $definition = $step('Start or reload application', ['pm2', 'start', $manager['id'], '--name', $state['processName'], '--', 'start'], 300);
+            if (!empty($state['expectedPort'])) $definition['env'] = ['PORT' => (string) $state['expectedPort'], 'HOST' => '127.0.0.1', 'HOSTNAME' => '127.0.0.1'];
+            return $definition;
         case 'pm2-restart':
             $require($available('pm2'), 'TOOL_UNAVAILABLE');
-            return $step('Restart processes', ['pm2', 'restart', 'all', '--update-env'], 300);
+            $definition = $step('Restart processes', ['pm2', 'restart', 'all', '--update-env'], 300);
+            if (!empty($state['expectedPort'])) $definition['env'] = ['PORT' => (string) $state['expectedPort'], 'HOST' => '127.0.0.1', 'HOSTNAME' => '127.0.0.1'];
+            return $definition;
         case 'pm2-stop':
             $require($available('pm2'), 'TOOL_UNAVAILABLE');
             return $step('Stop processes', ['pm2', 'stop', 'all'], 300);
@@ -1015,7 +1315,9 @@ function resolveOperationStep(array $state, string $command, array $operation): 
             $target = (string) ($operation['name'] ?? '');
             $require(preg_match('/^[A-Za-z0-9._-]{1,100}$/', $target) === 1, 'INVALID_REQUEST');
             $verb = substr($command, 4, -4);
-            return $step(ucfirst($verb) . ' process', ['pm2', $verb, $target], 300);
+            $definition = $step(ucfirst($verb) . ' process', ['pm2', $verb, $target], 300);
+            if ($verb === 'restart' && !empty($state['expectedPort'])) $definition['env'] = ['PORT' => (string) $state['expectedPort'], 'HOST' => '127.0.0.1', 'HOSTNAME' => '127.0.0.1'];
+            return $definition;
         case 'pm2-save':
             $require($available('pm2'), 'TOOL_UNAVAILABLE');
             return $step('Persist process state', ['pm2', 'save', '--force'], 60);
@@ -1051,20 +1353,24 @@ function resolveDeploymentPlan(Site $site, array $state, string $plan): array
     };
     switch ($plan) {
         case 'compose':
-            return $steps([
+            return $steps(array_merge([
                 ['compose-validate', 'Validate configuration', null],
                 ['compose-deploy', 'Build and start services', null],
                 ['compose-ps', 'Verify service state', null],
-            ]);
+            ], !empty($state['expectedPort']) ? [
+                ['compose-port-verify', 'Verify website entry port', null],
+            ] : []));
         case 'node':
             if ($site->getType() !== Site::TYPE_NODEJS) respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE']);
             return $steps(array_merge(
                 [['node-install', 'Install dependencies', null]],
                 $state['hasBuildScript'] ? [['node-run', 'Build application', ['script' => 'build']]] : [],
-                [
+                array_merge([
                     ['pm2-start', 'Start or reload process', null],
                     ['pm2-save', 'Persist process state', null],
-                ],
+                ], !empty($state['expectedPort']) ? [
+                    ['runtime-port-verify', 'Verify application port', null],
+                ] : []),
             ));
         case 'static-build':
             if ($site->getType() !== Site::TYPE_STATIC) respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE']);
@@ -1100,6 +1406,7 @@ function resolveDeploymentPlan(Site $site, array $state, string $plan): array
             if ($state['hasEcosystem']) {
                 $pairs[] = ['pm2-start', 'Start or reload process', null];
                 $pairs[] = ['pm2-save', 'Persist process state', null];
+                if (!empty($state['expectedPort'])) $pairs[] = ['runtime-port-verify', 'Verify application port', null];
             }
             return $steps($pairs);
     }
@@ -1633,6 +1940,51 @@ function gitSection(Site $site): array
         'diff' => substr($diff, 0, 200000)];
 }
 
+function runComposePortSelfTest(): never
+{
+    $config = ['services' => [
+        'backend' => [
+            'environment' => ['PORT' => '4000'],
+            'ports' => [['target' => 4000, 'published' => '4000', 'host_ip' => '127.0.0.1']],
+            'healthcheck' => ['test' => ['CMD', 'wget', '--spider', 'http://localhost:4000/api/health']],
+        ],
+        'frontend' => [
+            'environment' => ['PORT' => '3000'],
+            'ports' => [['target' => 3000, 'published' => '3000', 'host_ip' => '127.0.0.1']],
+            'depends_on' => ['backend' => ['condition' => 'service_healthy']],
+            'healthcheck' => ['test' => ['CMD', 'wget', '--spider', 'http://127.0.0.1:3000/login']],
+        ],
+    ]];
+    $routing = composePortRouting(24001, $config);
+    $assert = static function (bool $condition, string $message): void {
+        if (!$condition) throw new RuntimeException($message);
+    };
+    $assert($routing['entryService'] === 'frontend', 'frontend should be selected from the dependency graph');
+    $assert($routing['containerPort'] === 3000, 'frontend container port should be 3000');
+    $assert($routing['publishedPort'] === 3000, 'the original host port should be reported');
+    $assert($routing['canAutoRemap'] === true, 'the mismatch should be safely remappable');
+    $runtime = remapResolvedCompose($config, $routing);
+    $frontendPort = $runtime['services']['frontend']['ports'][0] ?? [];
+    $assert((int) ($frontendPort['published'] ?? 0) === 24001, 'frontend should publish the CloudPanel port');
+    $assert(($frontendPort['host_ip'] ?? '') === '127.0.0.1', 'entry port should remain private');
+    $assert((int) ($runtime['services']['backend']['ports'][0]['published'] ?? 0) === 4000, 'secondary service port should be preserved');
+    $assert((int) ($config['services']['frontend']['ports'][0]['published'] ?? 0) === 3000, 'source config must not be mutated');
+
+    $ambiguous = composePortRouting(24001, ['services' => [
+        'alpha' => ['ports' => [['target' => 8000, 'published' => '8000']]],
+        'beta' => ['ports' => [['target' => 9000, 'published' => '9000']]],
+    ]]);
+    $assert($ambiguous['entryService'] === null, 'ambiguous services must not be guessed');
+    $assert(str_contains($ambiguous['portDetail'], 'io.panelavo.entrypoint=true'), 'ambiguity should include the repair instruction');
+    echo "Compose port routing self-test passed.\n";
+    exit(0);
+}
+
+if (($argv[1] ?? '') === '--self-test-ports') runComposePortSelfTest();
+
+require CLOUDPANEL_ROOT . '/vendor/autoload.php';
+(new Dotenv())->bootEnv(CLOUDPANEL_ROOT . '/.env');
+
 try {
     $input = json_decode(stream_get_contents(STDIN), true, 16, JSON_THROW_ON_ERROR);
     $kernel = new Kernel($_SERVER['APP_ENV'] ?? 'prod', false);
@@ -1972,20 +2324,12 @@ try {
                 if ($action === 'fix') {
                     $fix = (string) ($operation['fix'] ?? '');
                     $results = [];
-                    // A site-scoped fix only edits files inside the site root,
-                    // so the site-write access proven above is enough and it
-                    // takes the per-site lock. Host-software repairs are a
-                    // Super Admin boundary serialized host-wide, because shared
-                    // APT and systemd state could otherwise be corrupted by two
-                    // concurrent fixes.
-                    if ($fix === 'bind-ports-loopback') {
-                        $lockPath = '/var/lock/panelavo-operations-' . $site->getUser() . '.lock';
-                        $runner = static function () use ($site, &$results): void { bindComposePortsToLoopback($site, $results); };
-                    } else {
-                        if ($user->getRole() !== User::ROLE_ADMIN) respond(['ok' => false, 'code' => 'FORBIDDEN']);
-                        $lockPath = '/var/lock/panelavo-host-fix.lock';
-                        $runner = static function () use ($site, $fix, &$results): void { executeFix($site, $fix, $results); };
-                    }
+                    // Host-software repairs are a Super Admin boundary and are
+                    // serialized host-wide because they change shared APT and
+                    // systemd state.
+                    if ($user->getRole() !== User::ROLE_ADMIN) respond(['ok' => false, 'code' => 'FORBIDDEN']);
+                    $lockPath = '/var/lock/panelavo-host-fix.lock';
+                    $runner = static function () use ($site, $fix, &$results): void { executeFix($site, $fix, $results); };
                     $lock = @fopen($lockPath, 'c');
                     if (!$lock || !flock($lock, LOCK_EX | LOCK_NB)) respond(['ok' => false, 'code' => 'OPERATION_BUSY']);
                     $startedAt = gmdate(DATE_ATOM);
@@ -2011,7 +2355,13 @@ try {
                 $state = operationsState($site, $user);
                 $plan = null;
                 if ($action === 'run') {
-                    $steps = [resolveOperationStep($state, (string) ($operation['command'] ?? ''), $operation)];
+                    $command = (string) ($operation['command'] ?? '');
+                    $steps = [resolveOperationStep($state, $command, $operation)];
+                    if (!empty($state['expectedPort']) && in_array($command, ['compose-up', 'compose-deploy', 'compose-restart'], true)) {
+                        $steps[] = resolveOperationStep($state, 'compose-port-verify', []);
+                    } elseif (!empty($state['expectedPort']) && in_array($command, ['pm2-start', 'pm2-restart', 'pm2-restart-one'], true)) {
+                        $steps[] = resolveOperationStep($state, 'runtime-port-verify', []);
+                    }
                 } else {
                     $plan = (string) ($operation['plan'] ?? '');
                     $steps = resolveDeploymentPlan($site, $state, $plan);
@@ -2031,11 +2381,41 @@ try {
                 $startedAt = gmdate(DATE_ATOM);
                 $results = [];
                 foreach ($steps as $stepDefinition) {
-                    $result = runSiteCommand($site, $stepDefinition['args'], $stepDefinition['timeout'], !empty($stepDefinition['asRoot']));
+                    $args = $stepDefinition['args'];
+                    $displayArgs = $args;
+                    $temporaryCompose = null;
+                    if (isset($stepDefinition['composeConfig'])) {
+                        $encoded = json_encode($stepDefinition['composeConfig'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+                        if (!is_string($encoded)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                        $temporaryCompose = '/run/panelavo-compose-' . hash('sha256', (string) $site->getDomainName()) . '-' . bin2hex(random_bytes(6)) . '.json';
+                        $previousUmask = umask(0077);
+                        try {
+                            if (@file_put_contents($temporaryCompose, $encoded, LOCK_EX) === false) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                        } finally {
+                            umask($previousUmask);
+                        }
+                        if (!@chmod($temporaryCompose, 0600)) {
+                            @unlink($temporaryCompose);
+                            respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                        }
+                        $args = array_map(static fn(string $arg): string => $arg === '@PANELAVO_COMPOSE_CONFIG@' ? $temporaryCompose : $arg, $args);
+                        $displayArgs = array_map(static fn(string $arg): string => $arg === '@PANELAVO_COMPOSE_CONFIG@' ? '[ephemeral port-mapped config]' : $arg, $displayArgs);
+                    }
+                    try {
+                        $result = runSiteCommand(
+                            $site,
+                            $args,
+                            $stepDefinition['timeout'],
+                            !empty($stepDefinition['asRoot']),
+                            (array) ($stepDefinition['env'] ?? []),
+                        );
+                    } finally {
+                        if ($temporaryCompose !== null) @unlink($temporaryCompose);
+                    }
                     $results[] = [
                         'command' => $stepDefinition['command'],
                         'label' => $stepDefinition['label'],
-                        'display' => implode(' ', $stepDefinition['args']),
+                        'display' => implode(' ', $displayArgs),
                         'exitCode' => $result['code'],
                         'timedOut' => $result['timedOut'],
                         'output' => trim($result['stdout'] . ($result['stderr'] !== '' ? "\n" . $result['stderr'] : '')),
@@ -2059,10 +2439,8 @@ try {
                     'startedAt' => $startedAt,
                     'finishedAt' => gmdate(DATE_ATOM),
                 ];
-                if ($action === 'deploy') {
-                    $run['plan'] = $plan;
-                    $run['steps'] = $results;
-                }
+                if ($action === 'deploy') $run['plan'] = $plan;
+                if ($action === 'deploy' || count($results) > 1) $run['steps'] = $results;
                 respond(['ok' => true, 'data' => ['run' => $run] + actionsSection($site, $user)]);
             } elseif ($section === 'file-manager') {
                 $base = fileManagerBase($site);

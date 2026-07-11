@@ -38,13 +38,35 @@ export type ComposeCapability = {
   daemonAvailable: boolean;
   configValid?: boolean;
   safe?: boolean;
-  portFixable?: boolean;
   version?: string;
   services?: string[];
   runningServices?: number;
   totalServices?: number;
+  expectedPort?: number;
+  entryService?: string;
+  containerPort?: number;
+  publishedPort?: number;
+  portMatches?: boolean;
+  canAutoRemap?: boolean;
+  runtimeOverride?: boolean;
+  portDetail?: string;
+  additionalPorts?: ServicePort[];
   detail?: string;
   warnings?: string[];
+};
+
+export type ServicePort = {
+  service: string;
+  containerPort: number;
+  publishedPort?: number;
+  hostIp?: string;
+};
+
+export type SitePortCapability = {
+  expected?: number;
+  listening: boolean;
+  detected: number[];
+  detail: string;
 };
 
 export type OperationStepResult = {
@@ -74,6 +96,8 @@ export type RawOperationsData = {
   framework?: string;
   processName?: string;
   reverseProxyUrl?: string;
+  expectedPort?: number;
+  port?: SitePortCapability;
   checkedAt?: string;
   hasPackageJson?: boolean;
   hasPackageLock?: boolean;
@@ -119,8 +143,7 @@ export type OperationFixId =
   | "install-docker"
   | "install-compose-plugin"
   | "start-docker"
-  | "install-composer"
-  | "bind-ports-loopback";
+  | "install-composer";
 
 // A server-owned remediation for a failed preflight check: one click runs an
 // allow-listed, host-scoped repair (for installs: latest release from the

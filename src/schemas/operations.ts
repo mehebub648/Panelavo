@@ -95,7 +95,6 @@ export const operationFixCommands = [
   "install-compose-plugin",
   "start-docker",
   "install-composer",
-  "bind-ports-loopback",
 ] as const;
 
 const fixOperationSchema = z
