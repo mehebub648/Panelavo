@@ -26,10 +26,12 @@
 #   ADMIN_PASSWORD=...               CloudPanel admin password (default random)
 #   ADMIN_EMAIL=...                  CloudPanel admin e-mail
 #   DB_ENGINE=MYSQL_8.4              CloudPanel database engine override
-#   KEEP_FAIL2BAN_SSHD_RUNNING=true Keep fail2ban's sshd jail active during
-#                                   setup and temporarily exempt this client
+#   KEEP_FAIL2BAN_SSHD_RUNNING=true Temporarily exempt this SSH client from
+#                                   fail2ban (the jail stays active by default)
 #   FAIL2BAN_SSHD_PREPAUSED=true    Jail was stopped in the provider console;
 #                                   setup must restore it when finished
+#   ENABLE_UFW=true                 Explicitly activate ufw after rules are
+#                                   prepared (default: never activate remotely)
 #
 # The panel is reachable on http://<server-ip>:10443 (primary) and on the
 # site domain through nginx once DNS points at the server.
@@ -90,8 +92,9 @@ remove_ssh_guard() {
 trap remove_ssh_guard EXIT INT TERM
 
 if command -v fail2ban-client >/dev/null 2>&1 && fail2ban-client status sshd >/dev/null 2>&1; then
-  fail2ban-client set sshd unbanip "${SSH_CLIENT_IP}" >/dev/null 2>&1 || true
   if [ "${KEEP_FAIL2BAN_SSHD_RUNNING:-false}" = "true" ]; then
+    [ -n "${SSH_CLIENT_IP}" ] || die "Could not detect the current SSH client IP for the requested fail2ban exemption."
+    fail2ban-client set sshd unbanip "${SSH_CLIENT_IP}" >/dev/null 2>&1 || true
     if fail2ban-client get sshd ignoreip 2>/dev/null | tr ' ' '\n' | grep -Fqx "${SSH_CLIENT_IP}"; then
       log "Current SSH client ${SSH_CLIENT_IP} is already exempt from fail2ban."
     elif fail2ban-client set sshd addignoreip "${SSH_CLIENT_IP}" >/dev/null 2>&1; then
@@ -100,11 +103,8 @@ if command -v fail2ban-client >/dev/null 2>&1 && fail2ban-client status sshd >/d
     else
       die "Could not protect the current SSH client in fail2ban."
     fi
-  elif fail2ban-client stop sshd >/dev/null 2>&1; then
-    FAIL2BAN_SSH_JAIL_PAUSED=true
-    log "Paused fail2ban's sshd jail for this setup run; it will be restored automatically."
   else
-    die "Could not pause fail2ban's sshd jail. Use the provider console and run: fail2ban-client stop sshd"
+    log "Leaving fail2ban's sshd jail active during setup."
   fi
 elif [ "${FAIL2BAN_SSHD_PREPAUSED:-false}" = "true" ] && command -v fail2ban-client >/dev/null 2>&1; then
   FAIL2BAN_SSH_JAIL_PAUSED=true
@@ -378,11 +378,15 @@ env PATH="/usr/local/bin:${PATH}" /usr/local/bin/pm2 startup systemd -u "${SITE_
 sudo -u "${SITE_USER}" /usr/local/bin/pm2 save >/dev/null
 
 # ---------------------------------------------------------------------------
-# 11. Firewall: expose the panel, hide CloudPanel's own port (8443)
-#     Set EXPOSE_CLOUDPANEL=true to keep 8443 reachable from the internet.
+# 11. Firewall rules: expose the panel, hide CloudPanel's own port (8443).
+#     Never activate an inactive firewall during remote setup unless explicitly
+#     requested with ENABLE_UFW=true. Set EXPOSE_CLOUDPANEL=true to keep 8443.
 # ---------------------------------------------------------------------------
 CLOUDPANEL_PORT="8443"
 if command -v ufw >/dev/null 2>&1; then
+  UFW_WAS_ACTIVE=false
+  ufw status 2>/dev/null | grep -q "Status: active" && UFW_WAS_ACTIVE=true
+
   # Preserve the actual port used by this SSH session before making any UFW
   # change. This also supports servers whose sshd does not listen on port 22.
   if [[ "${SSH_SERVER_PORT}" =~ ^[0-9]+$ ]] && [ "${SSH_SERVER_PORT}" -ge 1 ] && [ "${SSH_SERVER_PORT}" -le 65535 ]; then
@@ -390,22 +394,28 @@ if command -v ufw >/dev/null 2>&1; then
   else
     ufw allow OpenSSH >/dev/null 2>&1 || ufw allow 22/tcp >/dev/null 2>&1 || die "Could not preserve SSH access in ufw."
   fi
-  if ! ufw status 2>/dev/null | grep -q "Status: active"; then
-    log "Enabling ufw (SSH, HTTP/HTTPS, and port ${APP_PORT} stay open) ..."
-    ufw allow 80/tcp >/dev/null 2>&1 || true
-    ufw allow 443/tcp >/dev/null 2>&1 || true
-    ufw --force enable >/dev/null 2>&1 || true
-  fi
+  ufw allow 80/tcp >/dev/null 2>&1 || true
+  ufw allow 443/tcp >/dev/null 2>&1 || true
   ufw allow "${APP_PORT}/tcp" >/dev/null 2>&1 || true
   if [ "${EXPOSE_CLOUDPANEL:-false}" != "true" ]; then
     # Remove any existing allow rule, then explicitly deny public access.
     ufw delete allow "${CLOUDPANEL_PORT}/tcp" >/dev/null 2>&1 || true
     ufw deny "${CLOUDPANEL_PORT}/tcp" >/dev/null 2>&1 || true
-    log "CloudPanel port ${CLOUDPANEL_PORT} is no longer exposed publicly."
+    log "Prepared a firewall deny rule for CloudPanel port ${CLOUDPANEL_PORT}."
     log "Reach CloudPanel via an SSH tunnel if ever needed: ssh -L ${CLOUDPANEL_PORT}:127.0.0.1:${CLOUDPANEL_PORT} root@${SERVER_IP}"
   else
     ufw allow "${CLOUDPANEL_PORT}/tcp" >/dev/null 2>&1 || true
     warn "EXPOSE_CLOUDPANEL=true — CloudPanel stays reachable on port ${CLOUDPANEL_PORT}."
+  fi
+
+  if [ "${UFW_WAS_ACTIVE}" = "false" ]; then
+    if [ "${ENABLE_UFW:-false}" = "true" ]; then
+      log "ENABLE_UFW=true — activating the prepared firewall rules ..."
+      ufw --force enable >/dev/null 2>&1 || die "Could not enable ufw."
+    else
+      warn "ufw was inactive, so setup prepared rules but did not enable it during this SSH session."
+      warn "Review 'ufw status numbered' from provider-console recovery access, then enable it manually if desired."
+    fi
   fi
 else
   warn "ufw is not installed — port ${CLOUDPANEL_PORT} may still be publicly reachable. Block it in your provider firewall."
@@ -458,7 +468,7 @@ cat <<EOF
 ============================================================
  Panel address:      ${PANEL_URL}
  Fallback (by IP):   http://${SERVER_IP}:${APP_PORT}
- CloudPanel:         https://127.0.0.1:8443 (blocked publicly; use an SSH tunnel)
+ CloudPanel:         https://127.0.0.1:8443 (firewall rule prepared; use an SSH tunnel)
 
  CloudPanel admin:   ${ADMIN_USER}
  Admin password:     ${ADMIN_PASSWORD}
