@@ -76,7 +76,11 @@ FAIL2BAN_SSH_JAIL_PAUSED=false
 
 remove_ssh_guard() {
   if [ "${FAIL2BAN_SSH_JAIL_PAUSED}" = "true" ]; then
-    fail2ban-client start sshd >/dev/null 2>&1 || warn "Could not restart fail2ban's sshd jail; run: fail2ban-client start sshd"
+    if fail2ban-client start sshd >/dev/null 2>&1 || fail2ban-client reload --restart sshd >/dev/null 2>&1; then
+      log "Restored fail2ban's sshd jail."
+    else
+      warn "Could not restart fail2ban's sshd jail; run: fail2ban-client reload --restart sshd"
+    fi
     FAIL2BAN_SSH_JAIL_PAUSED=false
     [ -n "${SSH_CLIENT_IP}" ] && fail2ban-client set sshd unbanip "${SSH_CLIENT_IP}" >/dev/null 2>&1 || true
   elif [ "${FAIL2BAN_SSH_GUARD_ADDED}" = "true" ]; then
@@ -277,11 +281,18 @@ mkdir -p "${SHARED_NODE_ROOT}"
 rsync -a --delete "${NODE_ROOT}/" "${SHARED_NODE_ROOT}/"
 chmod -R a+rX "${SHARED_NODE_ROOT}"
 
-# Expose Node commands to every user (PM2, builds, and systemd).
-for bin in node npm npx corepack; do
+# Expose the Node commands required by setup to every user (PM2, builds, and
+# systemd). Corepack is optional because recent Node.js releases may omit it;
+# setup invokes the pinned pnpm version through npx instead.
+for bin in node npm npx; do
   [ -e "${SHARED_NODE_ROOT}/bin/${bin}" ] || die "Shared Node.js command is missing: ${bin}"
   ln -sf "${SHARED_NODE_ROOT}/bin/${bin}" "/usr/local/bin/${bin}"
 done
+if [ -e "${SHARED_NODE_ROOT}/bin/corepack" ]; then
+  ln -sf "${SHARED_NODE_ROOT}/bin/corepack" /usr/local/bin/corepack
+else
+  rm -f /usr/local/bin/corepack
+fi
 
 sudo -u nobody env PATH="/usr/local/bin:/usr/bin:/bin" node --version >/dev/null 2>&1 || die "Shared Node.js runtime is not executable by non-root users."
 sudo -u nobody env PATH="/usr/local/bin:/usr/bin:/bin" npx --version >/dev/null 2>&1 || die "Shared npx is not executable by non-root users."

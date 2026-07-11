@@ -16,11 +16,11 @@ the panel's site user from the application directory
 
 1. **Node / pnpm on PATH.** PM2's daemon uses a minimal environment, so
    `ecosystem.config.js` calls Next's binary directly and does not need pnpm.
-   You only need pnpm for `install` / `build`. If `pnpm` is missing from your
-   shell, enable it via Corepack:
+   You only need pnpm for `install` / `build`. Node.js releases do not always
+   bundle Corepack, so the portable command is:
 
    ```bash
-   corepack enable && corepack prepare pnpm@10.12.1 --activate
+   npx -y pnpm@10.12.1 --version
    ```
 
 2. **Environment.** Copy `.env.example` to `.env.local` and fill it in

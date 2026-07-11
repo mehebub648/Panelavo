@@ -14,7 +14,7 @@ cd panelavo
 sudo bash setup.sh
 ```
 
-The script detects the OS, installs CloudPanel if it is missing, creates the initial CloudPanel admin, installs the latest Node.js and publishes a non-root-readable runtime under `/usr/local/lib/panelavo-node`, installs a shared PM2 into `/usr/local`, creates a CloudPanel Node.js site, deploys and builds panelavo inside it, and hosts it with PM2 with systemd persistence across reboots.
+The script detects the OS, installs CloudPanel if it is missing, creates the initial CloudPanel admin, installs the latest Node.js and publishes a non-root-readable runtime under `/usr/local/lib/panelavo-node`, installs a shared PM2 into `/usr/local`, creates a CloudPanel Node.js site, deploys and builds panelavo inside it, and hosts it with PM2 with systemd persistence across reboots. Corepack is optional; setup uses the pinned pnpm release through `npx` when Node.js does not bundle Corepack.
 
 When it finishes, it prints the panel URL (`http://<server-ip>:10443`) and generated credentials. By default, the CloudPanel site/system user is `panelavo`. Overrides: `PANEL_DOMAIN`, `PANEL_BASE_DOMAIN`, `PANEL_SITE_USER`, `ADMIN_USER`, `ADMIN_PASSWORD`, `ADMIN_EMAIL`, `DB_ENGINE`. Example:
 
@@ -42,7 +42,7 @@ cd /root/Panelavo
 sudo FAIL2BAN_SSHD_PREPAUSED=true bash setup.sh
 ```
 
-After setup, confirm `fail2ban-client status sshd`. If setup was killed with `SIGKILL` or the machine lost power before its cleanup trap ran, restore the jail manually with `fail2ban-client start sshd`.
+After setup, confirm `fail2ban-client status sshd`. Cleanup first starts the stopped jail normally and falls back to `fail2ban-client reload --restart sshd` when fail2ban needs to reload its configuration. If setup was killed with `SIGKILL` or the machine lost power before its cleanup trap ran, restore the jail manually with `fail2ban-client reload --restart sshd`.
 
 If SSH times out, use the hosting provider's VNC/serial/web console. Do not assume fail2ban without checking:
 
