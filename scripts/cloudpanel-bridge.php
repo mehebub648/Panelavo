@@ -1267,13 +1267,14 @@ function composePortRouting(?int $expected, array $config): array
 
 function remapResolvedCompose(array $config, array $routing): array
 {
-    // Compose's JSON renderer emits `ipam: null` for networks without custom
-    // IPAM settings, but its loader requires ipam to be a mapping when the
-    // resolved JSON is used as a configuration file. Drop only that synthetic
-    // null so the ephemeral model can be loaded again without changing any
-    // operator-defined network settings.
+    // Compose versions emit either `ipam: null` or `ipam: {}` for networks
+    // without custom IPAM settings. Associative json_decode() turns the empty
+    // object into [], which Compose rejects when the resolved JSON is loaded
+    // again because ipam must be a mapping. Drop both synthetic empty shapes
+    // while preserving every non-empty operator-defined IPAM mapping.
     foreach ((array) ($config['networks'] ?? []) as $name => $network) {
-        if (is_array($network) && array_key_exists('ipam', $network) && $network['ipam'] === null) {
+        if (is_array($network) && array_key_exists('ipam', $network)
+            && ($network['ipam'] === null || $network['ipam'] === [])) {
             unset($config['networks'][$name]['ipam']);
         }
     }
@@ -2561,6 +2562,7 @@ function runComposePortSelfTest(): never
         ],
     ], 'networks' => [
         'default' => ['name' => 'example_default', 'ipam' => null],
+        'empty' => ['name' => 'example_empty', 'ipam' => []],
         'private' => ['name' => 'example_private', 'ipam' => ['driver' => 'default']],
     ]];
     $routing = composePortRouting(24001, $config);
@@ -2577,7 +2579,9 @@ function runComposePortSelfTest(): never
     $assert(($frontendPort['host_ip'] ?? '') === '127.0.0.1', 'entry port should remain private');
     $assert((int) ($runtime['services']['backend']['ports'][0]['published'] ?? 0) === 4000, 'secondary service port should be preserved');
     $assert(!array_key_exists('ipam', $runtime['networks']['default']), 'synthetic null network IPAM should be removed');
+    $assert(!array_key_exists('ipam', $runtime['networks']['empty']), 'synthetic empty network IPAM should be removed');
     $assert(($runtime['networks']['private']['ipam']['driver'] ?? '') === 'default', 'configured network IPAM should be preserved');
+    $assert(!str_contains((string) json_encode($runtime), '"ipam":[]'), 'runtime JSON must not encode an empty IPAM list');
     $assert((int) ($config['services']['frontend']['ports'][0]['published'] ?? 0) === 3000, 'source config must not be mutated');
     $assert(array_key_exists('ipam', $config['networks']['default']), 'source network config must not be mutated');
 
