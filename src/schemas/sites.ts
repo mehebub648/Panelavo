@@ -126,7 +126,7 @@ export const createSiteSchema = z.discriminatedUnion("type", [
     .object({
       type: z.literal("reverse-proxy"),
       ...shared,
-      reverseProxyUrl: proxyUrl,
+      reverseProxyUrl: proxyUrl.optional(),
     })
     .strict(),
   z.object({ type: z.literal("docker"), ...shared }).strict(),

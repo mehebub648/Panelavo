@@ -19,6 +19,7 @@ import {
 } from "@/server/sites/site-meta";
 import { issueSiteSsl, planSiteSsl } from "@/server/sites/ensure-ssl";
 import type { CreateSiteInput } from "@/types/cloudpanel";
+import { localSiteProxyUrl } from "@/lib/site-url";
 
 export async function GET() {
   const requestId = randomUUID();
@@ -47,7 +48,11 @@ export async function POST(request: NextRequest) {
     const session = await requireUser();
     rateLimit(`site-create:${session.user.id}`, 5, 10 * 60_000);
     if (!session.user.canCreateSites)
-      throw new AppError("FORBIDDEN", "You do not have permission to create websites.", 403);
+      throw new AppError(
+        "FORBIDDEN",
+        "You do not have permission to create websites.",
+        403,
+      );
     const input = createSiteSchema.parse(await request.json());
 
     const baseDomain = await getBaseDomain();
@@ -58,7 +63,9 @@ export async function POST(request: NextRequest) {
         409,
       );
     const forwarded = request.headers.get("x-forwarded-host")?.split(":")[0];
-    const serverIp = await getServerPublicIp(forwarded || request.nextUrl.hostname);
+    const serverIp = await getServerPublicIp(
+      forwarded || request.nextUrl.hostname,
+    );
     if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(serverIp))
       throw new AppError(
         "INVALID_REQUEST",
@@ -73,7 +80,10 @@ export async function POST(request: NextRequest) {
     const externalPorts = existingSites
       .map((site) => site.appPort)
       .filter((port): port is number => typeof port === "number");
-    const { id, category } = await allocateSiteId(input.category, externalPorts);
+    const { id, category } = await allocateSiteId(
+      input.category,
+      externalPorts,
+    );
 
     const domain = systemDomainFor(id, serverIp, baseDomain);
     const siteUser = siteUserForId(id);
@@ -84,16 +94,40 @@ export async function POST(request: NextRequest) {
       new Set(input.aliases.filter((alias) => alias !== domain)),
     );
 
-    const shared = { domain, siteUser, siteUserPassword: input.siteUserPassword };
+    const shared = {
+      domain,
+      siteUser,
+      siteUserPassword: input.siteUserPassword,
+    };
     const createInput: CreateSiteInput =
       input.type === "php"
-        ? { type: "php", ...shared, phpVersion: input.phpVersion, vhostTemplate: input.vhostTemplate }
+        ? {
+            type: "php",
+            ...shared,
+            phpVersion: input.phpVersion,
+            vhostTemplate: input.vhostTemplate,
+          }
         : input.type === "nodejs"
-          ? { type: "nodejs", ...shared, nodeVersion: input.nodeVersion, appPort: id }
+          ? {
+              type: "nodejs",
+              ...shared,
+              nodeVersion: input.nodeVersion,
+              appPort: id,
+            }
           : input.type === "python"
-            ? { type: "python", ...shared, pythonVersion: input.pythonVersion, appPort: id }
+            ? {
+                type: "python",
+                ...shared,
+                pythonVersion: input.pythonVersion,
+                appPort: id,
+              }
             : input.type === "reverse-proxy"
-              ? { type: "reverse-proxy", ...shared, reverseProxyUrl: input.reverseProxyUrl }
+              ? {
+                  type: "reverse-proxy",
+                  ...shared,
+                  reverseProxyUrl:
+                    input.reverseProxyUrl || localSiteProxyUrl(id),
+                }
               : input.type === "docker"
                 ? { type: "docker", ...shared, appPort: id }
                 : { type: "static", ...shared };
@@ -107,16 +141,26 @@ export async function POST(request: NextRequest) {
       category: category.id,
     });
 
-    const site = await client.createSite(session.record.cloudPanel, createInput);
+    const site = await client.createSite(
+      session.record.cloudPanel,
+      createInput,
+    );
     const warnings: string[] = [];
     try {
       // Panel admins are restricted CloudPanel users: assign the new site to
       // them immediately so it appears in (and stays limited to) their list.
       if (session.user.panelRole === "admin")
         await client.assignSite(session.record.cloudPanel, domain);
-      await setSiteMeta(domain, { id, category: category.id, aliases, block: "none" });
+      await setSiteMeta(domain, {
+        id,
+        category: category.id,
+        aliases,
+        block: "none",
+      });
     } catch (error) {
-      await client.deleteSite(session.record.cloudPanel, domain).catch(() => undefined);
+      await client
+        .deleteSite(session.record.cloudPanel, domain)
+        .catch(() => undefined);
       await removeSiteMeta(domain).catch(() => undefined);
       throw error;
     }
@@ -126,12 +170,17 @@ export async function POST(request: NextRequest) {
     // instead of rolling back the created site.
     if (aliases.length) {
       try {
-        await client.manageSiteSection(session.record.cloudPanel, domain, "domains", {
-          action: "sync",
-          systemDomain: domain,
-          aliases,
-          block: "none",
-        });
+        await client.manageSiteSection(
+          session.record.cloudPanel,
+          domain,
+          "domains",
+          {
+            action: "sync",
+            systemDomain: domain,
+            aliases,
+            block: "none",
+          },
+        );
       } catch {
         warnings.push(
           "Website was created, but failed to configure your domain aliases. Try saving them again from the Settings tab.",
@@ -154,7 +203,10 @@ export async function POST(request: NextRequest) {
     warnings.push(...plan.warnings);
     void issueSiteSsl(session.record.cloudPanel, domain, plan.san).catch(
       (error: unknown) => {
-        console.error(`Let's Encrypt issuance failed for new site ${domain}:`, error);
+        console.error(
+          `Let's Encrypt issuance failed for new site ${domain}:`,
+          error,
+        );
       },
     );
 
@@ -166,7 +218,13 @@ export async function POST(request: NextRequest) {
       siteId: id,
     });
     return ok(
-      { site: { ...site, meta: { id, category: category.id, aliases, block: "none" } }, warnings },
+      {
+        site: {
+          ...site,
+          meta: { id, category: category.id, aliases, block: "none" },
+        },
+        warnings,
+      },
       { status: 201 },
     );
   } catch (error) {

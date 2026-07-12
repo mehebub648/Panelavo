@@ -75,6 +75,15 @@ describe("site validation", () => {
     ).toBe(false);
   });
 
+  it("allows Panelavo to derive a reverse-proxy target from the reserved site id", () => {
+    expect(
+      createSiteSchema.safeParse({
+        ...shared,
+        type: "reverse-proxy",
+      }).success,
+    ).toBe(true);
+  });
+
   it("keeps updated document roots inside the website htdocs directory", () => {
     expect(
       updateSiteSchema.safeParse({ rootDirectory: "public" }).success,

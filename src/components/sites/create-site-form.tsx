@@ -31,6 +31,7 @@ import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { normalizeDomain } from "@/schemas/sites";
 import { cn } from "@/lib/utils";
+import { localSiteProxyUrl } from "@/lib/site-url";
 
 const types = [
   {
@@ -105,7 +106,7 @@ const initial: Values = {
   vhostTemplate: "",
   nodeVersion: "",
   pythonVersion: "",
-  reverseProxyUrl: "http://127.0.0.1:8000",
+  reverseProxyUrl: "",
 };
 
 export function CreateSiteForm() {
@@ -129,7 +130,9 @@ export function CreateSiteForm() {
   useEffect(() => {
     (async () => {
       try {
-        const result = await fetch("/api/sites/options", { cache: "no-store" }).then((r) => r.json());
+        const result = await fetch("/api/sites/options", {
+          cache: "no-store",
+        }).then((r) => r.json());
         if (!result.success)
           throw new Error(
             result.error?.message || "Options could not be loaded.",
@@ -167,6 +170,7 @@ export function CreateSiteForm() {
     previewId && serverIp && baseDomain
       ? `site-${previewId}.${serverIp}.${baseDomain}`
       : null;
+  const suggestedProxyUrl = localSiteProxyUrl(previewId);
   function change(key: keyof Values, value: string) {
     setValues((current) => ({ ...current, [key]: value }));
   }
@@ -184,11 +188,15 @@ export function CreateSiteForm() {
   function addAlias() {
     const alias = normalizeDomain(aliasDraft);
     if (!alias) return;
-    if (!/^(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$/.test(alias)) {
+    if (
+      !/^(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$/.test(alias)
+    ) {
       toast.error("Enter a valid domain, such as example.com.");
       return;
     }
-    setAliases((current) => (current.includes(alias) ? current : [...current, alias]));
+    setAliases((current) =>
+      current.includes(alias) ? current : [...current, alias],
+    );
     setAliasDraft("");
   }
 
@@ -215,7 +223,12 @@ export function CreateSiteForm() {
           : type === "python"
             ? { ...shared, pythonVersion: values.pythonVersion }
             : type === "reverse-proxy"
-              ? { ...shared, reverseProxyUrl: values.reverseProxyUrl }
+              ? {
+                  ...shared,
+                  ...(values.reverseProxyUrl
+                    ? { reverseProxyUrl: values.reverseProxyUrl }
+                    : {}),
+                }
               : shared;
     try {
       const response = await fetch("/api/sites", {
@@ -228,7 +241,8 @@ export function CreateSiteForm() {
         throw new Error(
           result.error?.message || "The website could not be created.",
         );
-      for (const warning of (result.data.warnings as string[] | undefined) ?? [])
+      for (const warning of (result.data.warnings as string[] | undefined) ??
+        [])
         toast.warning(warning, { duration: 12000 });
       setValues(initial);
       router.push(
@@ -419,7 +433,9 @@ export function CreateSiteForm() {
                   <>
                     <div className="flex items-center gap-2">
                       <Globe2 className="h-4 w-4 shrink-0 text-panel-600" />
-                      <span className="text-slate-500">System domain:</span>{" "}
+                      <span className="text-slate-500">
+                        System domain:
+                      </span>{" "}
                       <b className="break-all">{previewDomain}</b>
                     </div>
                     <p className="mt-1 text-xs text-slate-500">
@@ -592,13 +608,17 @@ export function CreateSiteForm() {
                 <Input
                   id="reverseProxyUrl"
                   type="url"
-                  value={values.reverseProxyUrl}
+                  value={values.reverseProxyUrl || suggestedProxyUrl}
                   onChange={(e) => change("reverseProxyUrl", e.target.value)}
-                  placeholder="http://127.0.0.1:8000"
+                  placeholder={
+                    suggestedProxyUrl || "http://127.0.0.1:<site id>"
+                  }
                   required
                 />
                 <p className="mt-1.5 text-xs text-slate-400">
-                  HTTP and HTTPS targets are supported.
+                  Defaults to this site&apos;s reserved loopback port. Enter a
+                  different HTTP or HTTPS target only when the upstream lives
+                  elsewhere.
                 </p>
               </div>
             )}
