@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  Archive,
   Code2,
   Database,
   Files,
@@ -25,6 +26,7 @@ const sections = [
   ["file-manager", "Files", Files],
   ["git", "Git", GitBranch],
   ["terminal", "Terminal", SquareTerminal],
+  ["backups", "Backups", Archive],
 ] as const;
 
 const sectionGroups: Record<string, readonly string[]> = {

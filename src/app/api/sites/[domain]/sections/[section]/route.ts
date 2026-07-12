@@ -4,6 +4,7 @@ import { getCloudPanelClient } from "@/server/cloudpanel";
 import { assertWriteRequest } from "@/server/security/request";
 import { fail, ok } from "@/server/http";
 import {
+  backupRequestSchema,
   envRequestSchema,
   operationsRequestSchema,
   terminalRequestSchema,
@@ -25,7 +26,9 @@ export async function POST(
           ? envRequestSchema.parse(submitted)
           : section === "terminal"
             ? terminalRequestSchema.parse(submitted)
-            : submitted;
+            : section === "backups"
+              ? backupRequestSchema.parse(submitted)
+              : submitted;
     const data = await getCloudPanelClient().manageSiteSection(
       session.record.cloudPanel,
       decodeURIComponent(domain),

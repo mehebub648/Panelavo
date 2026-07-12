@@ -384,6 +384,202 @@ function dotenvOperationEnv(string $root): array
     return $env;
 }
 
+// --- Backups ------------------------------------------------------------------
+// On-demand, on-server snapshots of a site: a gzip tar of the application root
+// plus a clpctl gzip export of each selected database, under
+// /home/<user>/backups/<id>/ with a manifest. Snapshots are browsable and
+// downloadable through the File Manager (or SFTP/terminal for large ones), and
+// the newest PANELAVO_BACKUP_RETENTION are kept. A backup is created
+// atomically: any failed step removes the partial snapshot so a listed backup
+// is always complete.
+
+const PANELAVO_BACKUP_RETENTION = 10;
+
+function backupsBase(Site $site): string
+{
+    $base = '/home/' . $site->getUser() . '/backups';
+    if (!is_dir($base)) {
+        if (!mkdir($base, 0750, true)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+        chown($base, $site->getUser());
+        chgrp($base, $site->getUser());
+    }
+    $real = realpath($base);
+    if (!$real) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+    return $real;
+}
+
+function readBackupManifest(string $dir): ?array
+{
+    $data = json_decode((string) @file_get_contents($dir . '/manifest.json'), true);
+    return is_array($data) ? $data : null;
+}
+
+function safeBackupDir(Site $site, string $id): string
+{
+    if (!preg_match('/^[A-Za-z0-9-]{1,64}$/', $id)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+    $base = backupsBase($site);
+    $dir = realpath($base . '/' . $id);
+    if (!$dir || !str_starts_with($dir, $base . '/') || !is_dir($dir)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+    return $dir;
+}
+
+function siteDatabaseNames(Site $site): array
+{
+    return array_values(array_map(static fn($db) => (string) $db->getName(), $site->getDatabases()->toArray()));
+}
+
+function backupsSection(Site $site): array
+{
+    $base = backupsBase($site);
+    $items = [];
+    foreach (glob($base . '/*', GLOB_ONLYDIR) ?: [] as $dir) {
+        $manifest = readBackupManifest($dir);
+        if (!$manifest) continue;
+        $items[] = [
+            'id' => (string) ($manifest['id'] ?? basename($dir)),
+            'createdAt' => (string) ($manifest['createdAt'] ?? ''),
+            'bytes' => (int) ($manifest['bytes'] ?? 0),
+            'hasFiles' => !empty($manifest['files']),
+            'databases' => array_values(array_map(
+                static fn($db) => (string) ($db['name'] ?? ''),
+                (array) ($manifest['databases'] ?? []),
+            )),
+            'note' => (string) ($manifest['note'] ?? ''),
+        ];
+    }
+    usort($items, static fn($a, $b) => strcmp((string) $b['id'], (string) $a['id']));
+    return [
+        'path' => $base,
+        'relativePath' => 'backups',
+        'items' => $items,
+        'databases' => siteDatabaseNames($site),
+        'retention' => PANELAVO_BACKUP_RETENTION,
+    ];
+}
+
+// Keeps the newest PANELAVO_BACKUP_RETENTION complete snapshots and removes the
+// rest. Ids are UTC timestamps, so a reverse lexical sort is newest-first.
+function pruneBackups(Site $site): void
+{
+    $base = backupsBase($site);
+    $dirs = array_values(array_filter(
+        glob($base . '/*', GLOB_ONLYDIR) ?: [],
+        static fn($dir) => is_file($dir . '/manifest.json'),
+    ));
+    usort($dirs, static fn($a, $b) => strcmp($b, $a));
+    foreach (array_slice($dirs, PANELAVO_BACKUP_RETENTION) as $old) deleteTree($old);
+}
+
+function createBackup(Site $site, array $operation): array
+{
+    $base = backupsBase($site);
+    $id = gmdate('Ymd-His');
+    if (is_dir($base . '/' . $id)) $id .= '-' . bin2hex(random_bytes(2));
+    $dir = $base . '/' . $id;
+    if (!mkdir($dir, 0750)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+    chown($dir, $site->getUser());
+    chgrp($dir, $site->getUser());
+
+    $manifest = [
+        'id' => $id,
+        'createdAt' => gmdate(DATE_ATOM),
+        'siteType' => $site->getType(),
+        'root' => 'htdocs/' . trim((string) $site->getRootDirectory(), '/'),
+        'files' => null,
+        'databases' => [],
+        'bytes' => 0,
+    ];
+    $note = trim((string) ($operation['note'] ?? ''));
+    if ($note !== '') $manifest['note'] = substr($note, 0, 200);
+
+    // Any failure removes the partial snapshot: a listed backup is always whole.
+    $abort = static function (string $message) use ($dir): never {
+        deleteTree($dir);
+        respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED', 'message' => $message]);
+    };
+
+    if (($operation['files'] ?? true) !== false) {
+        $root = siteRootPath($site);
+        if (!is_dir($root)) $abort('The application root does not exist yet.');
+        $archive = $dir . '/files.tar.gz';
+        $result = runSiteCommand($site, ['tar', 'czf', $archive, '-C', $root, '.'], 900);
+        // GNU tar exit 1 means "files changed while reading" — the archive is
+        // still usable, so only a hard error (2+) fails the backup.
+        if ($result['code'] > 1) $abort('File archive failed: ' . (trim($result['stderr'] ?: $result['stdout']) ?: 'tar error'));
+        $manifest['files'] = ['archive' => 'files.tar.gz', 'bytes' => is_file($archive) ? (int) filesize($archive) : 0];
+    }
+
+    $requested = $operation['databases'] ?? null;
+    $siteDbs = siteDatabaseNames($site);
+    $selected = is_array($requested)
+        ? array_values(array_intersect($siteDbs, array_map('strval', $requested)))
+        : $siteDbs;
+    if ($selected) {
+        if (!mkdir($dir . '/databases', 0750)) $abort('The database backup directory could not be created.');
+        chown($dir . '/databases', $site->getUser());
+        chgrp($dir . '/databases', $site->getUser());
+        foreach ($selected as $name) {
+            if (!preg_match('/^[A-Za-z0-9_-]{1,64}$/', $name)) $abort('The database name "' . $name . '" is not supported for backup.');
+            $file = $dir . '/databases/' . $name . '.sql.gz';
+            $result = runSiteCommand($site, ['clpctl', 'db:export', '--databaseName=' . $name, '--file=' . $file], 900, true);
+            if ($result['code'] !== 0 || !is_file($file)) $abort('Database export failed for "' . $name . '": ' . (trim($result['stderr'] ?: $result['stdout']) ?: 'clpctl error'));
+            chown($file, $site->getUser());
+            chgrp($file, $site->getUser());
+            $manifest['databases'][] = ['name' => $name, 'file' => 'databases/' . $name . '.sql.gz', 'bytes' => (int) filesize($file)];
+        }
+    }
+
+    $manifest['bytes'] = (int) ($manifest['files']['bytes'] ?? 0)
+        + array_sum(array_map(static fn($db) => (int) $db['bytes'], $manifest['databases']));
+    if (@file_put_contents($dir . '/manifest.json', json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)) === false) {
+        $abort('The backup manifest could not be written.');
+    }
+    chown($dir . '/manifest.json', $site->getUser());
+    chgrp($dir . '/manifest.json', $site->getUser());
+    pruneBackups($site);
+    return backupsSection($site);
+}
+
+// Restores a snapshot over the live site. Files are extracted on top of the
+// current tree (existing files are overwritten; files created after the backup
+// are not removed). Databases are imported only into databases that still
+// belong to this site — a database deleted since the backup is skipped because
+// it cannot be recreated here without its credentials.
+function restoreBackup(Site $site, array $operation): void
+{
+    $dir = safeBackupDir($site, (string) ($operation['id'] ?? ''));
+    $manifest = readBackupManifest($dir);
+    if (!$manifest) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+    $scope = (string) ($operation['scope'] ?? 'all');
+    if (!in_array($scope, ['all', 'files', 'databases'], true)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+
+    if ($scope !== 'databases' && !empty($manifest['files'])) {
+        $archive = realpath($dir . '/files.tar.gz');
+        if ($archive && str_starts_with($archive, $dir . '/') && is_file($archive)) {
+            $root = siteRootPath($site);
+            if (!is_dir($root)) {
+                if (!mkdir($root, 0755, true)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                chown($root, $site->getUser());
+                chgrp($root, $site->getUser());
+            }
+            $result = runSiteCommand($site, ['tar', 'xzf', $archive, '-C', $root], 900);
+            if ($result['code'] !== 0) respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED', 'message' => 'File restore failed: ' . (trim($result['stderr'] ?: $result['stdout']) ?: 'tar error')]);
+        }
+    }
+
+    if ($scope !== 'files') {
+        $siteDbs = siteDatabaseNames($site);
+        foreach ((array) ($manifest['databases'] ?? []) as $db) {
+            $name = (string) ($db['name'] ?? '');
+            if (!in_array($name, $siteDbs, true)) continue;
+            $file = realpath($dir . '/' . (string) ($db['file'] ?? ''));
+            if (!$file || !str_starts_with($file, $dir . '/') || !is_file($file)) continue;
+            $result = runSiteCommand($site, ['clpctl', 'db:import', '--databaseName=' . $name, '--file=' . $file], 900, true);
+            if ($result['code'] !== 0) respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED', 'message' => 'Database restore failed for "' . $name . '": ' . (trim($result['stderr'] ?: $result['stdout']) ?: 'clpctl error')]);
+        }
+    }
+}
+
 function siteKeyPair(Site $site): array
 {
     $key = '/home/' . $site->getUser() . '/.ssh/id_ed25519';
@@ -2516,6 +2712,7 @@ try {
                 'git' => gitSection($site),
                 'actions' => actionsSection($site, $user),
                 'env' => envSection($site),
+                'backups' => backupsSection($site),
                 'terminal' => [
                     'user' => $site->getUser(),
                     'home' => '/home/' . $site->getUser(),
@@ -2540,7 +2737,7 @@ try {
             $operation = $input['operation'] ?? [];
             $action = (string) ($operation['action'] ?? '');
             $model = $updater = null;
-            if (!in_array($section, ['file-manager', 'logs', 'git', 'actions', 'env', 'terminal'], true) && !($section === 'users' && $action === 'generate-keypair')) {
+            if (!in_array($section, ['file-manager', 'logs', 'git', 'actions', 'env', 'terminal', 'backups'], true) && !($section === 'users' && $action === 'generate-keypair')) {
                 [$model, $updater] = siteModel($site);
             }
 
@@ -2857,6 +3054,18 @@ try {
             } elseif ($section === 'terminal' && $action === 'exec') {
                 $result = runTerminalCommand($site, (string) ($operation['command'] ?? ''), isset($operation['cwd']) ? (string) $operation['cwd'] : null);
                 respond(['ok' => true, 'data' => $result]);
+            } elseif ($section === 'backups') {
+                // File archiving and database export/import legitimately run for
+                // minutes, so backups take the same per-site lock as Operations
+                // to keep two heavy jobs from overlapping on one site. respond()
+                // exits, so the advisory lock is released when the bridge process
+                // ends — a crashed run can never wedge the site.
+                $lock = @fopen('/var/lock/panelavo-operations-' . $site->getUser() . '.lock', 'c');
+                if (!$lock || !flock($lock, LOCK_EX | LOCK_NB)) respond(['ok' => false, 'code' => 'OPERATION_BUSY']);
+                if ($action === 'create') respond(['ok' => true, 'data' => createBackup($site, $operation)]);
+                if ($action === 'delete') { deleteTree(safeBackupDir($site, (string) ($operation['id'] ?? ''))); respond(['ok' => true, 'data' => backupsSection($site)]); }
+                if ($action === 'restore') { restoreBackup($site, $operation); respond(['ok' => true, 'data' => backupsSection($site)]); }
+                respond(['ok' => false, 'code' => 'INVALID_ACTION']);
             } elseif ($section === 'file-manager') {
                 $base = fileManagerBase($site);
                 $relative = trim((string) ($operation['path'] ?? ''), '/');

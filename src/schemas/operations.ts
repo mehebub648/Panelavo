@@ -140,6 +140,30 @@ export const envRequestSchema = z
 
 export type EnvRequest = z.infer<typeof envRequestSchema>;
 
+const backupDatabaseName = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
+const backupId = z.string().regex(/^[A-Za-z0-9-]{1,64}$/);
+
+export const backupRequestSchema = z.union([
+  z
+    .object({
+      action: z.literal("create"),
+      files: z.boolean().optional(),
+      databases: z.array(backupDatabaseName).max(50).optional(),
+      note: z.string().max(200).optional(),
+    })
+    .strict(),
+  z.object({ action: z.literal("delete"), id: backupId }).strict(),
+  z
+    .object({
+      action: z.literal("restore"),
+      id: backupId,
+      scope: z.enum(["all", "files", "databases"]).optional(),
+    })
+    .strict(),
+]);
+
+export type BackupRequest = z.infer<typeof backupRequestSchema>;
+
 export const terminalRequestSchema = z
   .object({
     action: z.literal("exec"),

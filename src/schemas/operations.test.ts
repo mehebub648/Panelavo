@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  backupRequestSchema,
   envRequestSchema,
   operationsRequestSchema,
   terminalRequestSchema,
@@ -155,6 +156,59 @@ describe("terminalRequestSchema", () => {
         action: "exec",
         command: "ls",
         asRoot: true,
+      }),
+    ).toThrow();
+  });
+});
+
+describe("backupRequestSchema", () => {
+  it("accepts create, delete, and restore with valid identifiers", () => {
+    expect(
+      backupRequestSchema.parse({
+        action: "create",
+        files: true,
+        databases: ["app-db", "cache_db"],
+        note: "before migration",
+      }),
+    ).toEqual({
+      action: "create",
+      files: true,
+      databases: ["app-db", "cache_db"],
+      note: "before migration",
+    });
+    expect(
+      backupRequestSchema.parse({ action: "delete", id: "20260712-153000" }),
+    ).toEqual({ action: "delete", id: "20260712-153000" });
+    expect(
+      backupRequestSchema.parse({
+        action: "restore",
+        id: "20260712-153000",
+        scope: "files",
+      }),
+    ).toEqual({ action: "restore", id: "20260712-153000", scope: "files" });
+  });
+
+  it("rejects bad ids, database names, scopes, and extra fields", () => {
+    expect(() =>
+      backupRequestSchema.parse({ action: "delete", id: "../etc/passwd" }),
+    ).toThrow();
+    expect(() =>
+      backupRequestSchema.parse({
+        action: "create",
+        databases: ["bad name;drop"],
+      }),
+    ).toThrow();
+    expect(() =>
+      backupRequestSchema.parse({
+        action: "restore",
+        id: "20260712-153000",
+        scope: "everything",
+      }),
+    ).toThrow();
+    expect(() =>
+      backupRequestSchema.parse({
+        action: "create",
+        target: "/etc",
       }),
     ).toThrow();
   });

@@ -9,6 +9,7 @@ import { GitManager } from "@/components/sites/git-manager";
 import { ActionsManager } from "@/components/sites/actions-manager";
 import { EnvManager, type EnvSectionData } from "@/components/sites/env-manager";
 import { TerminalManager, type TerminalData } from "@/components/sites/terminal-manager";
+import { BackupsManager, type BackupsData } from "@/components/sites/backups-manager";
 import { getServerPublicIp } from "@/server/network/server-ip";
 import type { OperationsData } from "@/types/operations";
 
@@ -24,6 +25,7 @@ const titles: Record<string, string> = {
   "file-manager": "File Manager",
   git: "Git",
   terminal: "Terminal",
+  backups: "Backups",
   "cron-jobs": "Cron Jobs",
   logs: "Logs",
 };
@@ -39,6 +41,7 @@ const descriptions: Record<string, string> = {
   "file-manager": "Browse and organize files in the website root.",
   git: "Manage repository status, remotes, branches, commits, pulls, and pushes.",
   terminal: "Run commands as the website's system user, in the browser or over SSH.",
+  backups: "Snapshot and restore this website's files and databases.",
   "cron-jobs": "Create and review recurring background commands.",
   logs: "Inspect available log files and clear them when needed.",
 };
@@ -96,6 +99,26 @@ export default async function SiteSectionPage({
         <TerminalManager
           domain={domain}
           initialData={terminalData}
+          canWrite={canWrite}
+        />
+      </div>
+    );
+  }
+  if (section === "backups") {
+    const backups = await cloudPanel.getSiteSection(
+      session.record.cloudPanel,
+      domain,
+      "backups",
+    );
+    return (
+      <div className="w-full space-y-5">
+        <div>
+          <h2 className="text-2xl font-bold tracking-tight text-ink">Backups</h2>
+          <p className="mt-1 text-sm text-slate-500">{descriptions.backups}</p>
+        </div>
+        <BackupsManager
+          domain={domain}
+          initialData={backups as BackupsData}
           canWrite={canWrite}
         />
       </div>

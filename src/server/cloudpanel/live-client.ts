@@ -370,7 +370,7 @@ export class LiveCloudPanelClient implements CloudPanelClient {
         section,
         operation: input,
         panelAdmin,
-      }, section === "actions" ? 1_850_000 : section === "file-manager" ? 620_000 : section === "git" ? 300_000 : section === "terminal" ? 200_000 : section === "env" ? 60_000 : undefined);
+      }, section === "actions" || section === "backups" ? 1_850_000 : section === "file-manager" ? 620_000 : section === "git" ? 300_000 : section === "terminal" ? 200_000 : section === "env" ? 60_000 : undefined);
       if (!result.ok)
         throw siteSectionBridgeError(result);
       if (result.data !== undefined) return result.data;
