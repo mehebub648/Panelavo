@@ -34,6 +34,11 @@ export type SiteMeta = {
   aliases: string[];
   block: SubdomainBlockMode;
   redirectTo?: string;
+  // Linked-service sites: real CloudPanel reverse-proxy sites that the panel
+  // groups under a parent site (e.g. api.app.com under app.com). `parent` is
+  // the parent's lowercase system domain, `serviceName` the operator label.
+  parent?: string;
+  serviceName?: string;
 };
 
 type Store = { sites: Record<string, SiteMeta> };
@@ -75,6 +80,18 @@ export async function getAllSiteMeta() {
 
 export async function getSiteMeta(domain: string): Promise<SiteMeta | null> {
   return (await load()).sites[domain.toLowerCase()] ?? null;
+}
+
+/** Linked services of a parent site, keyed by their lowercase system domain. */
+export async function getLinkedServiceMeta(
+  parentDomain: string,
+): Promise<Record<string, SiteMeta>> {
+  const parent = parentDomain.toLowerCase();
+  return Object.fromEntries(
+    Object.entries((await load()).sites).filter(
+      ([, meta]) => meta.parent === parent,
+    ),
+  );
 }
 
 export async function setSiteMeta(domain: string, meta: SiteMeta) {

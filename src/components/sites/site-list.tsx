@@ -9,6 +9,7 @@ import {
   Clipboard,
   Code2,
   Container,
+  CornerDownRight,
   ExternalLink,
   FileCode2,
   Globe2,
@@ -136,20 +137,35 @@ export function SiteList({ user }: { user: CloudPanelUser }) {
       ] as SiteType[],
     [sites],
   );
-  const filtered = useMemo(
-    () =>
-      sites.filter(
-        (site) =>
-          (type === "all" || site.type === type) &&
-          [
-            site.domain,
-            site.siteUser,
-            site.application,
-            site.runtimeVersion,
-          ].some((value) => value?.toLowerCase().includes(query.toLowerCase())),
-      ),
-    [sites, query, type],
-  );
+  const filtered = useMemo(() => {
+    const matches = sites.filter(
+      (site) =>
+        (type === "all" || site.type === type) &&
+        [
+          site.domain,
+          site.siteUser,
+          site.application,
+          site.runtimeVersion,
+          site.meta?.serviceName,
+        ].some((value) => value?.toLowerCase().includes(query.toLowerCase())),
+    );
+    // Linked services render right under their parent; a service whose parent
+    // is filtered out (or not visible) stays as a top-level row.
+    const visible = new Set(matches.map((site) => site.domain.toLowerCase()));
+    const children = new Map<string, CloudPanelSite[]>();
+    const roots: CloudPanelSite[] = [];
+    for (const site of matches) {
+      const parent =
+        typeof site.meta?.parent === "string" ? site.meta.parent : "";
+      if (parent && visible.has(parent))
+        children.set(parent, [...(children.get(parent) ?? []), site]);
+      else roots.push(site);
+    }
+    return roots.flatMap((site) => [
+      site,
+      ...(children.get(site.domain.toLowerCase()) ?? []),
+    ]);
+  }, [sites, query, type]);
   async function copy(domain: string) {
     await navigator.clipboard.writeText(domain);
     setCopied(domain);
@@ -294,11 +310,21 @@ export function SiteList({ user }: { user: CloudPanelUser }) {
                   {filtered.map((site) => (
                     <tr key={site.id} className="group hover:bg-slate-50/50">
                       <td className="px-6 py-4">
-                        <div className="flex items-center gap-3">
+                        <div
+                          className={`flex items-center gap-3 ${site.meta?.parent ? "pl-6" : ""}`}
+                        >
+                          {site.meta?.parent && (
+                            <CornerDownRight className="h-4 w-4 shrink-0 text-slate-300" />
+                          )}
                           <SiteIcon type={site.type} className="h-9 w-9" />
                           <div>
-                            <p className="font-semibold text-slate-800">
+                            <p className="flex items-center gap-2 font-semibold text-slate-800">
                               {site.meta?.aliases?.[0] || site.domain}
+                              {site.meta?.parent && (
+                                <span className="rounded-md bg-rose-50 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-rose-500">
+                                  {site.meta?.serviceName || "service"}
+                                </span>
+                              )}
                             </p>
                             <p className="mt-0.5 text-[11px] text-slate-400">
                               {(site.meta?.aliases?.[0] && site.meta?.aliases?.[0] !== site.domain) ? `ID: ${site.domain}` : ""}
@@ -376,6 +402,11 @@ export function SiteList({ user }: { user: CloudPanelUser }) {
                         aria-label={`Copy ${site.meta?.aliases?.[0] || site.domain}`}
                       >
                         <span className="truncate font-semibold text-slate-800">{site.meta?.aliases?.[0] || site.domain}</span>
+                        {site.meta?.parent && (
+                          <span className="shrink-0 rounded-md bg-rose-50 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-rose-500">
+                            {site.meta?.serviceName || "service"}
+                          </span>
+                        )}
                         {copied === (site.meta?.aliases?.[0] || site.domain) ? (
                           <Check className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
                         ) : (

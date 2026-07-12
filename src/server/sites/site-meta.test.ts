@@ -7,6 +7,7 @@ import {
   allocateSiteId,
   changeSiteId,
   categoryById,
+  getLinkedServiceMeta,
   getSiteMeta,
   nextFreeId,
   removeSiteMeta,
@@ -82,6 +83,33 @@ describe("site meta", () => {
     ]);
     await removeSiteMeta("SITE-20000.example.com");
     expect(await getSiteMeta("site-20000.example.com")).toBeNull();
+  });
+
+  it("lists linked services by parent domain, case-insensitively", async () => {
+    await setSiteMeta("site-20000.example.com", {
+      id: 20000,
+      category: "client",
+      aliases: [],
+      block: "none",
+    });
+    await setSiteMeta("site-20001.example.com", {
+      id: 20001,
+      category: "client",
+      aliases: ["api.customer.com"],
+      block: "none",
+      parent: "site-20000.example.com",
+      serviceName: "api",
+    });
+    await setSiteMeta("site-20002.example.com", {
+      id: 20002,
+      category: "client",
+      aliases: [],
+      block: "none",
+    });
+    const services = await getLinkedServiceMeta("SITE-20000.example.COM");
+    expect(Object.keys(services)).toEqual(["site-20001.example.com"]);
+    expect(services["site-20001.example.com"].serviceName).toBe("api");
+    expect(await getLinkedServiceMeta("site-20002.example.com")).toEqual({});
   });
 
   it("moves a reservation to a new port and re-categorizes it", async () => {

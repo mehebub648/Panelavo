@@ -134,6 +134,30 @@ export const createSiteSchema = z.discriminatedUnion("type", [
 
 export type ValidCreateSiteInput = z.infer<typeof createSiteSchema>;
 
+// Linked services are reverse-proxy sites the panel creates under a parent
+// site: the caller only names the service and picks the loopback port the
+// parent's stack exposes — domain, site user, and password stay panel-derived.
+export const createLinkedServiceSchema = z
+  .object({
+    serviceName: z
+      .string()
+      .trim()
+      .toLowerCase()
+      .min(1, "Name the service, for example api or auth.")
+      .max(32)
+      .regex(
+        /^[a-z][a-z0-9-]*$/,
+        "Use lowercase letters, digits, and dashes, starting with a letter.",
+      ),
+    targetPort: z.coerce.number().int().min(1024).max(65535),
+    aliases: aliasList,
+  })
+  .strict();
+
+export type ValidCreateLinkedServiceInput = z.infer<
+  typeof createLinkedServiceSchema
+>;
+
 export const updateSiteSchema = z
   .object({
     rootDirectory: z

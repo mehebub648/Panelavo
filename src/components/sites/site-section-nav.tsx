@@ -15,6 +15,7 @@ import {
   Zap,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { SERVICE_SECTIONS } from "@/components/sites/site-sections";
 
 const sections = [
   ["settings", "Settings", Settings],
@@ -35,13 +36,22 @@ const sectionGroups: Record<string, readonly string[]> = {
   security: ["security", "users"],
 };
 
-export function SiteSectionNav({ domain }: { domain: string }) {
+export function SiteSectionNav({
+  domain,
+  serviceSite = false,
+}: {
+  domain: string;
+  serviceSite?: boolean;
+}) {
   const pathname = usePathname();
   const base = `/sites/${encodeURIComponent(domain)}`;
+  const visible = serviceSite
+    ? sections.filter(([path]) => SERVICE_SECTIONS.has(path))
+    : sections;
   return (
     <div className="-mx-4 overflow-x-auto px-4 sm:-mx-8 sm:px-8 pb-1">
       <nav className="flex min-w-max gap-2 p-1 rounded-2xl bg-slate-100/50 backdrop-blur-sm border border-slate-200/60" aria-label={`${domain} tools`}>
-        {sections.map(([path, label, Icon]) => {
+        {visible.map(([path, label, Icon]) => {
           const href = `${base}/${path}`;
           const active = (sectionGroups[path] ?? [path]).some(
             (section) => pathname === `${base}/${section}`,

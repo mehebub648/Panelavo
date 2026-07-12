@@ -140,6 +140,10 @@ CloudPanel's configured upstream/app port is the required website entry port. Op
 
 New reverse-proxy sites default their upstream to `http://127.0.0.1:<site-id>`, matching the reserved CloudPanel port. Operators can still replace it with another HTTP or HTTPS target when required.
 
+### Linked services
+
+A single application often exposes several processes on different ports — an API, an auth service, a websocket gateway. The parent website's Settings tab can expose each additional loopback port as a **linked service**: a real CloudPanel reverse-proxy site with its own system domain, custom domains, and SSL, created with a panel-derived id and site user (its generated site-user password is discarded, since nothing runs under that user). Linked services appear nested under their parent in the website list, keep only proxy-relevant management sections (settings, domains, vhost, security), and never target a port reserved by a different website. Deleting a parent is blocked while its linked services exist; each service is deleted individually and never affects the parent.
+
 | Configured site | Root-level contracts and managed capabilities                                                                                                                                                                                                                                           |
 | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Node.js         | `package.json`, one unambiguous npm/pnpm/Yarn/Bun lockfile choice, production scripts, and PM2 ecosystem/process actions.                                                                                                                                                               |

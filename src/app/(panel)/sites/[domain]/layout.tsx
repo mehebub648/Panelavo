@@ -36,7 +36,19 @@ export default async function SiteLayout({
             </span>
             <div className="min-w-0">
               <p className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                Website
+                {meta?.parent ? (
+                  <>
+                    Linked service{meta.serviceName ? ` · ${meta.serviceName}` : ""} of{" "}
+                    <Link
+                      href={`/sites/${encodeURIComponent(meta.parent)}/settings`}
+                      className="text-panel-600 hover:underline"
+                    >
+                      {meta.parent}
+                    </Link>
+                  </>
+                ) : (
+                  "Website"
+                )}
               </p>
               <h1 className="truncate text-2xl font-extrabold tracking-tight text-ink drop-shadow-sm">
                 {displayDomain}
@@ -58,7 +70,7 @@ export default async function SiteLayout({
           </a>
         </Button>
       </div>
-      <SiteSectionNav domain={domain} />
+      <SiteSectionNav domain={domain} serviceSite={Boolean(meta?.parent)} />
       {children}
     </div>
   );

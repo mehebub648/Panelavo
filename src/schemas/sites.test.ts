@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { createSiteSchema, normalizeDomain, updateSiteSchema } from "./sites";
+import {
+  createLinkedServiceSchema,
+  createSiteSchema,
+  normalizeDomain,
+  updateSiteSchema,
+} from "./sites";
 
 const shared = {
   type: "static" as const,
@@ -82,6 +87,30 @@ describe("site validation", () => {
         type: "reverse-proxy",
       }).success,
     ).toBe(true);
+  });
+
+  it("accepts a linked service with a safe name and port", () => {
+    const parsed = createLinkedServiceSchema.parse({
+      serviceName: "API",
+      targetPort: "20001",
+      aliases: ["Api.Example.COM"],
+    });
+    expect(parsed).toEqual({
+      serviceName: "api",
+      targetPort: 20001,
+      aliases: ["api.example.com"],
+    });
+  });
+
+  it.each([
+    { serviceName: "bad name", targetPort: 20001 },
+    { serviceName: "api;id", targetPort: 20001 },
+    { serviceName: "9api", targetPort: 20001 },
+    { serviceName: "api", targetPort: 80 },
+    { serviceName: "api", targetPort: 70000 },
+    { serviceName: "api", targetPort: 20001, domain: "attacker.com" },
+  ])("rejects unsafe linked-service input %j", (input) => {
+    expect(createLinkedServiceSchema.safeParse(input).success).toBe(false);
   });
 
   it("keeps updated document roots inside the website htdocs directory", () => {

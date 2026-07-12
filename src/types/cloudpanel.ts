@@ -53,7 +53,13 @@ export interface CloudPanelSite {
   status?: "active" | "inactive" | "unknown";
   createdAt?: string;
   url: string;
-  meta?: { aliases?: string[] } & Record<string, unknown>;
+  meta?: {
+    aliases?: string[];
+    // Set on linked-service sites: the parent's system domain and the
+    // operator-chosen service label (see src/server/sites/site-meta.ts).
+    parent?: string;
+    serviceName?: string;
+  } & Record<string, unknown>;
 }
 
 export interface SiteCreationOptions {

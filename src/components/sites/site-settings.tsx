@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { LoaderCircle, Save, Trash2, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
@@ -148,6 +149,24 @@ export function SiteSettings({
         </p>
       </div>
 
+      {site.meta?.parent && (
+        <div className="rounded-xl border border-panel-200/60 bg-panel-50/40 p-4 text-sm text-slate-600">
+          This website is a linked service
+          {site.meta.serviceName ? (
+            <> (<span className="font-semibold">{site.meta.serviceName}</span>)</>
+          ) : null}{" "}
+          of{" "}
+          <Link
+            href={`/sites/${encodeURIComponent(site.meta.parent)}/settings`}
+            className="font-semibold text-panel-700 hover:underline"
+          >
+            {site.meta.parent}
+          </Link>
+          . It proxies one port of that website&apos;s stack — files, databases,
+          and operations are managed on the parent.
+        </div>
+      )}
+
       {error && (
         <div className="rounded-xl border border-red-200/60 bg-red-50/40 p-4 text-sm text-red-600 animate-in fade-in zoom-in-95">
           <div className="flex items-center gap-2 font-bold"><AlertTriangle className="h-4 w-4" /> Error</div>
@@ -276,9 +295,13 @@ export function SiteSettings({
       {user.canCreateSites && (
         <section className="flex flex-col gap-4 rounded-2xl border border-red-200/60 bg-gradient-to-br from-red-50/50 to-white/50 backdrop-blur-sm p-5 sm:flex-row sm:items-center sm:justify-between sm:p-6 shadow-sm">
           <div>
-            <h3 className="font-bold text-red-700">Delete website</h3>
+            <h3 className="font-bold text-red-700">
+              {site.meta?.parent ? "Delete linked service" : "Delete website"}
+            </h3>
             <p className="mt-1 text-sm text-slate-600">
-              Permanently removes its configuration, databases, and files.
+              {site.meta?.parent
+                ? "Removes this service's domain and proxy configuration. The parent website is not affected."
+                : "Permanently removes its configuration, databases, and files."}
             </p>
           </div>
           <Button

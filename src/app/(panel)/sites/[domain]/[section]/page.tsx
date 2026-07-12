@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { requireUserOrRedirect } from "@/server/auth/require-user";
 import { getCloudPanelClient } from "@/server/cloudpanel";
 import { SiteSettings } from "@/components/sites/site-settings";
+import { LinkedServices } from "@/components/sites/linked-services";
 import { DomainsManager } from "@/components/sites/domains-manager";
 import { SiteSectionManager } from "@/components/sites/site-section-manager";
 import { GitManager } from "@/components/sites/git-manager";
@@ -11,6 +12,8 @@ import { EnvManager, type EnvSectionData } from "@/components/sites/env-manager"
 import { TerminalManager, type TerminalData } from "@/components/sites/terminal-manager";
 import { BackupsManager, type BackupsData } from "@/components/sites/backups-manager";
 import { getServerPublicIp } from "@/server/network/server-ip";
+import { getSiteMeta } from "@/server/sites/site-meta";
+import { SERVICE_SECTIONS } from "@/components/sites/site-sections";
 import type { OperationsData } from "@/types/operations";
 
 const titles: Record<string, string> = {
@@ -54,6 +57,10 @@ export default async function SiteSectionPage({
   const { domain: encodedDomain, section } = await params;
   if (!titles[section]) notFound();
   const domain = decodeURIComponent(encodedDomain);
+  // Linked services are proxy-only sites: everything operational (files,
+  // databases, operations, backups, …) lives on their parent website.
+  const siteMeta = await getSiteMeta(domain);
+  if (siteMeta?.parent && !SERVICE_SECTIONS.has(section)) notFound();
   const session = await requireUserOrRedirect({ allowDuringUpdate: true });
   const cloudPanel = getCloudPanelClient();
   const canWrite =
@@ -62,11 +69,12 @@ export default async function SiteSectionPage({
     const sites = await cloudPanel.listSites(session.record.cloudPanel);
     const site = sites.find((item) => item.domain === domain);
     if (!site) notFound();
-    const siteMeta = await import("@/server/sites/site-meta").then(m => m.getSiteMeta(domain));
     const mergedSite = siteMeta ? { ...site, meta: siteMeta } : site;
+    const isService = Boolean(siteMeta?.parent);
     // Environment values are secrets: they are only loaded and rendered for
-    // users who can already manage this website's files.
-    const env = canWrite
+    // users who can already manage this website's files. Linked services run
+    // no app of their own, so they get no environment section.
+    const env = canWrite && !isService
       ? await cloudPanel
           .getSiteSection(session.record.cloudPanel, domain, "env")
           .catch(() => null)
@@ -74,6 +82,9 @@ export default async function SiteSectionPage({
     return (
       <div className="w-full space-y-5">
         <SiteSettings initialSite={mergedSite} user={session.user} />
+        {siteMeta && !isService ? (
+          <LinkedServices parentDomain={domain} canWrite={canWrite} />
+        ) : null}
         {env ? (
           <EnvManager
             domain={domain}

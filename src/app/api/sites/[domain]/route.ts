@@ -4,7 +4,13 @@ import { getCloudPanelClient } from "@/server/cloudpanel";
 import { updateSiteSchema } from "@/schemas/sites";
 import { assertWriteRequest } from "@/server/security/request";
 import { fail, ok } from "@/server/http";
-import { changeSiteId, getSiteMeta } from "@/server/sites/site-meta";
+import {
+  changeSiteId,
+  getLinkedServiceMeta,
+  getSiteMeta,
+  removeSiteMeta,
+} from "@/server/sites/site-meta";
+import { AppError } from "@/server/cloudpanel/errors";
 import { autoDeleteDns } from "@/server/network/auto-dns";
 import { getServerPublicIp } from "@/server/network/server-ip";
 
@@ -40,11 +46,25 @@ export async function DELETE(request: NextRequest, context: Context) {
     const { domain } = await context.params;
     const decodedDomain = decodeURIComponent(domain);
     const meta = await getSiteMeta(decodedDomain);
-    
+    // Deleting a parent never cascades into its linked-service sites: the
+    // operator detaches or deletes each service first, deliberately.
+    const services = await getLinkedServiceMeta(decodedDomain);
+    const serviceNames = Object.values(services).map(
+      (service) => service.serviceName ?? "service",
+    );
+    if (serviceNames.length)
+      throw new AppError(
+        "INVALID_REQUEST",
+        `This website still has linked services (${serviceNames.join(", ")}). Delete them from the Linked services section first.`,
+        409,
+      );
+
     await getCloudPanelClient().deleteSite(
       session.record.cloudPanel,
       decodedDomain,
     );
+    // Free the reserved id/port so it can be reallocated.
+    await removeSiteMeta(decodedDomain).catch(() => undefined);
 
     // Background DNS cleanup
     void (async () => {
