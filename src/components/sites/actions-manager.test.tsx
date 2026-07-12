@@ -166,4 +166,50 @@ describe("ActionsManager", () => {
       within(dialog).getByText(/Named volumes are preserved/i),
     ).toBeInTheDocument();
   });
+
+  it("collects missing Compose values without repeating raw logs on actions", async () => {
+    const raw: RawOperationsData = {
+      type: "reverse-proxy",
+      path: "/home/site/htdocs/example.test",
+      permissions: { manage: true, docker: true },
+      hasCompose: true,
+      compose: {
+        file: "compose.yaml",
+        cliAvailable: true,
+        pluginAvailable: true,
+        daemonAvailable: true,
+        configValid: false,
+        detail:
+          'level=warning msg="The \\"HOST_DATA_DIR\\" variable is not set. Defaulting to a blank string."',
+      },
+    };
+    const initialData = normalizeOperationsData(raw, { typeOverride: "docker" });
+    vi.mocked(fetch).mockResolvedValue({
+      ok: true,
+      json: async () => ({ success: true, data: {} }),
+    } as Response);
+
+    render(<ActionsManager domain="example.test" initialData={initialData} />);
+
+    expect(screen.queryByText(/level=warning/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Resolve the Compose validation check above."),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Add missing values" }));
+    const dialog = screen.getByRole("dialog", {
+      name: "Add missing environment values",
+    });
+    fireEvent.change(within(dialog).getByLabelText("HOST_DATA_DIR"), {
+      target: { value: "/home/site/data" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save and recheck" }));
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    const [, request] = vi.mocked(fetch).mock.calls[0];
+    expect(JSON.parse(String(request?.body))).toEqual({
+      action: "upsert",
+      entries: [{ key: "HOST_DATA_DIR", value: "/home/site/data" }],
+    });
+    expect(mocks.refresh).toHaveBeenCalled();
+  });
 });

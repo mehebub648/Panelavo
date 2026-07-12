@@ -84,6 +84,7 @@ export type ComposeCapability = {
   portDetail?: string;
   additionalPorts?: ServicePort[];
   detail?: string;
+  missingEnvVariables?: string[];
   warnings?: string[];
 };
 

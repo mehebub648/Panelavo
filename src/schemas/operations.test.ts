@@ -86,6 +86,32 @@ describe("operationsRequestSchema", () => {
 });
 
 describe("envRequestSchema", () => {
+  it("accepts a bounded quick-fix upsert", () => {
+    expect(
+      envRequestSchema.parse({
+        action: "upsert",
+        entries: [{ key: "HOST_DATA_DIR", value: "/srv/app/data" }],
+      }),
+    ).toEqual({
+      action: "upsert",
+      entries: [{ key: "HOST_DATA_DIR", value: "/srv/app/data" }],
+    });
+  });
+
+  it("rejects empty or invalid quick-fix entries", () => {
+    expect(() =>
+      envRequestSchema.parse({ action: "upsert", entries: [] }),
+    ).toThrow();
+    expect(() =>
+      envRequestSchema.parse({
+        action: "upsert",
+        entries: [{ key: "BAD KEY", value: "value" }],
+      }),
+    ).toThrow();
+  });
+});
+
+describe("envRequestSchema", () => {
   it("accepts a save to an allow-listed dotenv file", () => {
     expect(
       envRequestSchema.parse({

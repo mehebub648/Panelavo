@@ -16,6 +16,8 @@ import {
   CircleX,
   Container,
   Database,
+  Eye,
+  EyeOff,
   FileCog,
   Hammer,
   Layers3,
@@ -38,6 +40,7 @@ import {
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import type {
   DeploymentPlan,
@@ -202,6 +205,11 @@ export function ActionsManager({
   const [confirmation, setConfirmation] = useState<ConfirmationRequest | null>(
     null,
   );
+  const [envFixValues, setEnvFixValues] = useState<Record<string, string> | null>(
+    null,
+  );
+  const [showEnvFixValues, setShowEnvFixValues] = useState(false);
+  const [savingEnvFix, setSavingEnvFix] = useState(false);
   const [isRefreshing, startRefresh] = useTransition();
   const operationInFlightRef = useRef(false);
   const outputRef = useRef<HTMLElement>(null);
@@ -226,6 +234,50 @@ export function ActionsManager({
   const visibleGroups = data.groups.filter((group) => group.actions.length);
   const pm2Available = Boolean(data.tools?.pm2?.available ?? data.pm2Available);
   const canControlPm2 = Boolean(data.permissions?.manage && pm2Available);
+  const missingEnvVariables = data.compose?.missingEnvVariables ?? [];
+
+  function openEnvFix() {
+    setEnvFixValues(
+      Object.fromEntries(missingEnvVariables.map((key) => [key, ""])),
+    );
+    setShowEnvFixValues(false);
+  }
+
+  async function saveEnvFix(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!envFixValues || savingEnvFix) return;
+    const entries = Object.entries(envFixValues).map(([key, value]) => ({
+      key,
+      value: value.trim(),
+    }));
+    if (entries.some((entry) => !entry.value)) return;
+    setSavingEnvFix(true);
+    try {
+      const response = await fetch(
+        `/api/sites/${encodeURIComponent(domain)}/sections/env`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ action: "upsert", entries }),
+        },
+      );
+      const result = (await response.json().catch(() => null)) as {
+        success?: boolean;
+        error?: { message?: string };
+      } | null;
+      if (!response.ok || !result?.success)
+        throw new Error(result?.error?.message || "The values could not be saved.");
+      setEnvFixValues(null);
+      toast.success("Missing environment values saved to .env.");
+      startRefresh(() => router.refresh());
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "The values could not be saved.",
+      );
+    } finally {
+      setSavingEnvFix(false);
+    }
+  }
 
   function focusLatestOutput() {
     window.requestAnimationFrame(() => outputRef.current?.focus());
@@ -604,6 +656,22 @@ export function ActionsManager({
                           )}
                       </div>
                     )}
+                    {check.id === "compose-config" &&
+                      check.status === "blocked" &&
+                      missingEnvVariables.length > 0 &&
+                      data.permissions?.manage && (
+                        <div className="mt-3">
+                          <Button
+                            type="button"
+                            size="sm"
+                            disabled={busy}
+                            onClick={openEnvFix}
+                          >
+                            <FileCog className="h-4 w-4" aria-hidden="true" />
+                            Add missing values
+                          </Button>
+                        </div>
+                      )}
                   </div>
                 </div>
               </li>
@@ -1107,13 +1175,14 @@ export function ActionsManager({
               const Icon = ICONS[action.iconKey];
               const runnable = isActionReady(action.status);
               const actionBusy = running === key;
+              const showBlockedReason = !runnable && blockingChecks.length === 0;
               return (
                 <button
                   key={key}
                   type="button"
                   disabled={busy || !runnable}
                   aria-busy={actionBusy}
-                  aria-describedby={!runnable ? reasonId : undefined}
+                  aria-describedby={showBlockedReason ? reasonId : undefined}
                   onClick={(event) =>
                     requestAction(action, event.currentTarget)
                   }
@@ -1180,7 +1249,7 @@ export function ActionsManager({
                         </>
                       )}
                     </span>
-                    {!runnable && (
+                    {showBlockedReason && (
                       <span
                         id={reasonId}
                         className="mt-2 block rounded-lg bg-red-50 px-2.5 py-2 text-xs leading-5 text-red-700"
@@ -1355,6 +1424,94 @@ export function ActionsManager({
               run();
             }}
           />
+        </div>
+      )}
+
+      {envFixValues && (
+        <div
+          className="fixed inset-0 z-[100] grid place-items-center bg-slate-950/40 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="compose-env-fix-title"
+          onKeyDown={(event) => {
+            if (event.key === "Escape" && !savingEnvFix) setEnvFixValues(null);
+          }}
+        >
+          <form
+            className="max-h-[90vh] w-full max-w-lg overflow-auto rounded-2xl bg-white p-6 shadow-2xl"
+            onSubmit={saveEnvFix}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 id="compose-env-fix-title" className="text-lg font-bold text-ink">
+                  Add missing environment values
+                </h3>
+                <p className="mt-1 text-sm text-slate-500">
+                  Panelavo will add only these keys to <code>.env</code>. Existing
+                  settings and comments are preserved.
+                </p>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setShowEnvFixValues((current) => !current)}
+              >
+                {showEnvFixValues ? (
+                  <EyeOff className="h-4 w-4" aria-hidden="true" />
+                ) : (
+                  <Eye className="h-4 w-4" aria-hidden="true" />
+                )}
+                {showEnvFixValues ? "Hide" : "Show"}
+              </Button>
+            </div>
+            <div className="mt-5 space-y-4">
+              {Object.entries(envFixValues).map(([key, value], index) => (
+                <label key={key} className="block">
+                  <span className="mb-1.5 block text-sm font-semibold text-slate-700">
+                    {key}
+                  </span>
+                  <Input
+                    type={showEnvFixValues ? "text" : "password"}
+                    value={value}
+                    required
+                    autoFocus={index === 0}
+                    autoComplete="off"
+                    placeholder={`Enter a value for ${key}`}
+                    disabled={savingEnvFix}
+                    onChange={(event) =>
+                      setEnvFixValues((current) =>
+                        current
+                          ? { ...current, [key]: event.target.value }
+                          : current,
+                      )
+                    }
+                  />
+                </label>
+              ))}
+            </div>
+            <div className="mt-6 flex justify-end gap-3">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={savingEnvFix}
+                onClick={() => setEnvFixValues(null)}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                disabled={
+                  savingEnvFix || Object.values(envFixValues).some((value) => !value.trim())
+                }
+              >
+                {savingEnvFix && (
+                  <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
+                )}
+                Save and recheck
+              </Button>
+            </div>
+          </form>
         </div>
       )}
     </div>

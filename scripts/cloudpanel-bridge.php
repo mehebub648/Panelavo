@@ -3105,8 +3105,8 @@ try {
                 if ($action === 'deploy') $run['plan'] = $plan;
                 if ($action === 'deploy' || count($results) > 1) $run['steps'] = $results;
                 respond(['ok' => true, 'data' => ['run' => $run] + actionsSection($site, $user)]);
-            } elseif ($section === 'env' && $action === 'save') {
-                $file = (string) ($operation['file'] ?? '.env');
+            } elseif ($section === 'env' && in_array($action, ['save', 'upsert'], true)) {
+                $file = $action === 'upsert' ? '.env' : (string) ($operation['file'] ?? '.env');
                 if (!in_array($file, PANELAVO_ENV_FILES, true)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
                 $entries = validateEnvEntries($operation['entries'] ?? null);
                 $root = siteRootPath($site);
@@ -3118,6 +3118,7 @@ try {
                 $path = $root . '/' . $file;
                 if (is_link($path) || (file_exists($path) && !is_file($path))) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
                 $existing = is_file($path) && filesize($path) <= 262144 ? (string) @file_get_contents($path) : '';
+                if ($action === 'upsert') $entries = array_replace(parseEnvContent($existing), $entries);
                 if (@file_put_contents($path, renderEnvFile($existing, $entries)) === false) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
                 @chmod($path, 0640);
                 chown($path, $site->getUser());

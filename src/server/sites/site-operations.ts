@@ -36,6 +36,7 @@ function composeConfigFailure(detail?: string) {
     return {
       detail: `Compose cannot validate because ${missingVariables.length === 1 ? "an environment variable is" : `${missingVariables.length} environment variables are`} missing: ${names}.`,
       remediation: `Open this website's Environment section and add values for ${names} to .env, then refresh the preflight. If a value is optional, give it a safe default in the Compose file.`,
+      missingVariables,
     };
   }
 
@@ -43,6 +44,7 @@ function composeConfigFailure(detail?: string) {
     detail: detail || "The Compose configuration could not be validated.",
     remediation:
       "Review the Compose file and website environment values, then refresh the preflight.",
+    missingVariables: [],
   };
 }
 
@@ -1031,9 +1033,9 @@ function actionGroups(
         ? ["Docker Compose v2 is unavailable."]
         : []),
       ...(raw.compose?.configValid !== true
-        ? [raw.compose?.detail || "The Compose configuration is invalid."]
+        ? ["Resolve the Compose validation check above."]
         : []),
-      ...(raw.compose?.safe !== true
+      ...(raw.compose?.configValid === true && raw.compose?.safe !== true
         ? [
             raw.compose?.detail ||
               "The Compose configuration failed the host safety policy.",
@@ -1629,7 +1631,18 @@ export function normalizeOperationsData(
     manage: Boolean(raw.permissions?.manage || options.panelAdmin),
     docker: Boolean(raw.permissions?.docker),
   };
-  const normalizedRaw = { ...raw, type, permissions };
+  const composeFailure = composeConfigFailure(raw.compose?.detail);
+  const normalizedRaw = {
+    ...raw,
+    type,
+    permissions,
+    compose: raw.compose
+      ? {
+          ...raw.compose,
+          missingEnvVariables: composeFailure.missingVariables,
+        }
+      : undefined,
+  };
   const architecture = detections(normalizedRaw, type);
   const checks = preflightChecks(normalizedRaw, type);
   const blocked = checks.some((item) => item.blocker);

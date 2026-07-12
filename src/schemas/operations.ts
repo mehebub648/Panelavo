@@ -145,7 +145,7 @@ const envEntrySchema = z
   })
   .strict();
 
-export const envRequestSchema = z
+const saveEnvRequestSchema = z
   .object({
     action: z.literal("save"),
     file: z.enum(managedEnvFiles),
@@ -153,6 +153,18 @@ export const envRequestSchema = z
     syncProfile: z.boolean().optional(),
   })
   .strict();
+
+const upsertEnvRequestSchema = z
+  .object({
+    action: z.literal("upsert"),
+    entries: z.array(envEntrySchema).min(1).max(50),
+  })
+  .strict();
+
+export const envRequestSchema = z.discriminatedUnion("action", [
+  saveEnvRequestSchema,
+  upsertEnvRequestSchema,
+]);
 
 export type EnvRequest = z.infer<typeof envRequestSchema>;
 
