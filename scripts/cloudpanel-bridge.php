@@ -1267,6 +1267,16 @@ function composePortRouting(?int $expected, array $config): array
 
 function remapResolvedCompose(array $config, array $routing): array
 {
+    // Compose's JSON renderer emits `ipam: null` for networks without custom
+    // IPAM settings, but its loader requires ipam to be a mapping when the
+    // resolved JSON is used as a configuration file. Drop only that synthetic
+    // null so the ephemeral model can be loaded again without changing any
+    // operator-defined network settings.
+    foreach ((array) ($config['networks'] ?? []) as $name => $network) {
+        if (is_array($network) && array_key_exists('ipam', $network) && $network['ipam'] === null) {
+            unset($config['networks'][$name]['ipam']);
+        }
+    }
     // Rootful Compose is always forced onto loopback at runtime, including
     // secondary service ports. The source file remains untouched.
     foreach ((array) ($config['services'] ?? []) as $name => $service) {
@@ -2549,6 +2559,9 @@ function runComposePortSelfTest(): never
             'depends_on' => ['backend' => ['condition' => 'service_healthy']],
             'healthcheck' => ['test' => ['CMD', 'wget', '--spider', 'http://127.0.0.1:3000/login']],
         ],
+    ], 'networks' => [
+        'default' => ['name' => 'example_default', 'ipam' => null],
+        'private' => ['name' => 'example_private', 'ipam' => ['driver' => 'default']],
     ]];
     $routing = composePortRouting(24001, $config);
     $assert = static function (bool $condition, string $message): void {
@@ -2563,7 +2576,10 @@ function runComposePortSelfTest(): never
     $assert((int) ($frontendPort['published'] ?? 0) === 24001, 'frontend should publish the CloudPanel port');
     $assert(($frontendPort['host_ip'] ?? '') === '127.0.0.1', 'entry port should remain private');
     $assert((int) ($runtime['services']['backend']['ports'][0]['published'] ?? 0) === 4000, 'secondary service port should be preserved');
+    $assert(!array_key_exists('ipam', $runtime['networks']['default']), 'synthetic null network IPAM should be removed');
+    $assert(($runtime['networks']['private']['ipam']['driver'] ?? '') === 'default', 'configured network IPAM should be preserved');
     $assert((int) ($config['services']['frontend']['ports'][0]['published'] ?? 0) === 3000, 'source config must not be mutated');
+    $assert(array_key_exists('ipam', $config['networks']['default']), 'source network config must not be mutated');
 
     $ambiguous = composePortRouting(24001, ['services' => [
         'alpha' => ['ports' => [['target' => 8000, 'published' => '8000']]],
