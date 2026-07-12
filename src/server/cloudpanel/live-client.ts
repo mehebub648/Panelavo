@@ -173,7 +173,11 @@ export function siteSectionBridgeError(result: BridgeResult) {
     return new AppError("FORBIDDEN", "This operation requires a Super Admin.", 403);
   if (result.code === "INVALID_REQUEST" || result.code === "INVALID_ACTION")
     return new AppError("INVALID_REQUEST", "The website operation is not valid.", 400);
-  return new AppError("SITE_UPDATE_FAILED", "CloudPanel could not apply the change.", 502);
+  // The bridge often computes a precise, operator-facing reason (e.g. a failed
+  // tar/db export, a missing app root) and returns it as SITE_UPDATE_FAILED.
+  // Surface that detail instead of collapsing every failure to a generic 502.
+  const detail = result.message?.trim();
+  return new AppError("SITE_UPDATE_FAILED", detail || "CloudPanel could not apply the change.", 502);
 }
 
 export class LiveCloudPanelClient implements CloudPanelClient {

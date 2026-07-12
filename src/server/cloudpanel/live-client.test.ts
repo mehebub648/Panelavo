@@ -40,6 +40,22 @@ describe("siteSectionBridgeError", () => {
     expect(error.message).toContain("already running");
   });
 
+  it("surfaces the bridge's specific reason for a failed change", () => {
+    const error = siteSectionBridgeError({
+      ok: false,
+      code: "SITE_UPDATE_FAILED",
+      message: 'Database export failed for "app": clpctl error',
+    });
+    expect(error.status).toBe(502);
+    expect(error.message).toContain("Database export failed");
+  });
+
+  it("falls back to a generic message when the bridge sends no detail", () => {
+    const error = siteSectionBridgeError({ ok: false, code: "SITE_UPDATE_FAILED" });
+    expect(error.status).toBe(502);
+    expect(error.message).toBe("CloudPanel could not apply the change.");
+  });
+
   it("does not expose unsafe Compose details returned by the bridge", () => {
     const error = siteSectionBridgeError({
       ok: false,
