@@ -19,6 +19,33 @@ type NormalizeOptions = {
 const toolAvailable = (raw: RawOperationsData, id: string) =>
   Boolean(raw.tools?.[id]?.available);
 
+function composeConfigFailure(detail?: string) {
+  const missingVariables = Array.from(
+    new Set(
+      Array.from(
+        detail?.matchAll(
+          /[\\"]+([A-Za-z_][A-Za-z0-9_]*)[\\"]+ variable is not set/g,
+        ) ?? [],
+        (match) => match[1],
+      ),
+    ),
+  );
+
+  if (missingVariables.length > 0) {
+    const names = missingVariables.map((name) => `\`${name}\``).join(", ");
+    return {
+      detail: `Compose cannot validate because ${missingVariables.length === 1 ? "an environment variable is" : `${missingVariables.length} environment variables are`} missing: ${names}.`,
+      remediation: `Open this website's Environment section and add values for ${names} to .env, then refresh the preflight. If a value is optional, give it a safe default in the Compose file.`,
+    };
+  }
+
+  return {
+    detail: detail || "The Compose configuration could not be validated.",
+    remediation:
+      "Review the Compose file and website environment values, then refresh the preflight.",
+  };
+}
+
 function detection(
   id: string,
   kind: string,
@@ -247,6 +274,7 @@ const FIXES: Record<
 };
 
 function preflightChecks(raw: RawOperationsData, type: string) {
+  const composeFailure = composeConfigFailure(raw.compose?.detail);
   const checks: OperationCheck[] = [
     check(
       "project-root",
@@ -326,9 +354,8 @@ function preflightChecks(raw: RawOperationsData, type: string) {
         "Compose validation",
         raw.compose?.configValid === true,
         `${raw.compose?.services?.length ?? 0} service(s) validated.`,
-        raw.compose?.detail ||
-          "The Compose configuration could not be validated.",
-        "Resolve Compose interpolation and schema errors, then run the preflight again.",
+        composeFailure.detail,
+        composeFailure.remediation,
       ),
       raw.compose?.configValid !== true
         ? {

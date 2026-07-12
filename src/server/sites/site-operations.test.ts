@@ -155,6 +155,35 @@ describe("normalizeOperationsData", () => {
     });
   });
 
+  it("explains missing Compose environment values without exposing Docker logs", () => {
+    const data = normalizeOperationsData(
+      {
+        ...base,
+        permissions: { manage: true, docker: true },
+        hasCompose: true,
+        compose: {
+          file: "compose.yaml",
+          cliAvailable: true,
+          pluginAvailable: true,
+          daemonAvailable: true,
+          configValid: false,
+          detail:
+            'time="2026-07-12T05:30:18Z" level=warning msg="The \\"HOST_DATA_DIR\\" variable is not set. Defaulting to a blank string." time="2026-07-12T05:30:18Z" level=warning msg="The \\"BACKEND_DATA_DIR\\" variable is not set. Defaulting to a blank string."',
+        },
+      },
+      { typeOverride: "docker" },
+    );
+
+    const validation = data.preflight.checks.find(
+      (item) => item.id === "compose-config",
+    );
+    expect(validation?.detail).toBe(
+      "Compose cannot validate because 2 environment variables are missing: `HOST_DATA_DIR`, `BACKEND_DATA_DIR`.",
+    );
+    expect(validation?.detail).not.toContain("level=warning");
+    expect(validation?.remediation).toContain("website's Environment section");
+  });
+
   it("keeps deployment ready while planning an unambiguous Compose entry-port remap", () => {
     const data = normalizeOperationsData(
       {
