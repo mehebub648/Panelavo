@@ -33,8 +33,8 @@
 #   ENABLE_UFW=true                 Explicitly activate ufw after rules are
 #                                   prepared (default: never activate remotely)
 #
-# The panel is reachable on http://<server-ip>:10443 (primary) and on the
-# site domain through nginx once DNS points at the server.
+# The panel listener is private on 127.0.0.1:10443. Public access is available
+# only through the HTTPS CloudPanel/Nginx site once DNS points at the server.
 
 set -euo pipefail
 
@@ -323,18 +323,44 @@ fi
 id "${SITE_USER}" >/dev/null 2>&1 || die "System user ${SITE_USER} was not created by CloudPanel."
 
 # ---------------------------------------------------------------------------
-# 8. Narrow sudo access for the panel's CloudPanel bridge
+# 8. Root-owned CloudPanel broker and narrow sudo access
 # ---------------------------------------------------------------------------
-PHP_BIN="$(command -v php || echo /usr/bin/php)"
+BROKER_ROOT="/usr/local/libexec/panelavo"
+BROKER_PATH="${BROKER_ROOT}/panelavo-broker"
+BROKER_PROTOCOL_VERSION="$(node -p "require('${SRC_DIR}/package.json').panelavo.brokerProtocolVersion")"
 SUDOERS_FILE="/etc/sudoers.d/panelavo-${SITE_USER}"
+
+# Root must never execute the site-user-owned bridge from the deployed tree.
+install -d -o root -g root -m 0755 "${BROKER_ROOT}"
+install -o root -g root -m 0755 "${SRC_DIR}/scripts/panelavo-broker" "${BROKER_PATH}"
+install -o root -g root -m 0644 "${SRC_DIR}/scripts/cloudpanel-bridge.php" "${BROKER_ROOT}/cloudpanel-bridge.php"
+
+# Exercise the exact broker rule before replacing a legacy sudoers file.
+MIGRATION_SUDOERS="/etc/sudoers.d/panelavo-${SITE_USER}-broker-migration"
+cat > "${MIGRATION_SUDOERS}" <<EOF
+${SITE_USER} ALL=(root) NOPASSWD: ${BROKER_PATH}
+EOF
+chmod 0440 "${MIGRATION_SUDOERS}"
+visudo -cf "${MIGRATION_SUDOERS}" >/dev/null || die "Generated broker migration sudoers file is invalid."
+
+BROKER_HEALTH="$(printf '{\"protocolVersion\":%s,\"action\":\"broker-health\"}' "${BROKER_PROTOCOL_VERSION}" | sudo -u "${SITE_USER}" sudo -n "${BROKER_PATH}")" || die "The installed CloudPanel broker did not start."
+BROKER_HEALTH="${BROKER_HEALTH}" BROKER_PROTOCOL_VERSION="${BROKER_PROTOCOL_VERSION}" node <<'NODE' || die "The installed CloudPanel broker failed its protocol health check."
+const result = JSON.parse(process.env.BROKER_HEALTH || '{}');
+const data = result.data || {};
+if (!result.ok || data.protocolVersion !== Number(process.env.BROKER_PROTOCOL_VERSION) || data.privileged !== true || data.cloudPanelAvailable !== true) process.exit(1);
+NODE
+
 cat > "${SUDOERS_FILE}" <<EOF
-# panelavo: the Next.js app talks to CloudPanel through clpctl and a
-# read-only PHP bridge, both executed via passwordless sudo.
-${SITE_USER} ALL=(root) NOPASSWD: /usr/bin/clpctl, ${PHP_BIN}
+# Panelavo may invoke only the root-owned, schema-validating broker.
+${SITE_USER} ALL=(root) NOPASSWD: ${BROKER_PATH}
 EOF
 chmod 0440 "${SUDOERS_FILE}"
-visudo -cf "${SUDOERS_FILE}" >/dev/null || die "Generated sudoers file is invalid."
-log "Sudo rules for ${SITE_USER} installed."
+visudo -cf "${SUDOERS_FILE}" >/dev/null || die "Generated broker sudoers file is invalid."
+rm -f "${MIGRATION_SUDOERS}"
+if grep -Eq 'NOPASSWD:.*(/usr/bin/php|/usr/bin/clpctl)([ ,]|$)' "${SUDOERS_FILE}"; then
+  die "Unsafe raw PHP or clpctl sudo access remains in ${SUDOERS_FILE}."
+fi
+log "Root-owned CloudPanel broker installed and verified for ${SITE_USER}."
 
 # ---------------------------------------------------------------------------
 # 9. Deploy the application
@@ -409,7 +435,10 @@ if command -v ufw >/dev/null 2>&1; then
   fi
   ufw allow 80/tcp >/dev/null 2>&1 || true
   ufw allow 443/tcp >/dev/null 2>&1 || true
-  ufw allow "${APP_PORT}/tcp" >/dev/null 2>&1 || true
+  # The application listener is loopback-only. Remove rules left by older
+  # installers so authentication cannot bypass the HTTPS Nginx vhost.
+  ufw delete allow "${APP_PORT}/tcp" >/dev/null 2>&1 || true
+  ufw deny "${APP_PORT}/tcp" >/dev/null 2>&1 || true
   if [ "${EXPOSE_CLOUDPANEL:-false}" != "true" ]; then
     # Remove any existing allow rule, then explicitly deny public access.
     ufw delete allow "${CLOUDPANEL_PORT}/tcp" >/dev/null 2>&1 || true
@@ -440,7 +469,7 @@ fi
 #     can be issued immediately. Re-check first — DNS often propagates while
 #     CloudPanel was installing.
 # ---------------------------------------------------------------------------
-PANEL_URL="http://${SERVER_IP}:${APP_PORT}"
+PANEL_URL="https://${PANEL_DOMAIN}"
 if [ -n "${PANEL_BASE_DOMAIN}" ]; then
   log "Re-checking wildcard DNS before issuing the panel certificate ..."
   for _ in $(seq 1 15); do
@@ -490,10 +519,10 @@ fi
 # ---------------------------------------------------------------------------
 log "Waiting for the panel to come up ..."
 for _ in $(seq 1 30); do
-  if curl -fsS -o /dev/null "http://127.0.0.1:${APP_PORT}/login"; then HEALTH=ok; break; fi
+  if curl -fsS -o /dev/null "http://127.0.0.1:${APP_PORT}/api/health/ready"; then HEALTH=ok; break; fi
   sleep 2
 done
-[ "${HEALTH:-}" = "ok" ] || warn "panelavo did not answer on port ${APP_PORT} yet — check 'pm2 logs panelavo' as ${SITE_USER}."
+[ "${HEALTH:-}" = "ok" ] || warn "panelavo did not become ready on its private port ${APP_PORT} — check 'pm2 logs panelavo' as ${SITE_USER}."
 
 cat <<EOF
 
@@ -501,7 +530,7 @@ cat <<EOF
  panelavo setup complete
 ============================================================
  Panel address:      ${PANEL_URL}
- Fallback (by IP):   http://${SERVER_IP}:${APP_PORT}
+ Recovery tunnel:   ssh -L ${APP_PORT}:127.0.0.1:${APP_PORT} root@${SERVER_IP}
  CloudPanel:         https://127.0.0.1:8443 (firewall rule prepared; use an SSH tunnel)
 
  Super Admin:        ${ADMIN_USER}

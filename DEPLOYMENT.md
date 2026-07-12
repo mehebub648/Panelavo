@@ -79,7 +79,7 @@ The panel is now reachable on `https://<panel-domain>` (proxied to the private
 
 The file manager accepts files up to 64 MiB. Run `sudo bash setup.sh` after upgrading so the panel vhost receives its required `client_max_body_size 96m` directive. Setup validates Nginx and restores the previous vhost if validation fails.
 
-Super Admins can perform normal application updates from Settings. The updater clones and builds the configured public repository in staging, then preserves `.data` and `.env.local` while deploying and reloading only the Panelavo PM2 process. It does not run `setup.sh` or any root-level migration. When a changelog calls for host maintenance, run that step separately over SSH.
+Super Admins can perform normal application updates from Settings. The updater clones the configured public repository, verifies that the release's declared root-broker protocol is already installed and healthy, builds in staging, then preserves `.data` and `.env.local` while deploying and reloading only the Panelavo PM2 process. It never runs `setup.sh` or a root migration. Before the first update from 0.1.36 or older, run `sudo bash setup.sh` from a trusted checkout once; later incompatible broker releases are blocked before deployment with the same instruction.
 
 ## Managed website Operations
 

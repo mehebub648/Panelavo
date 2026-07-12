@@ -607,7 +607,8 @@ export async function audit(
 }
 
 function eventWithoutHash(event: AuditEvent): UnsignedAuditEvent {
-  const { hash: _hash, ...unsigned } = event;
+  const { hash, ...unsigned } = event;
+  void hash;
   return unsigned;
 }
 

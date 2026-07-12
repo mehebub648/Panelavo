@@ -10,6 +10,7 @@ LOG_FILE="${DATA_DIR}/update.log"
 LOCK_DIR="${DATA_DIR}/update.lock"
 TEMP_DIR=""
 LOCK_ACQUIRED=false
+BROKER_PATH="/usr/local/libexec/panelavo/panelavo-broker"
 
 mkdir -p "${DATA_DIR}"
 exec >>"${LOG_FILE}" 2>&1
@@ -44,14 +45,32 @@ echo "[$(date -Is)] Fetching ${REPOSITORY} (${BRANCH})"
 [ "$(node -p "require('${SOURCE}/package.json').name")" = "panelavo" ] || { echo "Repository is not Panelavo"; false; }
 [ -f "${SOURCE}/ecosystem.config.js" ] && [ -f "${SOURCE}/pnpm-lock.yaml" ] || { echo "Required application files are missing"; false; }
 COMMIT="$(/usr/bin/git -C "${SOURCE}" rev-parse HEAD)"
+
+# Host migrations are root-owned and never run from a configurable update
+# repository. Refuse the release before build/deploy unless its required
+# broker protocol is already installed and healthy.
+EXPECTED_BROKER_PROTOCOL="$(node -p "require('${SOURCE}/package.json').panelavo?.brokerProtocolVersion ?? ''")"
+[[ "${EXPECTED_BROKER_PROTOCOL}" =~ ^[0-9]+$ ]] || { echo "Release does not declare a broker protocol version"; false; }
+[ -x "${BROKER_PATH}" ] || { echo "This update requires the root-owned Panelavo broker. Run 'sudo bash setup.sh' from a trusted checkout before updating."; false; }
+BROKER_HEALTH="$(printf '{\"protocolVersion\":%s,\"action\":\"broker-health\"}' "${EXPECTED_BROKER_PROTOCOL}" | /usr/bin/sudo -n "${BROKER_PATH}")" || { echo "The installed Panelavo broker is unavailable. Run 'sudo bash setup.sh' from a trusted checkout."; false; }
+BROKER_HEALTH="${BROKER_HEALTH}" EXPECTED_BROKER_PROTOCOL="${EXPECTED_BROKER_PROTOCOL}" node <<'NODE'
+const result = JSON.parse(process.env.BROKER_HEALTH || '{}');
+const data = result.data || {};
+if (!result.ok || data.protocolVersion !== Number(process.env.EXPECTED_BROKER_PROTOCOL) || data.privileged !== true || data.cloudPanelAvailable !== true) {
+  console.error('The installed Panelavo broker is incompatible with this release. Run sudo bash setup.sh from a trusted checkout.');
+  process.exit(1);
+}
+NODE
+
 echo "[$(date -Is)] Installing and building ${COMMIT}"
 (cd "${SOURCE}" && npx -y pnpm@10.12.1 install --frozen-lockfile && npx -y pnpm@10.12.1 build)
 echo "[$(date -Is)] Deploying staged build"
 /usr/bin/rsync -a --delete --exclude .git --exclude .data --exclude .env.local "${SOURCE}/" "${APP_ROOT}/"
-INSTALLED_COMMIT="${COMMIT}" STATE_FILE="${STATE_FILE}" node <<'NODE'
+INSTALLED_COMMIT="${COMMIT}" STATE_FILE="${STATE_FILE}" APP_ROOT="${APP_ROOT}" node <<'NODE'
 const fs = require('node:fs'); const state = JSON.parse(fs.readFileSync(process.env.STATE_FILE, 'utf8'));
 state.installedCommit = process.env.INSTALLED_COMMIT; state.remoteCommit = process.env.INSTALLED_COMMIT;
 state.status = 'reloading';
+try { state.currentVersion = JSON.parse(fs.readFileSync(process.env.APP_ROOT + '/package.json', 'utf8')).version; } catch {}
 fs.writeFileSync(process.env.STATE_FILE, JSON.stringify(state), { mode: 0o600 });
 NODE
 echo "[$(date -Is)] Reloading Panelavo"

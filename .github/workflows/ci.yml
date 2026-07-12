@@ -64,7 +64,10 @@ jobs:
           php scripts/cloudpanel-bridge.php --self-test-env
 
       - name: Validate shell syntax
-        run: bash -n setup.sh scripts/self-update.sh
+        run: bash -n setup.sh scripts/self-update.sh scripts/verify-broker-contract.sh
+
+      - name: Verify privilege-broker contract
+        run: bash scripts/verify-broker-contract.sh
 
       - name: Run ShellCheck
-        run: shellcheck --severity=warning setup.sh scripts/self-update.sh
+        run: shellcheck --severity=warning setup.sh scripts/self-update.sh scripts/verify-broker-contract.sh

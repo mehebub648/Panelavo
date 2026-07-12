@@ -29,4 +29,4 @@ The per-site Terminal and Environment manager operate strictly at the site-user 
 
 The canonical version is in `package.json`. Each logical change increments it and adds a new `changelog/v<old>-<new>-changelog.md`. Keep `README.md`, `DEPLOYMENT.md`, and `ARCHITECTURE.md` synchronized with behavior.
 
-Self-updates must run as the panel site user, preserve `.data` and `.env.local`, build successfully before deployment, and reload only the `panelavo` PM2 process. Do not give a configurable update repository root privileges.
+Self-updates must run as the panel site user, preserve `.data` and `.env.local`, build successfully before deployment, and reload only the `panelavo` PM2 process. Do not give a configurable update repository root privileges. Root-only broker upgrades are installed by `setup.sh`; the in-panel updater must refuse a release before deployment when its declared broker protocol is missing, unhealthy, or incompatible.

@@ -14,7 +14,7 @@ cd panelavo
 sudo bash setup.sh
 ```
 
-The script detects the OS, installs CloudPanel if it is missing, creates the initial panelavo Super Admin using CloudPanel's `admin` role, installs the latest Node.js and publishes a non-root-readable runtime under `/usr/local/lib/panelavo-node`, installs a shared PM2 into `/usr/local`, creates a CloudPanel Node.js site, deploys and builds panelavo inside it, and hosts it with PM2 with systemd persistence across reboots. Corepack is optional; setup uses the pinned pnpm release through `npx` when Node.js does not bundle Corepack. It updates an already-active UFW firewall, but never activates an inactive firewall during remote setup unless `ENABLE_UFW=true` is explicitly supplied.
+The script detects the OS, installs CloudPanel if it is missing, creates the initial panelavo Super Admin using CloudPanel's `admin` role, installs the latest Node.js and publishes a non-root-readable runtime under `/usr/local/lib/panelavo-node`, installs a shared PM2 into `/usr/local`, installs and verifies the root-owned allow-listed CloudPanel broker under `/usr/local/libexec/panelavo`, creates a CloudPanel Node.js site, deploys and builds panelavo inside it, and hosts it with PM2 with systemd persistence across reboots. Corepack is optional; setup uses the pinned pnpm release through `npx` when Node.js does not bundle Corepack. It updates an already-active UFW firewall, but never activates an inactive firewall during remote setup unless `ENABLE_UFW=true` is explicitly supplied.
 
 When it finishes, it prints the HTTPS panel URL and Super Admin credentials. The Next.js process listens only on `127.0.0.1:10443`; public authentication always passes through the CloudPanel/Nginx TLS vhost. For emergency recovery, tunnel the private listener with `ssh -L 10443:127.0.0.1:10443 root@<server-ip>` and browse to `http://127.0.0.1:10443`. By default, the CloudPanel site/system user is `panelavo`. The existing `ADMIN_USER`, `ADMIN_PASSWORD`, and `ADMIN_EMAIL` environment names configure this Super Admin for backward compatibility. Other overrides include `PANEL_DOMAIN`, `PANEL_BASE_DOMAIN`, `PANEL_SITE_USER`, `DB_ENGINE`, and `ENABLE_UFW`. Example:
 
@@ -82,11 +82,11 @@ npx pnpm@10.12.1 install
 npx pnpm@10.12.1 dev
 ```
 
-Open `http://localhost:3000`. The app always talks to a real local CloudPanel installation, so development needs the same `/usr/bin/clpctl` and `/usr/bin/php` sudo access as production.
+Open `http://localhost:10443`. The app always talks to a real local CloudPanel installation, so server-side development needs the root-owned broker installed by `sudo bash setup.sh`; the application user never receives generic PHP or `clpctl` sudo access.
 
 ## Environment
 
-Copy `.env.example` to `.env.local`. panelavo talks to the installed CloudPanel CLI and local bridge; non-interactive sudo access to `/usr/bin/clpctl` and `/usr/bin/php` is required. `setup.sh` installs the required sudoers rule for the CloudPanel site user.
+Copy `.env.example` to `.env.local`. Panelavo sends validated JSON to the fixed root-owned broker at `/usr/local/libexec/panelavo/panelavo-broker`. `setup.sh` installs the broker, its immutable bridge, and one exact non-interactive sudoers command for the panel service user.
 
 The application cookie is opaque, `HttpOnly`, `SameSite=Strict`, scoped to `/`, and `Secure` on the public HTTPS route. Sessions expire after `SESSION_MAX_AGE_SECONDS` and are mirrored to the protected `.data` directory so normal process reloads do not sign users out. Login and mutation throttling is also persisted there, so a restart does not clear abuse counters. Production still runs one Next.js process because session and mutation serialization are single-process concerns.
 
@@ -94,7 +94,7 @@ The application cookie is opaque, `HttpOnly`, `SameSite=Strict`, scoped to `/`, 
 
 The live adapter was validated against CloudPanel frontend asset version **2.5.4** and CLI version **6.0.8**. All CloudPanel access is local (CLI + bridge); no CloudPanel URL needs to be configured.
 
-Root operations use `/usr/bin/clpctl`. CloudPanel does not expose password verification, MFA verification, site listing, or all required site-management capabilities through public `clpctl` commands, so `scripts/cloudpanel-bridge.php` boots CloudPanel's own Symfony kernel locally. It reads CloudPanel's password data, MFA verifier, Doctrine entities, roles, sites, assignments, and runtime settings, and it performs only explicitly mapped site actions after authorization and validation. CloudPanel's original frontend remains untouched and is never contacted.
+The root-owned broker uses fixed CloudPanel CLI argument arrays for supported mutations. CloudPanel does not expose password verification, MFA verification, site listing, or all required site-management capabilities through public `clpctl` commands, so the broker's immutable PHP bridge boots CloudPanel's own Symfony kernel locally. It reads CloudPanel's password data, MFA verifier, Doctrine entities, roles, sites, assignments, and runtime settings, and performs only explicitly mapped actions after authorization and validation. CloudPanel's original frontend remains untouched and is never contacted.
 
 ### Authentication and authorization
 
@@ -126,7 +126,7 @@ Customer-entered domains are aliases: the Domains tab and create form add them t
 
 ### Site creation
 
-CloudPanel does not document a public REST API for site creation. Version 2.5.4's documented `clpctl` operations are used through `/usr/bin/clpctl`. The Node process calls `/usr/bin/sudo` with an argument array, `shell: false`, a fixed per-type operation map, validation, a 90-second timeout, bounded output, and generic errors. There is no generic command endpoint and no browser-supplied CLI operation.
+CloudPanel does not document a public REST API for site creation. Version 2.5.4's documented `clpctl` operations run inside the root-owned broker. The Node process invokes only the broker's exact sudo command, writes versioned JSON to stdin, and receives bounded JSON output. The broker owns the fixed per-type operation map, validation, argument arrays, timeouts, and generic errors. There is no generic command endpoint and no browser-supplied CLI operation.
 
 ### Git repositories
 
@@ -183,17 +183,17 @@ The file manager accepts individual files up to 64 MiB. Because uploads are base
 
 ### Panel updates
 
-Super Admins can check and install Panelavo updates from Settings. The default source is the public `https://github.com/mehebub648/Panelavo.git` repository on `main`; the public HTTPS repository URL can be changed and is persisted in `.data/panel-settings.json`. Panelavo clones into a private staging directory, installs the locked dependencies, and requires a successful production build before synchronizing the release. `.data` and `.env.local` are preserved. Only the `panelavo` PM2 process reloads, so managed websites are not restarted.
+Super Admins can check and install Panelavo updates from Settings. The default source is the public `https://github.com/mehebub648/Panelavo.git` repository on `main`; the public HTTPS repository URL can be changed and is persisted in `.data/panel-settings.json`. Panelavo clones into a private staging directory, validates the release's declared broker protocol against the installed broker, installs the locked dependencies, and requires a successful production build before synchronizing the release. `.data` and `.env.local` are preserved. Only the `panelavo` PM2 process reloads, so managed websites are not restarted.
 
-The updater intentionally runs as the panel site user, not root. While an update is queued or running, Panelavo displays a maintenance screen and rejects normal authenticated API operations; panel pages remain renderable behind that screen so maintenance mode never becomes a server-rendering error. Hosted websites remain online. Before asking PM2 to reload, the worker records a PID-bound `reloading` handoff and cleans its staging lock. The replacement Panelavo process marks the handoff complete and reloads the browser. Host-level migrations are never executed automatically; release notes must identify any required root maintenance. Update progress and failures persist in `.data/update-state.json` and `.data/update.log`.
+The updater intentionally runs as the panel site user, not root. While an update is queued or running, Panelavo displays a maintenance screen and rejects normal authenticated API operations; panel pages remain renderable behind that screen so maintenance mode never becomes a server-rendering error. Hosted websites remain online. Before asking PM2 to reload, the worker records a PID-bound `reloading` handoff and cleans its staging lock. The replacement Panelavo process marks the handoff complete and reloads the browser. Host-level migrations are never executed automatically: a missing or incompatible broker blocks before build and deployment and instructs the operator to run trusted `setup.sh`. Update progress and failures persist in `.data/update-state.json` and `.data/update.log`.
 
-The installer grants the CloudPanel site user narrow passwordless sudo for:
+The installer grants the panel service user one exact passwordless sudo command:
 
 ```text
-NOPASSWD: /usr/bin/clpctl, /usr/bin/php
+NOPASSWD: /usr/local/libexec/panelavo/panelavo-broker
 ```
 
-Do not grant `clpctl *`, `bash *`, `sh *`, or unrestricted sudo to a deployment user. For stronger production isolation, replace the current permission with root-owned per-operation wrappers that accept only validated fields.
+Never grant raw PHP, `clpctl`, `bash`, `sh`, or unrestricted sudo to the panel service user. The broker and bridge are root-owned, accept no command-line arguments, validate a versioned JSON protocol, and cannot be replaced by self-update.
 
 PHP versions are discovered from `/etc/php`. CloudPanel 2.5.4 compatibility fallbacks for Node.js, Python, and the Generic vhost template are isolated in the live adapter because no authenticated options page was available during discovery. Validate these against the target server before production use.
 
