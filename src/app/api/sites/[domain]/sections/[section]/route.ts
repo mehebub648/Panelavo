@@ -6,6 +6,7 @@ import { fail, ok } from "@/server/http";
 import {
   backupRequestSchema,
   envRequestSchema,
+  gitRequestSchema,
   operationsRequestSchema,
   terminalRequestSchema,
 } from "@/schemas/operations";
@@ -20,7 +21,9 @@ export async function POST(
     const { domain, section } = await params;
     const submitted = await request.json();
     const input =
-      section === "actions"
+      section === "git"
+        ? gitRequestSchema.parse(submitted)
+        : section === "actions"
         ? operationsRequestSchema.parse(submitted)
         : section === "env"
           ? envRequestSchema.parse(submitted)

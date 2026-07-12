@@ -2473,7 +2473,49 @@ function runGit(Site $site, array $args, bool $allowFailure = false): array
     return ['code' => $code, 'stdout' => substr($stdout ?: '', 0, 500000), 'stderr' => substr($stderr ?: '', 0, 50000)];
 }
 
-function gitSection(Site $site): array
+function gitChanges(Site $site): array
+{
+    $raw = runGit($site, ['status', '--porcelain=v1', '-z', '--untracked-files=all'], true)['stdout'];
+    if ($raw === '') return [];
+    $records = explode("\0", $raw);
+    $changes = [];
+    for ($index = 0; $index < count($records); $index++) {
+        $record = $records[$index];
+        if ($record === '') continue;
+        $status = substr($record, 0, 2);
+        $path = substr($record, 3);
+        $change = ['status' => $status, 'path' => $path];
+        if (str_contains($status, 'R') || str_contains($status, 'C')) {
+            $change['originalPath'] = $records[++$index] ?? '';
+        }
+        $changes[] = $change;
+    }
+    return $changes;
+}
+
+function gitChangedPath(Site $site, string $requested): array
+{
+    if ($requested === '' || str_contains($requested, "\0")) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+    foreach (gitChanges($site) as $change) {
+        if (hash_equals((string) $change['path'], $requested)) return $change;
+    }
+    respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+}
+
+function gitFileDiff(Site $site, array $change): string
+{
+    $path = (string) $change['path'];
+    if ($change['status'] === '??') {
+        return runGit($site, ['diff', '--no-index', '--no-color', '--', '/dev/null', $path], true)['stdout'];
+    }
+    $result = runGit($site, ['diff', '--no-color', 'HEAD', '--', $path], true);
+    if ($result['code'] === 0) return $result['stdout'];
+    $cached = runGit($site, ['diff', '--cached', '--no-color', '--', $path], true)['stdout'];
+    $working = runGit($site, ['diff', '--no-color', '--', $path], true)['stdout'];
+    return $cached . $working;
+}
+
+function gitSection(Site $site, ?array $selectedChange = null, ?string $notice = null): array
 {
     $root = '/home/' . $site->getUser() . '/htdocs/' . $site->getRootDirectory();
     $repo = is_dir($root . '/.git');
@@ -2482,15 +2524,15 @@ function gitSection(Site $site): array
     $head = trim(runGit($site, ['rev-parse', '--short', 'HEAD'], true)['stdout']);
     $remotesRaw = trim(runGit($site, ['remote', '-v'], true)['stdout']);
     $branchesRaw = trim(runGit($site, ['branch', '--format=%(refname:short)'], true)['stdout']);
-    $statusRaw = trim(runGit($site, ['status', '--porcelain=v1'], true)['stdout']);
     $logRaw = trim(runGit($site, ['log', '-20', '--pretty=format:%h%x09%an%x09%ar%x09%s'], true)['stdout']);
-    $diff = runGit($site, ['diff', '--no-color'], true)['stdout'];
-    return ['isRepository' => true, 'path' => $root, 'branch' => $branch, 'head' => $head,
+    $data = ['isRepository' => true, 'path' => $root, 'branch' => $branch, 'head' => $head,
         'remotes' => array_values(array_filter(array_map(fn($line) => preg_split('/\s+/', $line), explode("\n", $remotesRaw)))),
         'branches' => $branchesRaw === '' ? [] : explode("\n", $branchesRaw),
-        'changes' => $statusRaw === '' ? [] : array_map(fn($line) => ['status' => substr($line, 0, 2), 'path' => trim(substr($line, 3))], explode("\n", $statusRaw)),
-        'commits' => $logRaw === '' ? [] : array_map(function ($line) { $p = explode("\t", $line, 4); return ['hash' => $p[0] ?? '', 'author' => $p[1] ?? '', 'date' => $p[2] ?? '', 'subject' => $p[3] ?? '']; }, explode("\n", $logRaw)),
-        'diff' => substr($diff, 0, 200000)];
+        'changes' => gitChanges($site),
+        'commits' => $logRaw === '' ? [] : array_map(function ($line) { $p = explode("\t", $line, 4); return ['hash' => $p[0] ?? '', 'author' => $p[1] ?? '', 'date' => $p[2] ?? '', 'subject' => $p[3] ?? '']; }, explode("\n", $logRaw))];
+    if ($selectedChange !== null) $data['selectedDiff'] = ['path' => $selectedChange['path'], 'diff' => substr(gitFileDiff($site, $selectedChange), 0, 300000)];
+    if ($notice !== null) $data['notice'] = $notice;
+    return $data;
 }
 
 function runComposePortSelfTest(): never
@@ -2776,12 +2818,45 @@ try {
                     $url = trim((string) ($operation['url'] ?? '')); if (!preg_match('#^(https://|git@)[^\s]+$#', $url)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
                     runGit($site, ['remote', 'remove', 'origin'], true); runGit($site, ['remote', 'add', 'origin', $url]);
                 } elseif ($action === 'fetch') runGit($site, ['fetch', '--prune', 'origin']);
-                elseif ($action === 'pull') runGit($site, $ref ? ['pull', '--ff-only', 'origin', $ref] : ['pull', '--ff-only']);
+                elseif ($action === 'pull') {
+                    $dirty = gitChanges($site) !== [];
+                    if ($dirty) runGit($site, ['stash', 'push', '--include-untracked', '-m', 'panelavo-auto-stash-before-pull']);
+                    $pull = runGit($site, $ref ? ['pull', '--ff-only', 'origin', $ref] : ['pull', '--ff-only'], true);
+                    if ($pull['code'] !== 0) {
+                        if ($dirty) runGit($site, ['stash', 'pop'], true);
+                        respond(['ok' => false, 'code' => 'GIT_FAILED', 'message' => trim($pull['stderr'] ?: $pull['stdout'])]);
+                    }
+                    if ($dirty) {
+                        $restore = runGit($site, ['stash', 'pop'], true);
+                        $notice = $restore['code'] === 0
+                            ? 'Pulled remote changes and restored your local changes.'
+                            : 'Pulled remote changes, but some local changes conflicted. Resolve the marked files; the safety stash was kept.';
+                    }
+                }
                 elseif ($action === 'push') runGit($site, $ref ? ['push', '-u', 'origin', $ref] : ['push']);
                 elseif ($action === 'checkout') runGit($site, ['checkout', $ref]);
                 elseif ($action === 'commit') { $message = trim((string) ($operation['message'] ?? '')); if ($message === '' || strlen($message) > 500) respond(['ok' => false, 'code' => 'INVALID_REQUEST']); runGit($site, ['add', '--all']); runGit($site, ['commit', '-m', $message]); }
+                elseif ($action === 'diff') {
+                    $change = gitChangedPath($site, (string) ($operation['path'] ?? ''));
+                    respond(['ok' => true, 'data' => gitSection($site, $change)]);
+                } elseif ($action === 'discard') {
+                    $change = gitChangedPath($site, (string) ($operation['path'] ?? ''));
+                    $path = (string) $change['path'];
+                    if ($change['status'] === '??') runGit($site, ['clean', '-fd', '--', $path]);
+                    else {
+                        $paths = array_values(array_filter([$path, (string) ($change['originalPath'] ?? '')]));
+                        $hasHead = runGit($site, ['rev-parse', '--verify', 'HEAD'], true)['code'] === 0;
+                        if ($hasHead) runGit($site, array_merge(['restore', '--source=HEAD', '--staged', '--worktree', '--'], $paths));
+                        else { runGit($site, array_merge(['rm', '-rf', '--cached', '--'], $paths), true); foreach ($paths as $discardPath) runGit($site, ['clean', '-fd', '--', $discardPath]); }
+                    }
+                } elseif ($action === 'discard-all') {
+                    $hasHead = runGit($site, ['rev-parse', '--verify', 'HEAD'], true)['code'] === 0;
+                    if ($hasHead) runGit($site, ['reset', '--hard', 'HEAD']);
+                    else runGit($site, ['rm', '-rf', '--cached', '.'], true);
+                    runGit($site, ['clean', '-fd']);
+                }
                 else respond(['ok' => false, 'code' => 'INVALID_ACTION']);
-                respond(['ok' => true, 'data' => gitSection($site)]);
+                respond(['ok' => true, 'data' => gitSection($site, null, $notice ?? null)]);
             } elseif ($section === 'users' && $action === 'generate-keypair') {
                 $home = '/home/' . $site->getUser();
                 $ssh = $home . '/.ssh';

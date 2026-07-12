@@ -1,5 +1,21 @@
 import { z } from "zod";
 
+const gitPath = z.string().min(1).max(4096).refine((value) => !value.includes("\0"));
+const gitBranch = z.union([z.string().regex(/^[A-Za-z0-9._\/-]{1,200}$/), z.literal("")]).optional();
+export const gitRequestSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("clone"), url: z.string().min(1).max(1000), branch: gitBranch }).strict(),
+  z.object({ action: z.literal("init") }).strict(),
+  z.object({ action: z.literal("set-remote"), url: z.string().min(1).max(1000) }).strict(),
+  z.object({ action: z.literal("fetch") }).strict(),
+  z.object({ action: z.literal("pull"), branch: gitBranch }).strict(),
+  z.object({ action: z.literal("push"), branch: gitBranch }).strict(),
+  z.object({ action: z.literal("checkout"), branch: z.string().regex(/^[A-Za-z0-9._\/-]{1,200}$/) }).strict(),
+  z.object({ action: z.literal("commit"), message: z.string().trim().min(1).max(500) }).strict(),
+  z.object({ action: z.literal("diff"), path: gitPath }).strict(),
+  z.object({ action: z.literal("discard"), path: gitPath }).strict(),
+  z.object({ action: z.literal("discard-all") }).strict(),
+]);
+
 export const operationCommands = [
   "node-install",
   "node-run",

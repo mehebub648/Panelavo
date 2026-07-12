@@ -130,7 +130,7 @@ CloudPanel does not document a public REST API for site creation. Version 2.5.4'
 
 ### Git repositories
 
-The Git section can initialize an existing site root or clone into an empty one. A root containing only the ACME-managed `.well-known` directory is also accepted; that directory is preserved while the repository is checked out. SSH clones use the site user's deployment key, accept and persist a previously unseen host key on first connection, and run non-interactively. Add the public deployment key shown under SSH/FTP to private repositories before cloning. Repository operations have a five-minute limit and return actionable errors for other non-empty roots, authentication failure, and an invalid repository or branch.
+The Git section can initialize an existing site root or clone into an empty one. A root containing only the ACME-managed `.well-known` directory is also accepted; that directory is preserved while the repository is checked out. SSH clones use the site user's deployment key, accept and persist a previously unseen host key on first connection, and run non-interactively. Add the public deployment key shown under SSH/FTP to private repositories before cloning. The working tree lists changed files individually; selecting one opens an on-demand side-by-side diff. Operators can discard one file or all uncommitted work after confirmation. Pull temporarily stashes tracked and untracked local changes, performs a fast-forward-only pull, and restores the changes; restore conflicts remain visible and the safety stash is retained. Repository operations have a five-minute limit and return actionable errors for other non-empty roots, authentication failure, and an invalid repository or branch.
 
 ### Site operations
 
