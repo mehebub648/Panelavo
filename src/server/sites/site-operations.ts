@@ -330,16 +330,25 @@ function preflightChecks(raw: RawOperationsData, type: string) {
           "The Compose configuration could not be validated.",
         "Resolve Compose interpolation and schema errors, then run the preflight again.",
       ),
-      check(
-        "compose-safety",
-        "Host safety policy",
-        raw.compose?.safe === true,
-        "No unsafe root-level Compose features were detected.",
-        raw.compose?.detail ||
-          "The Compose configuration uses a host-level feature Panelavo will not run as root.",
-        "Use loopback-only ports and keep bind mounts, build contexts, configs, and secrets inside the site root.",
-        {},
-      ),
+      raw.compose?.configValid !== true
+        ? {
+            id: "compose-safety",
+            label: "Host safety policy",
+            status: "warning",
+            detail:
+              "Host-safety checks will run after the Compose configuration can be resolved.",
+            blocker: false,
+          }
+        : check(
+            "compose-safety",
+            "Host safety policy",
+            raw.compose?.safe === true,
+            "No unsafe root-level Compose features were detected.",
+            raw.compose?.detail ||
+              "The Compose configuration uses a host-level feature Panelavo will not run as root.",
+            "Use loopback-only ports and keep bind mounts, build contexts, configs, and secrets inside the site root.",
+            {},
+          ),
       {
         id: "entry-port",
         label: "Website entry port",

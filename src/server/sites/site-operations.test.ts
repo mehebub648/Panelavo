@@ -120,6 +120,41 @@ describe("normalizeOperationsData", () => {
     });
   });
 
+  it("keeps host-safety review pending when Compose validation fails", () => {
+    const data = normalizeOperationsData(
+      {
+        ...base,
+        permissions: { manage: true, docker: true },
+        hasCompose: true,
+        compose: {
+          file: "compose.yaml",
+          cliAvailable: true,
+          pluginAvailable: true,
+          daemonAvailable: true,
+          configValid: false,
+          detail: "HEALTHCHECK_RETRIES is not set: invalid syntax",
+        },
+      },
+      { typeOverride: "docker" },
+    );
+
+    expect(
+      data.preflight.checks.find((item) => item.id === "compose-config"),
+    ).toMatchObject({
+      status: "blocked",
+      blocker: true,
+      detail: "HEALTHCHECK_RETRIES is not set: invalid syntax",
+    });
+    expect(
+      data.preflight.checks.find((item) => item.id === "compose-safety"),
+    ).toMatchObject({
+      status: "warning",
+      blocker: false,
+      detail:
+        "Host-safety checks will run after the Compose configuration can be resolved.",
+    });
+  });
+
   it("keeps deployment ready while planning an unambiguous Compose entry-port remap", () => {
     const data = normalizeOperationsData(
       {
