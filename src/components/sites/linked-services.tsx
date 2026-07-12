@@ -133,7 +133,7 @@ export function LinkedServices({
               name="serviceName"
               required
               maxLength={32}
-              pattern="[a-zA-Z][a-zA-Z0-9-]*"
+              pattern={"[a-zA-Z][a-zA-Z0-9\\-]*"}
               placeholder="api"
               className="mt-1.5 bg-white/70"
             />

@@ -495,23 +495,28 @@ fi
 
 # File-manager uploads are base64-encoded JSON, so the proxy allowance must be
 # larger than the 64 MiB decoded-file limit enforced by the browser and bridge.
+# Backups and Operations are synchronous and may legitimately run for up to 30
+# minutes, so keep the public proxy open slightly longer than the application.
 PANEL_VHOST="/etc/nginx/sites-enabled/${PANEL_DOMAIN}.conf"
 if [ -f "${PANEL_VHOST}" ]; then
-  log "Configuring the panel upload limit ..."
+  log "Configuring the panel proxy limits ..."
   PANEL_VHOST_BACKUP="$(mktemp)"
   cp "${PANEL_VHOST}" "${PANEL_VHOST_BACKUP}"
   sed -i '/# panelavo-upload-limit$/d' "${PANEL_VHOST}"
+  sed -i '/# panelavo-long-request-timeout$/d' "${PANEL_VHOST}"
   sed -i '/^[[:space:]]*server[[:space:]]*{/a\    client_max_body_size 96m; # panelavo-upload-limit' "${PANEL_VHOST}"
+  sed -i '/^[[:space:]]*server[[:space:]]*{/a\    proxy_send_timeout 1900s; # panelavo-long-request-timeout' "${PANEL_VHOST}"
+  sed -i '/^[[:space:]]*server[[:space:]]*{/a\    proxy_read_timeout 1900s; # panelavo-long-request-timeout' "${PANEL_VHOST}"
   if nginx -t >/dev/null 2>&1; then
     systemctl reload nginx
     rm -f "${PANEL_VHOST_BACKUP}"
   else
     cp "${PANEL_VHOST_BACKUP}" "${PANEL_VHOST}"
     rm -f "${PANEL_VHOST_BACKUP}"
-    die "The panel upload-limit configuration failed nginx validation; the previous vhost was restored."
+    die "The panel proxy-limit configuration failed nginx validation; the previous vhost was restored."
   fi
 else
-  warn "Panel vhost ${PANEL_VHOST} was not found; file uploads through nginx may retain its default size limit."
+  warn "Panel vhost ${PANEL_VHOST} was not found; uploads and long-running requests may retain Nginx defaults."
 fi
 
 # ---------------------------------------------------------------------------

@@ -17,7 +17,7 @@ Panelavo is a Next.js 15 companion UI for a local CloudPanel installation. Cloud
 
 Use pnpm 10.12.1. Run targeted tests, then `npx pnpm@10.12.1 typecheck`, `lint`, and `build` when the affected surface warrants them. Validate installer edits with `bash -n setup.sh`; test firewall changes only with console recovery access available.
 
-Keep CloudPanel commands argument-array based and validated. Never expose credentials or grant unrestricted sudo. The app runs as one PM2 process bound to `127.0.0.1:10443`; only the CloudPanel/Nginx HTTPS vhost is public. The session and rate-limit model is not horizontally scalable.
+Keep CloudPanel commands argument-array based and validated. Never expose credentials or grant unrestricted sudo. The app runs as one PM2 process bound to `127.0.0.1:10443`; only the CloudPanel/Nginx HTTPS vhost is public. `setup.sh` keeps that proxy's read/send timeout slightly above the 30-minute synchronous Operations and Backups request limit. The session and rate-limit model is not horizontally scalable.
 
 CloudPanel's configured site type is authoritative for Operations. Detection, runtime/tool availability, permissions, manifest validation, and safety policy are separate preflight results; a manifest alone must never make an action runnable. Operations plans are server-owned, execute exact argument arrays without a shell, stay inside the configured site root, and take a per-site lock. Missing tools block visibly.
 
