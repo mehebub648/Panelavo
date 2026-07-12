@@ -9,14 +9,18 @@ import React, {
 } from "react";
 import { useRouter } from "next/navigation";
 import {
+  Activity,
   Boxes,
   CircleCheck,
   CircleHelp,
   CircleX,
+  Container,
   Database,
+  FileCog,
   Hammer,
   Layers3,
   LoaderCircle,
+  Network,
   Package,
   Play,
   RefreshCw,
@@ -117,6 +121,15 @@ function formatBytes(bytes: number) {
     units.length - 1,
   );
   return `${(bytes / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}`;
+}
+
+function formatUptime(seconds: number) {
+  if (!seconds || seconds < 0) return "—";
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  if (seconds < 86400)
+    return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+  return `${Math.floor(seconds / 86400)}d ${Math.floor((seconds % 86400) / 3600)}h`;
 }
 
 function formatCheckedAt(value: string) {
@@ -378,6 +391,13 @@ export function ActionsManager({
   const architecture = data.architecture.primary;
   const readiness = STATUS[data.preflight.status];
   const ReadinessIcon = readiness.icon;
+  const runtime = data.runtime;
+  const hasRuntime = Boolean(
+    data.pm2?.length || runtime?.containers?.length || runtime?.listeners?.length,
+  );
+  const envDrift = (runtime?.env ?? []).filter(
+    (item) => item.status === "differs" || item.status === "missing",
+  );
 
   return (
     <div
@@ -732,20 +752,61 @@ export function ActionsManager({
         </section>
       )}
 
-      {data.pm2?.length ? (
+      {hasRuntime ? (
         <section
           className="rounded-2xl border border-white/60 bg-white/75 p-5 shadow-card backdrop-blur-md sm:p-6"
-          aria-labelledby="pm2-processes-title"
+          aria-labelledby="runtime-title"
         >
-          <div>
-            <h3 id="pm2-processes-title" className="font-bold text-ink">
-              PM2 processes
-            </h3>
-            <p className="mt-1 text-sm text-slate-500">
-              Live process state owned by this website&apos;s system user.
-            </p>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3
+                id="runtime-title"
+                className="flex items-center gap-2 font-bold text-ink"
+              >
+                <Activity className="h-4 w-4 text-panel-600" aria-hidden="true" />
+                Runtime
+              </h3>
+              <p className="mt-1 text-sm text-slate-500">
+                Live state auto-detected from this website&apos;s processes,
+                containers, and listening ports.
+              </p>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={busy}
+              aria-label="Refresh runtime state"
+              onClick={() => startRefresh(() => router.refresh())}
+            >
+              {isRefreshing ? (
+                <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <RefreshCw className="h-4 w-4" aria-hidden="true" />
+              )}
+              Refresh
+            </Button>
           </div>
-          {!canControlPm2 && (
+
+          {runtime?.listeners?.length ? (
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              <span className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-slate-400">
+                <Network className="h-3.5 w-3.5" aria-hidden="true" /> Listening
+              </span>
+              {runtime.listeners.map((listener) => (
+                <span
+                  key={`${listener.address}:${listener.port}`}
+                  className="rounded-full bg-slate-100 px-2.5 py-1 font-mono text-xs text-slate-600 ring-1 ring-inset ring-slate-200"
+                  title={listener.address}
+                >
+                  :{listener.port}
+                  {listener.process ? ` · ${listener.process}` : ""}
+                </span>
+              ))}
+            </div>
+          ) : null}
+
+          {!canControlPm2 && data.pm2?.length ? (
             <p
               id="pm2-controls-unavailable"
               className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800 ring-1 ring-inset ring-amber-200"
@@ -754,9 +815,9 @@ export function ActionsManager({
                 ? "PM2 controls are disabled because PM2 is unavailable."
                 : "PM2 controls require Operations management permission."}
             </p>
-          )}
+          ) : null}
           <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {data.pm2.map((process) => {
+            {(data.pm2 ?? []).map((process) => {
               const online = process.status.toLowerCase() === "online";
               return (
                 <article
@@ -810,6 +871,12 @@ export function ActionsManager({
                       </dd>
                     </div>
                   </dl>
+                  <p className="mt-2 text-center text-[11px] font-medium text-slate-400">
+                    {online
+                      ? `Up ${formatUptime(process.uptimeSeconds ?? 0)}`
+                      : "Not running"}
+                    {online && process.pid ? ` · PID ${process.pid}` : ""}
+                  </p>
                   <div className="mt-4 grid grid-cols-3 gap-2">
                     <Button
                       type="button"
@@ -903,6 +970,118 @@ export function ActionsManager({
               );
             })}
           </div>
+
+          {runtime?.containers?.length ? (
+            <div className="mt-5">
+              <h4 className="flex items-center gap-2 text-sm font-bold text-ink">
+                <Container className="h-4 w-4 text-panel-600" aria-hidden="true" />
+                Compose containers
+              </h4>
+              <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                {runtime.containers.map((container) => {
+                  const runningState = container.state === "running";
+                  return (
+                    <article
+                      key={container.name || container.service}
+                      className="rounded-xl border border-slate-200/80 bg-white/80 p-4"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <h5 className="truncate font-bold text-ink">
+                            {container.service || container.name}
+                          </h5>
+                          <p className="mt-0.5 truncate text-xs text-slate-400">
+                            {container.name}
+                          </p>
+                        </div>
+                        <span
+                          className={cn(
+                            "shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold capitalize",
+                            runningState
+                              ? "bg-emerald-50 text-emerald-700"
+                              : "bg-red-50 text-red-700",
+                          )}
+                        >
+                          {container.state}
+                        </span>
+                      </div>
+                      <p className="mt-2 text-xs text-slate-500">
+                        {container.status || container.state}
+                        {container.health
+                          ? ` · health: ${container.health}`
+                          : ""}
+                      </p>
+                      {container.ports?.length ? (
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          {container.ports.map((port) => (
+                            <code
+                              key={port}
+                              className="rounded bg-slate-950/[0.04] px-1.5 py-0.5 text-[11px] text-slate-600"
+                            >
+                              {port}
+                            </code>
+                          ))}
+                        </div>
+                      ) : null}
+                    </article>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
+
+          {runtime?.envFile && runtime.env?.length ? (
+            <div
+              className={cn(
+                "mt-5 rounded-xl border p-4",
+                envDrift.length
+                  ? "border-amber-200/80 bg-amber-50/50"
+                  : "border-emerald-200/70 bg-emerald-50/40",
+              )}
+            >
+              <h4 className="flex items-center gap-2 text-sm font-bold text-ink">
+                <FileCog
+                  className={cn(
+                    "h-4 w-4",
+                    envDrift.length ? "text-amber-600" : "text-emerald-600",
+                  )}
+                  aria-hidden="true"
+                />
+                Environment ({runtime.envFile})
+              </h4>
+              <p className="mt-1 text-xs leading-5 text-slate-600">
+                {envDrift.length
+                  ? `${envDrift.length} configured variable${envDrift.length === 1 ? "" : "s"} differ from the running process — restart it to apply the current ${runtime.envFile}.`
+                  : `The running process environment matches the configured ${runtime.envFile}. Values are never shown here; edit them under Settings → Environment.`}
+              </p>
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {runtime.env.map((item) => (
+                  <span
+                    key={item.key}
+                    className={cn(
+                      "rounded-full px-2 py-0.5 font-mono text-[11px] font-semibold ring-1 ring-inset",
+                      item.status === "match"
+                        ? "bg-emerald-50 text-emerald-700 ring-emerald-600/20"
+                        : item.status === "unknown"
+                          ? "bg-slate-100 text-slate-500 ring-slate-400/20"
+                          : "bg-amber-50 text-amber-700 ring-amber-600/20",
+                    )}
+                    title={
+                      item.status === "match"
+                        ? "In sync with the running process"
+                        : item.status === "differs"
+                          ? "The running process has a different value"
+                          : item.status === "missing"
+                            ? "Not present in the running process"
+                            : "No running process to compare against"
+                    }
+                  >
+                    {item.key}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : null}
         </section>
       ) : null}
 

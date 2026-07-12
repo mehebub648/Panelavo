@@ -3,7 +3,11 @@ import { requireUser } from "@/server/auth/require-user";
 import { getCloudPanelClient } from "@/server/cloudpanel";
 import { assertWriteRequest } from "@/server/security/request";
 import { fail, ok } from "@/server/http";
-import { operationsRequestSchema } from "@/schemas/operations";
+import {
+  envRequestSchema,
+  operationsRequestSchema,
+  terminalRequestSchema,
+} from "@/schemas/operations";
 
 export async function POST(
   request: NextRequest,
@@ -17,7 +21,11 @@ export async function POST(
     const input =
       section === "actions"
         ? operationsRequestSchema.parse(submitted)
-        : submitted;
+        : section === "env"
+          ? envRequestSchema.parse(submitted)
+          : section === "terminal"
+            ? terminalRequestSchema.parse(submitted)
+            : submitted;
     const data = await getCloudPanelClient().manageSiteSection(
       session.record.cloudPanel,
       decodeURIComponent(domain),

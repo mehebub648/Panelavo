@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { operationsRequestSchema } from "./operations";
+import {
+  envRequestSchema,
+  operationsRequestSchema,
+  terminalRequestSchema,
+} from "./operations";
 
 describe("operationsRequestSchema", () => {
   it("accepts allow-listed actions and deployment plan identifiers", () => {
@@ -75,6 +79,82 @@ describe("operationsRequestSchema", () => {
         action: "run",
         command: "compose-ps",
         name: "unexpected",
+      }),
+    ).toThrow();
+  });
+});
+
+describe("envRequestSchema", () => {
+  it("accepts a save to an allow-listed dotenv file", () => {
+    expect(
+      envRequestSchema.parse({
+        action: "save",
+        file: ".env",
+        entries: [{ key: "APP_KEY", value: "secret value" }],
+        syncProfile: true,
+      }),
+    ).toEqual({
+      action: "save",
+      file: ".env",
+      entries: [{ key: "APP_KEY", value: "secret value" }],
+      syncProfile: true,
+    });
+  });
+
+  it("rejects other files, invalid keys, and multiline values", () => {
+    expect(() =>
+      envRequestSchema.parse({ action: "save", file: "../.bashrc", entries: [] }),
+    ).toThrow();
+    expect(() =>
+      envRequestSchema.parse({
+        action: "save",
+        file: ".env",
+        entries: [{ key: "1BAD KEY", value: "x" }],
+      }),
+    ).toThrow();
+    expect(() =>
+      envRequestSchema.parse({
+        action: "save",
+        file: ".env",
+        entries: [{ key: "APP_KEY", value: "a\nb" }],
+      }),
+    ).toThrow();
+  });
+});
+
+describe("terminalRequestSchema", () => {
+  it("accepts a bounded command with an optional working directory", () => {
+    expect(
+      terminalRequestSchema.parse({
+        action: "exec",
+        command: "ls -la",
+        cwd: "/home/site/htdocs/app",
+      }),
+    ).toEqual({
+      action: "exec",
+      command: "ls -la",
+      cwd: "/home/site/htdocs/app",
+    });
+  });
+
+  it("rejects empty, oversized, or NUL-containing commands and extras", () => {
+    expect(() =>
+      terminalRequestSchema.parse({ action: "exec", command: "" }),
+    ).toThrow();
+    expect(() =>
+      terminalRequestSchema.parse({
+        action: "exec",
+        command: "x".repeat(4001),
+      }),
+    ).toThrow();
+    expect(() =>
+      terminalRequestSchema.parse({ action: "exec", command: "ls\0" }),
+    ).toThrow();
+    expect(() =>
+      terminalRequestSchema.parse({
+        action: "exec",
+        command: "ls",
+        asRoot: true,
       }),
     ).toThrow();
   });

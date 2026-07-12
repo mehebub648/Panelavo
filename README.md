@@ -155,9 +155,19 @@ Rootful Docker Compose is restricted to Super Admins. Each command carries the p
 
 Operations execute synchronously in a bounded request against the live application root. They do not create atomic releases or automatically roll back code or databases. Back up application data before destructive framework actions and use a separate recovery procedure if a later step fails.
 
+The Operations page also shows an auto-detected **Runtime** panel: PM2 processes (status, CPU, memory, restarts, uptime, PID) with per-process controls, the site's Docker Compose containers (state, health, published ports), site-owned listening ports, and a `.env` drift check that compares configured keys against the running process environment. Only key names and sync verdicts reach the browser — values never do. State is sampled synchronously on load and manual refresh; Panelavo does not stream or poll continuously.
+
+### Environment management
+
+Site Settings includes an Environment manager that auto-detects `.env`, `.env.local`, and `.env.production` in the configured application root and edits them with comment-preserving rewrites. The primary `.env` is mirrored into a marker-tagged export block in the site user's `~/.profile`, so login shells, cron jobs, and terminal sessions see the same variables, and PM2 launches from Operations inject the `.env` variables directly (CloudPanel's expected `PORT` always wins over a conflicting `.env` entry). Applications therefore receive their configuration whether or not they parse `.env` themselves. Environment values are loaded and rendered only for users who can manage the website.
+
+### Site terminal
+
+Each website has a Terminal tab that executes one command line at a time strictly as the site's Unix user through a non-interactive login shell — the same privilege boundary as that user's own SSH access, never root. Commands run in a validated working directory inside the site home with a bounded timeout and bounded output, and `cd` persists between commands. The tab also documents how to connect an external SSH/SFTP client as the same site user. Long-lived processes belong in PM2 or Compose, not the terminal.
+
 ### File uploads
 
-The file manager accepts individual files up to 64 MiB. Because uploads are base64-encoded JSON, `setup.sh` idempotently configures the panel's Nginx vhost with a 96 MiB request-body allowance and validates the configuration before reloading Nginx.
+The file manager accepts individual files up to 64 MiB. Because uploads are base64-encoded JSON, `setup.sh` idempotently configures the panel's Nginx vhost with a 96 MiB request-body allowance and validates the configuration before reloading Nginx. Archive extraction accepts a destination folder that does not exist yet; Panelavo creates it inside the site home, owned by the site user.
 
 ### Panel updates
 

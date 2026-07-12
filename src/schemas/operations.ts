@@ -112,3 +112,46 @@ export const operationsRequestSchema = z.union([
 ]);
 
 export type OperationsRequest = z.infer<typeof operationsRequestSchema>;
+
+// Dotenv files the environment manager may read or write; anything else is
+// rejected before it reaches the bridge.
+export const managedEnvFiles = [".env", ".env.local", ".env.production"] as const;
+
+const envEntrySchema = z
+  .object({
+    key: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,127}$/),
+    value: z
+      .string()
+      .max(4096)
+      .refine((value) => !/[\0\r\n]/.test(value), {
+        message: "Values cannot contain line breaks.",
+      }),
+  })
+  .strict();
+
+export const envRequestSchema = z
+  .object({
+    action: z.literal("save"),
+    file: z.enum(managedEnvFiles),
+    entries: z.array(envEntrySchema).max(200),
+    syncProfile: z.boolean().optional(),
+  })
+  .strict();
+
+export type EnvRequest = z.infer<typeof envRequestSchema>;
+
+export const terminalRequestSchema = z
+  .object({
+    action: z.literal("exec"),
+    command: z
+      .string()
+      .min(1)
+      .max(4000)
+      .refine((value) => !value.includes("\0"), {
+        message: "Commands cannot contain NUL bytes.",
+      }),
+    cwd: z.string().max(512).optional(),
+  })
+  .strict();
+
+export type TerminalRequest = z.infer<typeof terminalRequestSchema>;

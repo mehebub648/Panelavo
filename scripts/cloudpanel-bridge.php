@@ -178,6 +178,33 @@ function fileManagerListing(Site $site, ?string $relative = null): array
     return ['path' => $base, 'relativePath' => trim($relative, '/'), 'items' => $items];
 }
 
+// Creates (and owns as the site user) every missing directory level of a
+// validated relative path, so uploads and extractions can target folders that
+// do not exist yet. Symlinked levels are rejected and the final path is
+// re-verified against the base after creation.
+function ensureFileManagerDirectory(Site $site, string $base, string $relative): string
+{
+    $relative = trim(str_replace('\\', '/', $relative), '/');
+    if ($relative === '') return $base;
+    $parts = explode('/', $relative);
+    foreach ($parts as $part) {
+        if ($part === '' || $part === '.' || $part === '..') respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+    }
+    $path = $base;
+    foreach ($parts as $part) {
+        $path .= '/' . $part;
+        if (is_link($path) || (file_exists($path) && !is_dir($path))) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+        if (!is_dir($path)) {
+            if (!mkdir($path, 0770)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+            chown($path, $site->getUser());
+            chgrp($path, $site->getUser());
+        }
+    }
+    $real = realpath($path);
+    if (!$real || ($real !== $base && !str_starts_with($real, $base . '/'))) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+    return $real;
+}
+
 function deleteTree(string $path): void
 {
     if (is_link($path) || is_file($path)) { unlink($path); return; }
@@ -193,6 +220,169 @@ function copyTree(string $source, string $destination): void
 }
 
 
+
+// --- Environment management ---------------------------------------------------
+// One canonical view of a site's environment variables: dotenv files in the
+// application root plus a marker-tagged, Panelavo-managed export block in the
+// site user's ~/.profile. Saving keeps both sides in sync so applications get
+// their variables whether they read .env themselves or inherit a login-shell
+// environment (SSH, cron, terminal). PM2 launches through Operations also
+// receive the .env variables directly (see dotenvOperationEnv), so nothing
+// depends on the application parsing .env.
+
+const PANELAVO_ENV_FILES = ['.env', '.env.local', '.env.production'];
+const PANELAVO_PROFILE_START = '# >>> panelavo:env >>> managed by Panelavo — do not edit inside this block';
+const PANELAVO_PROFILE_END = '# <<< panelavo:env <<<';
+
+function parseEnvContent(string $content): array
+{
+    $entries = [];
+    foreach (preg_split('/\R/', $content) ?: [] as $line) {
+        $line = ltrim($line);
+        if ($line === '' || str_starts_with($line, '#')) continue;
+        if (str_starts_with($line, 'export ')) $line = ltrim(substr($line, 7));
+        if (!preg_match('/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/', $line, $m)) continue;
+        $value = trim($m[2]);
+        if ($value !== '' && ($value[0] === '"' || $value[0] === "'")) {
+            $quote = $value[0];
+            if (strlen($value) >= 2 && str_ends_with($value, $quote)) {
+                $value = substr($value, 1, -1);
+                if ($quote === '"') $value = str_replace(['\\"', '\\n', '\\\\'], ['"', "\n", '\\'], $value);
+            }
+        } elseif (($hash = strpos($value, ' #')) !== false) {
+            $value = rtrim(substr($value, 0, $hash));
+        }
+        $entries[$m[1]] = $value;
+    }
+    return $entries;
+}
+
+function formatEnvValue(string $value): string
+{
+    if ($value !== '' && preg_match('#^[A-Za-z0-9_@./:+,=-]+$#', $value)) return $value;
+    return '"' . str_replace(['\\', '"', "\n"], ['\\\\', '\\"', '\\n'], $value) . '"';
+}
+
+// Rewrites a dotenv file in place: known keys keep their position, removed
+// keys disappear, new keys are appended, and comments/unknown lines survive.
+function renderEnvFile(string $existing, array $entries): string
+{
+    $out = [];
+    $handled = [];
+    foreach ($existing === '' ? [] : (preg_split('/\R/', $existing) ?: []) as $line) {
+        $probe = ltrim($line);
+        if (str_starts_with($probe, 'export ')) $probe = ltrim(substr($probe, 7));
+        $key = preg_match('/^([A-Za-z_][A-Za-z0-9_]*)\s*=/', $probe, $m) ? $m[1] : null;
+        if ($key === null) { $out[] = $line; continue; }
+        if (!array_key_exists($key, $entries)) continue;
+        if (!isset($handled[$key])) { $out[] = $key . '=' . formatEnvValue((string) $entries[$key]); $handled[$key] = true; }
+    }
+    foreach ($entries as $key => $value) {
+        if (!isset($handled[$key])) $out[] = $key . '=' . formatEnvValue((string) $value);
+    }
+    while ($out && trim((string) end($out)) === '') array_pop($out);
+    return $out ? implode("\n", $out) . "\n" : '';
+}
+
+function validateEnvEntries(mixed $submitted): array
+{
+    if (!is_array($submitted) || count($submitted) > 200) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+    $entries = [];
+    foreach ($submitted as $entry) {
+        $key = is_array($entry) ? (string) ($entry['key'] ?? '') : '';
+        $value = is_array($entry) ? (string) ($entry['value'] ?? '') : '';
+        if (!preg_match('/^[A-Za-z_][A-Za-z0-9_]{0,127}$/', $key)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+        if (strlen($value) > 4096 || preg_match('/[\0\r\n]/', $value)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+        $entries[$key] = $value;
+    }
+    return $entries;
+}
+
+function siteProfilePath(Site $site): string
+{
+    return '/home/' . $site->getUser() . '/.profile';
+}
+
+function readSiteProfileEnv(Site $site): array
+{
+    $content = (string) @file_get_contents(siteProfilePath($site), false, null, 0, 262144);
+    $inside = false;
+    $block = [];
+    foreach (preg_split('/\R/', $content) ?: [] as $line) {
+        if (str_starts_with(trim($line), '# >>> panelavo:env >>>')) { $inside = true; continue; }
+        if (trim($line) === PANELAVO_PROFILE_END) { $inside = false; continue; }
+        if ($inside) $block[] = $line;
+    }
+    return parseEnvContent(implode("\n", $block));
+}
+
+// Replaces the managed export block (creating ~/.profile when missing) so a
+// login shell — SSH, the panel terminal, cron — sees the same variables as
+// the synced .env. Everything outside the markers is preserved verbatim.
+function writeSiteProfileEnv(Site $site, array $entries): void
+{
+    $path = siteProfilePath($site);
+    $content = (string) @file_get_contents($path, false, null, 0, 262144);
+    $kept = [];
+    $inside = false;
+    foreach ($content === '' ? [] : (preg_split('/\R/', $content) ?: []) as $line) {
+        if (str_starts_with(trim($line), '# >>> panelavo:env >>>')) { $inside = true; continue; }
+        if (trim($line) === PANELAVO_PROFILE_END) { $inside = false; continue; }
+        if (!$inside) $kept[] = $line;
+    }
+    while ($kept && trim((string) end($kept)) === '') array_pop($kept);
+    $block = [PANELAVO_PROFILE_START];
+    foreach ($entries as $key => $value) {
+        $block[] = 'export ' . $key . "='" . str_replace("'", "'\\''", (string) $value) . "'";
+    }
+    $block[] = PANELAVO_PROFILE_END;
+    $next = ($kept ? implode("\n", $kept) . "\n\n" : '') . implode("\n", $block) . "\n";
+    if (@file_put_contents($path, $next) === false) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+    @chmod($path, 0644);
+    @chown($path, $site->getUser());
+    @chgrp($path, $site->getUser());
+}
+
+function envSection(Site $site): array
+{
+    $root = siteRootPath($site);
+    $files = [];
+    foreach (PANELAVO_ENV_FILES as $name) {
+        $path = $root . '/' . $name;
+        $exists = is_file($path);
+        $entries = [];
+        if ($exists && filesize($path) <= 262144) {
+            foreach (parseEnvContent((string) @file_get_contents($path)) as $key => $value) {
+                $entries[] = ['key' => $key, 'value' => $value];
+            }
+        }
+        $files[] = ['name' => $name, 'exists' => $exists, 'entries' => $entries];
+    }
+    $profile = [];
+    foreach (readSiteProfileEnv($site) as $key => $value) $profile[] = ['key' => $key, 'value' => $value];
+    return ['path' => $root, 'files' => $files, 'userEnv' => $profile, 'profilePath' => siteProfilePath($site)];
+}
+
+// Site-owned .env variables injected into PM2 launches so applications that
+// never parse .env still start with their configured environment. Keys are
+// restricted to the shape runSiteCommand accepts; oversized or unusual
+// entries are skipped rather than failing the launch, and reserved process
+// variables are never overridden.
+function dotenvOperationEnv(string $root): array
+{
+    $path = $root . '/.env';
+    if (!is_file($path) || filesize($path) > 262144) return [];
+    $reserved = ['PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'IFS', 'ENV', 'BASH_ENV'];
+    $env = [];
+    foreach (parseEnvContent((string) @file_get_contents($path)) as $key => $value) {
+        if (!preg_match('/^[A-Z_][A-Z0-9_]{0,63}$/', $key)) continue;
+        if (in_array($key, $reserved, true) || str_starts_with($key, 'LD_')) continue;
+        if (strlen($value) > 500 || str_contains($value, "\0")) continue;
+        $env[$key] = $value;
+        if (count($env) >= 100) break;
+    }
+    return $env;
+}
 
 function siteKeyPair(Site $site): array
 {
@@ -355,10 +545,14 @@ function findSiteTool(string $home, string $binary, bool $asRoot = false): ?stri
 
 // Runs an allow-listed maintenance command inside the site root as the site
 // user, through env(1) so PATH/HOME survive sudo's environment reset.
-function runSiteCommand(Site $site, array $args, int $timeout = 300, bool $asRoot = false, array $extraEnv = []): array
+function runSiteCommand(Site $site, array $args, int $timeout = 300, bool $asRoot = false, array $extraEnv = [], ?string $workingDirectory = null): array
 {
-    $cwd = realpath(siteRootPath($site));
+    $cwd = realpath($workingDirectory ?? siteRootPath($site));
     if (!$cwd) respond(['ok' => false, 'code' => 'SITE_NOT_FOUND']);
+    // A caller-provided working directory must stay inside the site home.
+    if ($workingDirectory !== null && !$asRoot && !pathIsContained($cwd, '/home/' . $site->getUser())) {
+        respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+    }
     $timeout = max(1, min($timeout, 900));
     $home = $asRoot ? '/root' : '/home/' . $site->getUser();
     $runUser = $asRoot ? 'root' : (string) $site->getUser();
@@ -456,6 +650,60 @@ function runSiteCommand(Site $site, array $args, int $timeout = 300, bool $asRoo
         'timedOut' => $code === 137,
         'stdout' => $stdout,
         'stderr' => $stderr,
+    ];
+}
+
+// Panel terminal: runs one user-supplied command line strictly as the
+// unprivileged site user through a login shell (so ~/.profile — including the
+// Panelavo-managed environment block — is loaded), with a bounded timeout and
+// a working directory locked inside the site home. The final working
+// directory is captured through a per-invocation random marker so `cd`
+// persists across commands. This is the same privilege boundary as the site
+// user's own SSH access; it never elevates.
+function runTerminalCommand(Site $site, string $command, ?string $requestedCwd): array
+{
+    $home = '/home/' . $site->getUser();
+    if ($command === '' || strlen($command) > 4000 || str_contains($command, "\0")) {
+        respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+    }
+    $cwd = siteRootPath($site);
+    if (is_string($requestedCwd) && $requestedCwd !== '') {
+        if (strlen($requestedCwd) > 512 || str_contains($requestedCwd, "\0")) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+        $resolved = realpath($requestedCwd);
+        if (!$resolved || !is_dir($resolved) || !pathIsContained($resolved, $home)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+        $cwd = $resolved;
+    }
+    $marker = 'PANELAVO_CWD_' . bin2hex(random_bytes(12));
+    // /etc/profile resets PATH in login shells, so the site tool directories
+    // (nvm Node.js, Composer, Bun, …) are re-prepended after profiles load.
+    $wrapped = 'export PATH=' . escapeshellarg(implode(':', sitePathDirs($home))) . ':"$PATH"' . "\n"
+        . $command . "\n"
+        . '__panelavo_status=$?' . "\n"
+        . 'printf "\n%s%s" ' . escapeshellarg($marker) . ' "$PWD"' . "\n"
+        . 'exit $__panelavo_status';
+    $result = runSiteCommand(
+        $site,
+        ['bash', '-l', '-c', $wrapped],
+        180,
+        false,
+        ['TERM' => 'xterm-256color'],
+        $cwd,
+    );
+    $output = $result['stdout'];
+    $nextCwd = $cwd;
+    $position = strrpos($output, $marker);
+    if ($position !== false) {
+        $candidate = trim(substr($output, $position + strlen($marker)));
+        $output = rtrim(substr($output, 0, $position), "\n");
+        $candidateReal = $candidate !== '' ? realpath($candidate) : false;
+        if ($candidateReal && is_dir($candidateReal) && pathIsContained($candidateReal, $home)) $nextCwd = $candidateReal;
+    }
+    if ($result['stderr'] !== '') $output .= ($output !== '' ? "\n" : '') . $result['stderr'];
+    return [
+        'exitCode' => $result['code'],
+        'timedOut' => $result['timedOut'],
+        'output' => $output,
+        'cwd' => $nextCwd,
     ];
 }
 
@@ -1038,6 +1286,10 @@ function operationsState(Site $site, User $user): array
         'reverseProxyUrl' => $site->getReverseProxyUrl(),
         'expectedPort' => $port['expected'],
         'port' => $port,
+        'listeners' => array_values(array_map(
+            static fn(array $item): array => ['port' => (int) $item['port'], 'address' => (string) $item['address'], 'process' => (string) $item['process']],
+            array_filter($listeners, static fn(array $item): bool => !empty($item['siteOwned'])),
+        )),
         'checkedAt' => gmdate(DATE_ATOM),
         'hasPackageJson' => $package !== null,
         'hasPackageLock' => is_file($root . '/package-lock.json'),
@@ -1075,9 +1327,35 @@ function operationsState(Site $site, User $user): array
     ];
 }
 
+// Compares the site's configured .env against the environment a running
+// process actually has. Only key names and a sync verdict leave the bridge —
+// values never reach the browser through the Operations payload.
+function envDriftForRunning(array $configured, array $runningSets): array
+{
+    $keys = [];
+    foreach (array_slice(array_keys($configured), 0, 50) as $key) {
+        $status = 'unknown';
+        foreach ($runningSets as $running) {
+            if (!array_key_exists($key, $running)) { $status = 'missing'; break; }
+            $status = (string) $running[$key] === (string) $configured[$key]
+                ? ($status === 'unknown' ? 'match' : $status)
+                : 'differs';
+            if ($status === 'differs') break;
+        }
+        $keys[] = ['key' => (string) $key, 'status' => $status];
+    }
+    return $keys;
+}
+
 function actionsSection(Site $site, User $user): array
 {
     $state = operationsState($site, $user);
+    $dotenvPath = $state['path'] . '/.env';
+    $dotenv = is_file($dotenvPath) && filesize($dotenvPath) <= 262144
+        ? parseEnvContent((string) @file_get_contents($dotenvPath))
+        : [];
+    $runningEnvSets = [];
+
     $processes = [];
     if ($state['pm2Available'] && is_dir($state['path'])) {
         $pm2 = runSiteCommand($site, ['pm2', 'jlist'], 20);
@@ -1085,18 +1363,92 @@ function actionsSection(Site $site, User $user): array
         $list = $start === false ? null : json_decode(substr($pm2['stdout'], $start), true);
         foreach (is_array($list) ? $list : [] as $proc) {
             if (!is_array($proc)) continue;
+            $env = is_array($proc['pm2_env'] ?? null) ? $proc['pm2_env'] : [];
+            $status = (string) ($env['status'] ?? 'unknown');
+            $uptimeMs = is_numeric($env['pm_uptime'] ?? null) ? (int) $env['pm_uptime'] : 0;
             $processes[] = [
                 'name' => (string) ($proc['name'] ?? ''),
-                'status' => (string) ($proc['pm2_env']['status'] ?? 'unknown'),
+                'status' => $status,
                 'cpu' => (float) ($proc['monit']['cpu'] ?? 0),
                 'memory' => (int) ($proc['monit']['memory'] ?? 0),
-                'restarts' => (int) ($proc['pm2_env']['restart_time'] ?? 0),
+                'restarts' => (int) ($env['restart_time'] ?? 0),
+                'pid' => (int) ($proc['pid'] ?? 0),
+                'uptimeSeconds' => $status === 'online' && $uptimeMs > 0
+                    ? max(0, (int) round((microtime(true) * 1000 - $uptimeMs) / 1000))
+                    : 0,
             ];
+            // pm2 jlist merges the spawn-time environment into pm2_env, so the
+            // configured keys can be checked for drift against the live process.
+            if ($status === 'online' && $dotenv) {
+                $running = [];
+                foreach (array_keys($dotenv) as $key) {
+                    if (array_key_exists($key, $env) && is_scalar($env[$key])) $running[$key] = (string) $env[$key];
+                }
+                $runningEnvSets[] = $running;
+            }
         }
     }
+
+    // Live Docker Compose state for this site's project: container status,
+    // health, and published ports, plus the entry service's real environment.
+    $containers = [];
+    $compose = $state['compose'] ?? null;
+    if (is_array($compose) && !empty($compose['daemonAvailable']) && !empty($compose['pluginAvailable']) && !empty($compose['file'])) {
+        $ps = runSiteCommand($site, ['docker', 'compose', '-f', $compose['file'], '-p', $state['composeProject'], 'ps', '-a', '--format', 'json'], 20, true);
+        if ($ps['code'] === 0) {
+            $rows = json_decode(trim($ps['stdout']), true);
+            if (!is_array($rows) || array_is_list($rows) === false) {
+                $rows = [];
+                foreach (preg_split('/\R/', trim($ps['stdout'])) ?: [] as $line) {
+                    $row = json_decode($line, true);
+                    if (is_array($row)) $rows[] = $row;
+                }
+            }
+            $entryContainerId = null;
+            foreach ($rows as $row) {
+                if (!is_array($row)) continue;
+                $ports = [];
+                foreach ((array) ($row['Publishers'] ?? []) as $publisher) {
+                    if (!is_array($publisher) || empty($publisher['PublishedPort'])) continue;
+                    $ports[] = (($publisher['URL'] ?? '') !== '' ? $publisher['URL'] . ':' : '')
+                        . $publisher['PublishedPort'] . '→' . ($publisher['TargetPort'] ?? '?');
+                }
+                $containers[] = [
+                    'name' => (string) ($row['Name'] ?? ''),
+                    'service' => (string) ($row['Service'] ?? ''),
+                    'state' => (string) ($row['State'] ?? 'unknown'),
+                    'health' => (string) ($row['Health'] ?? ''),
+                    'status' => (string) ($row['Status'] ?? ''),
+                    'ports' => array_values(array_unique($ports)),
+                ];
+                if (($row['Service'] ?? null) === ($compose['entryService'] ?? '') && ($row['State'] ?? '') === 'running') {
+                    $entryContainerId = (string) ($row['ID'] ?? '');
+                }
+            }
+            if ($dotenv && $entryContainerId !== null && preg_match('/^[0-9a-f]{12,64}$/i', $entryContainerId)) {
+                $inspect = runSiteCommand($site, ['docker', 'inspect', '--format', '{{json .Config.Env}}', $entryContainerId], 15, true);
+                $containerEnv = $inspect['code'] === 0 ? json_decode(trim($inspect['stdout']), true) : null;
+                if (is_array($containerEnv)) {
+                    $running = [];
+                    foreach ($containerEnv as $pair) {
+                        if (is_string($pair) && ($eq = strpos($pair, '=')) !== false) $running[substr($pair, 0, $eq)] = substr($pair, $eq + 1);
+                    }
+                    $runningEnvSets[] = $running;
+                }
+            }
+        }
+    }
+
+    $runtime = [
+        'containers' => $containers,
+        'listeners' => $state['listeners'],
+        'envFile' => is_file($dotenvPath) ? '.env' : null,
+        'env' => $runningEnvSets ? envDriftForRunning($dotenv, $runningEnvSets) : [],
+        'checkedAt' => gmdate(DATE_ATOM),
+    ];
     unset($state['ecosystemFile'], $state['venvPython'], $state['composeProject']);
     if (is_array($state['compose'] ?? null)) unset($state['compose']['_runtimeConfig']);
-    return $state + ['pm2' => $processes];
+    return $state + ['pm2' => $processes, 'runtime' => $runtime];
 }
 
 // Maps one validated operation identifier to an exact executable argument
@@ -1123,6 +1475,18 @@ function resolveOperationStep(array $state, string $command, array $operation): 
         'asRoot' => $asRoot,
     ];
 
+    // PM2 launches receive the site's .env variables plus CloudPanel's
+    // expected port, so the live process environment matches the configured
+    // one even when the application never parses .env itself. CloudPanel's
+    // port always wins over a conflicting .env PORT.
+    $portEnv = !empty($state['expectedPort'])
+        ? ['PORT' => (string) $state['expectedPort'], 'HOST' => '127.0.0.1', 'HOSTNAME' => '127.0.0.1']
+        : [];
+    $withRuntimeEnv = static function (array $definition) use ($root, $portEnv): array {
+        $env = array_merge(dotenvOperationEnv($root), $portEnv);
+        if ($env) $definition['env'] = $env;
+        return $definition;
+    };
     $nodeManagerArgs = static function (array $verb) use ($state, $manager, $require, $available): array {
         $require($state['hasPackageJson'] && is_array($manager) && empty($manager['ambiguous']));
         $require($available($manager['id']), 'TOOL_UNAVAILABLE');
@@ -1288,20 +1652,14 @@ function resolveOperationStep(array $state, string $command, array $operation): 
         case 'pm2-start':
             $require($available('pm2'), 'TOOL_UNAVAILABLE');
             if ($state['ecosystemFile'] !== null) {
-                $definition = $step('Start or reload ecosystem', ['pm2', 'startOrReload', $state['ecosystemFile']], 300);
-                if (!empty($state['expectedPort'])) $definition['env'] = ['PORT' => (string) $state['expectedPort'], 'HOST' => '127.0.0.1', 'HOSTNAME' => '127.0.0.1'];
-                return $definition;
+                return $withRuntimeEnv($step('Start or reload ecosystem', ['pm2', 'startOrReload', $state['ecosystemFile']], 300));
             }
             $require($state['hasStartScript'] && is_array($manager) && empty($manager['ambiguous']));
             $require($available($manager['id']), 'TOOL_UNAVAILABLE');
-            $definition = $step('Start or reload application', ['pm2', 'start', $manager['id'], '--name', $state['processName'], '--', 'start'], 300);
-            if (!empty($state['expectedPort'])) $definition['env'] = ['PORT' => (string) $state['expectedPort'], 'HOST' => '127.0.0.1', 'HOSTNAME' => '127.0.0.1'];
-            return $definition;
+            return $withRuntimeEnv($step('Start or reload application', ['pm2', 'start', $manager['id'], '--name', $state['processName'], '--', 'start'], 300));
         case 'pm2-restart':
             $require($available('pm2'), 'TOOL_UNAVAILABLE');
-            $definition = $step('Restart processes', ['pm2', 'restart', 'all', '--update-env'], 300);
-            if (!empty($state['expectedPort'])) $definition['env'] = ['PORT' => (string) $state['expectedPort'], 'HOST' => '127.0.0.1', 'HOSTNAME' => '127.0.0.1'];
-            return $definition;
+            return $withRuntimeEnv($step('Restart processes', ['pm2', 'restart', 'all', '--update-env'], 300));
         case 'pm2-stop':
             $require($available('pm2'), 'TOOL_UNAVAILABLE');
             return $step('Stop processes', ['pm2', 'stop', 'all'], 300);
@@ -1315,9 +1673,8 @@ function resolveOperationStep(array $state, string $command, array $operation): 
             $target = (string) ($operation['name'] ?? '');
             $require(preg_match('/^[A-Za-z0-9._-]{1,100}$/', $target) === 1, 'INVALID_REQUEST');
             $verb = substr($command, 4, -4);
-            $definition = $step(ucfirst($verb) . ' process', ['pm2', $verb, $target], 300);
-            if ($verb === 'restart' && !empty($state['expectedPort'])) $definition['env'] = ['PORT' => (string) $state['expectedPort'], 'HOST' => '127.0.0.1', 'HOSTNAME' => '127.0.0.1'];
-            return $definition;
+            $definition = $step(ucfirst($verb) . ' process', ['pm2', $verb, $target, ...($verb === 'restart' ? ['--update-env'] : [])], 300);
+            return $verb === 'restart' ? $withRuntimeEnv($definition) : $definition;
         case 'pm2-save':
             $require($available('pm2'), 'TOOL_UNAVAILABLE');
             return $step('Persist process state', ['pm2', 'save', '--force'], 60);
@@ -1980,7 +2337,35 @@ function runComposePortSelfTest(): never
     exit(0);
 }
 
+function runEnvSelfTest(): never
+{
+    $assert = static function (bool $condition, string $message): void {
+        if (!$condition) throw new RuntimeException($message);
+    };
+    $parsed = parseEnvContent("# comment\nAPP_NAME=Panelavo\nexport APP_URL=\"https://example.com\"\nAPP_KEY='secret value'\nDB_PORT=3306 # inline comment\nBROKEN LINE\nESCAPED=\"a\\\"b\"\n");
+    $assert($parsed['APP_NAME'] === 'Panelavo', 'plain values should parse');
+    $assert($parsed['APP_URL'] === 'https://example.com', 'export prefix and double quotes should parse');
+    $assert($parsed['APP_KEY'] === 'secret value', 'single-quoted values should parse');
+    $assert($parsed['DB_PORT'] === '3306', 'inline comments should be stripped from unquoted values');
+    $assert($parsed['ESCAPED'] === 'a"b', 'escaped quotes should unescape');
+    $assert(!isset($parsed['BROKEN']), 'malformed lines should be ignored');
+
+    $rendered = renderEnvFile("# keep me\nAPP_NAME=Old\nREMOVED=1\nAPP_NAME=Duplicate\n", [
+        'APP_NAME' => 'New',
+        'ADDED' => 'has spaces "and" quotes',
+    ]);
+    $assert(str_contains($rendered, "# keep me\n"), 'comments should survive a rewrite');
+    $assert(substr_count($rendered, 'APP_NAME=') === 1, 'duplicate keys should collapse to one line');
+    $assert(!str_contains($rendered, 'REMOVED'), 'removed keys should disappear');
+    $assert(str_contains($rendered, 'ADDED="has spaces \\"and\\" quotes"'), 'unsafe values should be quoted and escaped');
+    $assert(parseEnvContent($rendered)['ADDED'] === 'has spaces "and" quotes', 'rendered files should round-trip');
+    $assert(renderEnvFile('', []) === '', 'an empty save should produce an empty file');
+    echo "Environment management self-test passed.\n";
+    exit(0);
+}
+
 if (($argv[1] ?? '') === '--self-test-ports') runComposePortSelfTest();
+if (($argv[1] ?? '') === '--self-test-env') runEnvSelfTest();
 
 require CLOUDPANEL_ROOT . '/vendor/autoload.php';
 (new Dotenv())->bootEnv(CLOUDPANEL_ROOT . '/.env');
@@ -2130,6 +2515,12 @@ try {
                 'file-manager' => fileManagerListing($site, null),
                 'git' => gitSection($site),
                 'actions' => actionsSection($site, $user),
+                'env' => envSection($site),
+                'terminal' => [
+                    'user' => $site->getUser(),
+                    'home' => '/home/' . $site->getUser(),
+                    'root' => siteRootPath($site),
+                ],
                 'cron-jobs' => ['sitePath' => '/home/' . $site->getUser() . '/htdocs/' . $site->getRootDirectory(), 'items' => array_map(fn($item) => ['id' => (string) $item->getId(), 'schedule' => $item->getSchedule(), 'command' => $item->getCommand(), 'expression' => $item->getCrontabExpression()], $site->getCronJobs()->toArray())],
                 'logs' => (function () use ($site) {
                     $base = '/home/' . $site->getUser() . '/logs';
@@ -2149,7 +2540,7 @@ try {
             $operation = $input['operation'] ?? [];
             $action = (string) ($operation['action'] ?? '');
             $model = $updater = null;
-            if (!in_array($section, ['file-manager', 'logs', 'git', 'actions'], true) && !($section === 'users' && $action === 'generate-keypair')) {
+            if (!in_array($section, ['file-manager', 'logs', 'git', 'actions', 'env', 'terminal'], true) && !($section === 'users' && $action === 'generate-keypair')) {
                 [$model, $updater] = siteModel($site);
             }
 
@@ -2442,6 +2833,30 @@ try {
                 if ($action === 'deploy') $run['plan'] = $plan;
                 if ($action === 'deploy' || count($results) > 1) $run['steps'] = $results;
                 respond(['ok' => true, 'data' => ['run' => $run] + actionsSection($site, $user)]);
+            } elseif ($section === 'env' && $action === 'save') {
+                $file = (string) ($operation['file'] ?? '.env');
+                if (!in_array($file, PANELAVO_ENV_FILES, true)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                $entries = validateEnvEntries($operation['entries'] ?? null);
+                $root = siteRootPath($site);
+                if (!is_dir($root)) {
+                    if (!mkdir($root, 0755, true)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                    chown($root, $site->getUser());
+                    chgrp($root, $site->getUser());
+                }
+                $path = $root . '/' . $file;
+                if (is_link($path) || (file_exists($path) && !is_file($path))) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                $existing = is_file($path) && filesize($path) <= 262144 ? (string) @file_get_contents($path) : '';
+                if (@file_put_contents($path, renderEnvFile($existing, $entries)) === false) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                @chmod($path, 0640);
+                chown($path, $site->getUser());
+                chgrp($path, $site->getUser());
+                // Only the primary .env mirrors into the site user's login
+                // environment; secondary dotenv files stay file-only.
+                if ($file === '.env' && ($operation['syncProfile'] ?? true)) writeSiteProfileEnv($site, $entries);
+                respond(['ok' => true, 'data' => envSection($site)]);
+            } elseif ($section === 'terminal' && $action === 'exec') {
+                $result = runTerminalCommand($site, (string) ($operation['command'] ?? ''), isset($operation['cwd']) ? (string) $operation['cwd'] : null);
+                respond(['ok' => true, 'data' => $result]);
             } elseif ($section === 'file-manager') {
                 $base = fileManagerBase($site);
                 $relative = trim((string) ($operation['path'] ?? ''), '/');
@@ -2513,10 +2928,11 @@ try {
                     $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
                     if (!preg_match('/^(zip|7z|rar)$/i', $ext)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
                     
+                    // The destination folder is created (site-user-owned) when
+                    // it does not exist yet.
                     $extractTo = trim((string) ($operation['extractTo'] ?? $relative));
-                    $targetDirectory = safeFileManagerPath($base, $extractTo);
-                    if (!is_dir($targetDirectory)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
-                    
+                    $targetDirectory = ensureFileManagerDirectory($site, $base, $extractTo);
+
                     $command = [];
                     if ($ext === 'zip') {
                         $command = ['/usr/bin/sudo', '-u', $site->getUser(), '/usr/bin/unzip', '-q', '-o', $path, '-d', $targetDirectory];

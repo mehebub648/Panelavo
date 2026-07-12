@@ -12,6 +12,38 @@ export type Pm2Process = {
   cpu: number;
   memory: number;
   restarts: number;
+  pid?: number;
+  uptimeSeconds?: number;
+};
+
+export type RuntimeContainer = {
+  name: string;
+  service: string;
+  state: string;
+  health?: string;
+  status?: string;
+  ports?: string[];
+};
+
+export type SiteListener = {
+  port: number;
+  address: string;
+  process?: string;
+};
+
+// Sync verdict between the configured .env and the environment the running
+// process actually has. Only key names and verdicts reach the browser.
+export type RuntimeEnvKey = {
+  key: string;
+  status: "match" | "differs" | "missing" | "unknown";
+};
+
+export type RuntimeInfo = {
+  containers?: RuntimeContainer[];
+  listeners?: SiteListener[];
+  envFile?: string | null;
+  env?: RuntimeEnvKey[];
+  checkedAt?: string;
 };
 
 export type OperationTool = {
@@ -127,6 +159,8 @@ export type RawOperationsData = {
   pm2Available?: boolean;
   dockerAvailable?: boolean;
   pm2?: Pm2Process[];
+  listeners?: SiteListener[];
+  runtime?: RuntimeInfo;
   run?: OperationRun;
 };
 

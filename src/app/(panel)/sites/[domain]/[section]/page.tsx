@@ -7,6 +7,9 @@ import { DomainsManager } from "@/components/sites/domains-manager";
 import { SiteSectionManager } from "@/components/sites/site-section-manager";
 import { GitManager } from "@/components/sites/git-manager";
 import { ActionsManager } from "@/components/sites/actions-manager";
+import { EnvManager, type EnvSectionData } from "@/components/sites/env-manager";
+import { TerminalManager, type TerminalData } from "@/components/sites/terminal-manager";
+import { getServerPublicIp } from "@/server/network/server-ip";
 import type { OperationsData } from "@/types/operations";
 
 const titles: Record<string, string> = {
@@ -20,6 +23,7 @@ const titles: Record<string, string> = {
   users: "SSH/FTP",
   "file-manager": "File Manager",
   git: "Git",
+  terminal: "Terminal",
   "cron-jobs": "Cron Jobs",
   logs: "Logs",
 };
@@ -34,6 +38,7 @@ const descriptions: Record<string, string> = {
   users: "Manage shell and file-transfer access to this website.",
   "file-manager": "Browse and organize files in the website root.",
   git: "Manage repository status, remotes, branches, commits, pulls, and pushes.",
+  terminal: "Run commands as the website's system user, in the browser or over SSH.",
   "cron-jobs": "Create and review recurring background commands.",
   logs: "Inspect available log files and clear them when needed.",
 };
@@ -48,13 +53,53 @@ export default async function SiteSectionPage({
   const domain = decodeURIComponent(encodedDomain);
   const session = await requireUserOrRedirect({ allowDuringUpdate: true });
   const cloudPanel = getCloudPanelClient();
+  const canWrite =
+    session.user.canCreateSites || session.user.panelRole === "admin";
   if (section === "settings") {
     const sites = await cloudPanel.listSites(session.record.cloudPanel);
     const site = sites.find((item) => item.domain === domain);
     if (!site) notFound();
     const siteMeta = await import("@/server/sites/site-meta").then(m => m.getSiteMeta(domain));
     const mergedSite = siteMeta ? { ...site, meta: siteMeta } : site;
-    return <SiteSettings initialSite={mergedSite} user={session.user} />;
+    // Environment values are secrets: they are only loaded and rendered for
+    // users who can already manage this website's files.
+    const env = canWrite
+      ? await cloudPanel
+          .getSiteSection(session.record.cloudPanel, domain, "env")
+          .catch(() => null)
+      : null;
+    return (
+      <div className="w-full space-y-5">
+        <SiteSettings initialSite={mergedSite} user={session.user} />
+        {env ? (
+          <EnvManager
+            domain={domain}
+            initialData={env as EnvSectionData}
+            canWrite={canWrite}
+          />
+        ) : null}
+      </div>
+    );
+  }
+  if (section === "terminal") {
+    const [terminal, host] = await Promise.all([
+      cloudPanel.getSiteSection(session.record.cloudPanel, domain, "terminal"),
+      getServerPublicIp(),
+    ]);
+    const terminalData = { ...(terminal as Omit<TerminalData, "host">), host };
+    return (
+      <div className="w-full space-y-5">
+        <div>
+          <h2 className="text-2xl font-bold tracking-tight text-ink">Terminal</h2>
+          <p className="mt-1 text-sm text-slate-500">{descriptions.terminal}</p>
+        </div>
+        <TerminalManager
+          domain={domain}
+          initialData={terminalData}
+          canWrite={canWrite}
+        />
+      </div>
+    );
   }
   if (section === "domains") {
     const certificates = await cloudPanel.getSiteSection(

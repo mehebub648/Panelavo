@@ -10,6 +10,7 @@ import {
   Globe2,
   Settings,
   ShieldCheck,
+  SquareTerminal,
   Zap,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -23,6 +24,7 @@ const sections = [
   ["security", "Security", ShieldCheck],
   ["file-manager", "Files", Files],
   ["git", "Git", GitBranch],
+  ["terminal", "Terminal", SquareTerminal],
 ] as const;
 
 const sectionGroups: Record<string, readonly string[]> = {

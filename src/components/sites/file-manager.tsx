@@ -60,6 +60,22 @@ function formatModified(value: string) {
   return value ? dateFormatter.format(new Date(value)) : "—";
 }
 
+// Resolves a destination the user typed ("." current, ".." parent, nested or
+// absolute-looking paths) against the current folder into the home-relative
+// path the server expects. Missing folders are created server-side.
+function resolveDestination(current: string, input: string) {
+  const parts = current ? current.split("/") : [];
+  for (const segment of input.replace(/\\/g, "/").split("/")) {
+    if (!segment || segment === ".") continue;
+    if (segment === "..") {
+      parts.pop();
+      continue;
+    }
+    parts.push(segment);
+  }
+  return parts.join("/");
+}
+
 export function FileManager({ domain, initialData }: { domain: string; initialData: FileManagerData }) {
   const [data, setData] = useState(initialData);
   const [busy, setBusy] = useState<string | false>(false);
@@ -190,12 +206,12 @@ export function FileManager({ domain, initialData }: { domain: string; initialDa
       <MenuButton icon={<KeyRound />} label="Change permissions" onClick={() => { setModal({ kind: "permissions", name: menu.item.name, value: menu.item.permissions ?? "0755" }); setMenu(null); }} />
       <div className="my-1 border-t" /><MenuButton danger icon={<Trash2 />} label="Delete" onClick={() => { setMenu(null); void remove(menu.item); }} />
     </div>, document.body)}
-    {modal && createPortal(<div className="fixed inset-0 z-[80] flex items-center justify-center overflow-y-auto bg-slate-950/40 p-4 backdrop-blur-sm" onMouseDown={(e) => { if (e.target === e.currentTarget) setModal(null); }}><form className={`my-auto w-full max-h-[calc(100vh-2rem)] overflow-hidden rounded-2xl bg-white p-5 shadow-2xl ${modal.kind === "edit" ? "max-w-6xl" : "max-w-md"}`} onSubmit={async (e) => { e.preventDefault(); const form = new FormData(e.currentTarget); const name = String(form.get("name") ?? modal.name ?? ""); const content = String(form.get("content") ?? ""); let completed = true; if (modal.kind === "rename") await request({ action: "rename", path: current, name: modal.name, newName: name }, "Renamed"); else if (modal.kind === "edit") completed = Boolean(await request({ action: "save-file", path: current, name: modal.name, content }, "File saved", "Saving file…")); else if (modal.kind === "permissions") await request({ action: "chmod", path: current, name: modal.name, mode: name }, "Permissions changed"); else if (modal.kind === "compress") await request({ action: "compress", path: current, name: modal.name, archiveName: name }, "Archive created", "Compressing archive…"); else if (modal.kind === "extract") await request({ action: "extract", path: current, name: modal.name, extractTo: name }, "Archive extracted", "Extracting files…"); else await request({ action: modal.kind === "file" ? "new-file" : "new-folder", path: current, name }, `${modal.kind === "file" ? "File" : "Folder"} created`); if (completed) setModal(null); }}>
+    {modal && createPortal(<div className="fixed inset-0 z-[80] flex items-center justify-center overflow-y-auto bg-slate-950/40 p-4 backdrop-blur-sm" onMouseDown={(e) => { if (e.target === e.currentTarget) setModal(null); }}><form className={`my-auto w-full max-h-[calc(100vh-2rem)] overflow-hidden rounded-2xl bg-white p-5 shadow-2xl ${modal.kind === "edit" ? "max-w-6xl" : "max-w-md"}`} onSubmit={async (e) => { e.preventDefault(); const form = new FormData(e.currentTarget); const name = String(form.get("name") ?? modal.name ?? ""); const content = String(form.get("content") ?? ""); let completed = true; if (modal.kind === "rename") await request({ action: "rename", path: current, name: modal.name, newName: name }, "Renamed"); else if (modal.kind === "edit") completed = Boolean(await request({ action: "save-file", path: current, name: modal.name, content }, "File saved", "Saving file…")); else if (modal.kind === "permissions") await request({ action: "chmod", path: current, name: modal.name, mode: name }, "Permissions changed"); else if (modal.kind === "compress") await request({ action: "compress", path: current, name: modal.name, archiveName: name }, "Archive created", "Compressing archive…"); else if (modal.kind === "extract") await request({ action: "extract", path: current, name: modal.name, extractTo: resolveDestination(current, name) }, "Archive extracted", "Extracting files…"); else await request({ action: modal.kind === "file" ? "new-file" : "new-folder", path: current, name }, `${modal.kind === "file" ? "File" : "Folder"} created`); if (completed) setModal(null); }}>
       <div className="mb-4 flex items-center justify-between gap-4"><div><h3 className="text-lg font-bold capitalize">{modal.kind === "edit" ? `Edit ${modal.name}` : `${modal.kind} ${modal.kind === "rename" || modal.kind === "extract" || modal.kind === "compress" ? modal.name : ""}`}</h3>{modal.kind === "edit" && <p className={`mt-1 flex items-center gap-2 text-xs font-medium ${modal.content === modal.originalContent ? "text-emerald-600" : "text-amber-600"}`}>{busy ? <><LoaderCircle className="h-3.5 w-3.5 animate-spin" />Saving…</> : modal.content === modal.originalContent ? <><span className="h-2 w-2 rounded-full bg-emerald-500" />Saved</> : <><span className="h-2 w-2 rounded-full bg-amber-500" />Unsaved changes</>}</p>}</div><button type="button" onClick={() => setModal(null)}><X className="h-5 w-5" /></button></div>
       {modal.kind === "edit" ? <><input type="hidden" name="content" value={modal.content ?? ""} /><CodeEditor value={modal.content ?? ""} onChange={(content) => setModal((currentModal) => currentModal?.kind === "edit" ? { ...currentModal, content } : currentModal)} language={languageForFile(modal.name ?? "")} height="60vh" ariaLabel={`Edit ${modal.name}`} /></> : <><Input name="name" defaultValue={modal.kind === "rename" ? modal.name : modal.value ?? ""} placeholder={modal.kind === "permissions" ? "0755" : modal.kind === "folder" ? "Folder name" : modal.kind === "extract" ? "Destination folder (e.g. . or .. or public)" : "File name"} pattern={modal.kind === "permissions" ? "[0-7]{3,4}" : undefined} autoFocus required />
         {modal.kind === "permissions" && <p className="mt-2 text-xs text-slate-500">Use an octal mode such as 0644 for files or 0755 for folders.</p>}
         {modal.kind === "compress" && <p className="mt-2 text-xs text-slate-500">Supported formats: .zip, .7z, .rar</p>}
-        {modal.kind === "extract" && <p className="mt-2 text-xs text-slate-500">Enter &quot;.&quot; for the current folder, &quot;..&quot; for the parent, or a specific folder path.</p>}
+        {modal.kind === "extract" && <p className="mt-2 text-xs text-slate-500">Enter &quot;.&quot; for the current folder, &quot;..&quot; for the parent, or a folder path — it is created automatically if it doesn&apos;t exist.</p>}
       </>}
       <div className="mt-5 flex justify-end gap-2"><Button type="button" variant="outline" onClick={() => setModal(null)}>Cancel</Button><Button disabled={!!busy || (modal.kind === "edit" && modal.content === modal.originalContent)}>{busy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}{modal.kind === "edit" ? "Save changes" : modal.kind === "rename" ? "Rename" : modal.kind === "permissions" ? "Apply" : modal.kind === "compress" ? "Compress" : modal.kind === "extract" ? "Extract" : "Create"}</Button></div>
     </form></div>, document.body)}
