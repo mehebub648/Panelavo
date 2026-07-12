@@ -1,8 +1,8 @@
 # Deployment & Operations (PM2)
 
 panelavo runs as a **production** Next.js server managed by
-[PM2](https://pm2.keymetrics.io/). Process name: **`panelavo`** — port
-**`10443`**.
+[PM2](https://pm2.keymetrics.io/). Process name: **`panelavo`** — private
+listener **`127.0.0.1:10443`**, proxied only through the HTTPS CloudPanel vhost.
 
 On a fresh server, `sudo bash setup.sh` does everything below automatically
 (CloudPanel install, site creation, build, PM2, boot persistence). This
@@ -34,14 +34,14 @@ the panel's site user from the application directory
    All host-specific values are detected dynamically — you do **not** need to
    set `APP_BASE_URL` or `SERVER_PUBLIC_IP`:
 
-   - The CSRF origin check compares the request `Origin` against the host the
-     request arrived on (`X-Forwarded-Host` behind the proxy), so the panel
-     works on any domain or IP without configuration.
+   - The CSRF origin check compares the request `Origin` against the HTTP
+     `Host` preserved by Nginx. It deliberately does not trust a supplied
+     `X-Forwarded-Host` value.
    - The server's public IP for DNS "pointed" checks is auto-detected
      (`SERVER_PUBLIC_IP` still works as an optional override).
-   - The session cookie's `Secure` flag follows the actual request scheme
-     (`X-Forwarded-Proto`), so login works over both `https://<domain>` and a
-     direct `http://<ip>:10443` connection.
+   - The session cookie's `Secure` flag follows Nginx's trusted
+     `X-Forwarded-Proto`. Public login is HTTPS-only; port 10443 is bound to
+     loopback and is available only through an explicit SSH recovery tunnel.
    - Do **not** set `NODE_ENV` in `.env.local` — Next ignores it in `start`
      mode and it only causes confusion. PM2 sets `NODE_ENV=production`.
 
@@ -74,7 +74,8 @@ pm2 save                 # snapshot the current process list
 pm2 startup              # prints a one-time `sudo ...` command — run it once
 ```
 
-The panel is now reachable on `https://<panel-domain>` (proxied to `:10443`).
+The panel is now reachable on `https://<panel-domain>` (proxied to the private
+`127.0.0.1:10443` listener). Never publish that listener directly.
 
 The file manager accepts files up to 64 MiB. Run `sudo bash setup.sh` after upgrading so the panel vhost receives its required `client_max_body_size 96m` directive. Setup validates Nginx and restores the previous vhost if validation fails.
 

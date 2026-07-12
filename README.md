@@ -16,7 +16,7 @@ sudo bash setup.sh
 
 The script detects the OS, installs CloudPanel if it is missing, creates the initial panelavo Super Admin using CloudPanel's `admin` role, installs the latest Node.js and publishes a non-root-readable runtime under `/usr/local/lib/panelavo-node`, installs a shared PM2 into `/usr/local`, creates a CloudPanel Node.js site, deploys and builds panelavo inside it, and hosts it with PM2 with systemd persistence across reboots. Corepack is optional; setup uses the pinned pnpm release through `npx` when Node.js does not bundle Corepack. It updates an already-active UFW firewall, but never activates an inactive firewall during remote setup unless `ENABLE_UFW=true` is explicitly supplied.
 
-When it finishes, it prints the panel URL (`http://<server-ip>:10443`) and Super Admin credentials. By default, the CloudPanel site/system user is `panelavo`. The existing `ADMIN_USER`, `ADMIN_PASSWORD`, and `ADMIN_EMAIL` environment names configure this Super Admin for backward compatibility. Other overrides include `PANEL_DOMAIN`, `PANEL_BASE_DOMAIN`, `PANEL_SITE_USER`, `DB_ENGINE`, and `ENABLE_UFW`. Example:
+When it finishes, it prints the HTTPS panel URL and Super Admin credentials. The Next.js process listens only on `127.0.0.1:10443`; public authentication always passes through the CloudPanel/Nginx TLS vhost. For emergency recovery, tunnel the private listener with `ssh -L 10443:127.0.0.1:10443 root@<server-ip>` and browse to `http://127.0.0.1:10443`. By default, the CloudPanel site/system user is `panelavo`. The existing `ADMIN_USER`, `ADMIN_PASSWORD`, and `ADMIN_EMAIL` environment names configure this Super Admin for backward compatibility. Other overrides include `PANEL_DOMAIN`, `PANEL_BASE_DOMAIN`, `PANEL_SITE_USER`, `DB_ENGINE`, and `ENABLE_UFW`. Example:
 
 ```bash
 sudo PANEL_DOMAIN=panelavo.example.com PANEL_BASE_DOMAIN=example.com bash setup.sh
@@ -88,7 +88,7 @@ Open `http://localhost:3000`. The app always talks to a real local CloudPanel in
 
 Copy `.env.example` to `.env.local`. panelavo talks to the installed CloudPanel CLI and local bridge; non-interactive sudo access to `/usr/bin/clpctl` and `/usr/bin/php` is required. `setup.sh` installs the required sudoers rule for the CloudPanel site user.
 
-The application cookie is opaque, `HttpOnly`, `SameSite=Strict`, scoped to `/`, and `Secure` in production. Sessions expire after `SESSION_MAX_AGE_SECONDS`. The initial session store is process memory, so production must run a single Next.js process. Replace the isolated store in `src/server/auth/session.ts` before horizontal scaling or zero-downtime multi-process restarts.
+The application cookie is opaque, `HttpOnly`, `SameSite=Strict`, scoped to `/`, and `Secure` on the public HTTPS route. Sessions expire after `SESSION_MAX_AGE_SECONDS` and are mirrored to the protected `.data` directory so normal process reloads do not sign users out. Login and mutation throttling is also persisted there, so a restart does not clear abuse counters. Production still runs one Next.js process because session and mutation serialization are single-process concerns.
 
 ## Tested CloudPanel CLI integration
 

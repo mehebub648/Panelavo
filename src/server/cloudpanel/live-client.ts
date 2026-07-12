@@ -1,6 +1,5 @@
 import { spawn } from "node:child_process";
 import { readdir } from "node:fs/promises";
-import { join } from "node:path";
 import type {
   CloudPanelClient,
   CloudPanelLoginResult,
@@ -16,6 +15,10 @@ import type {
 import { isPanelAdmin } from "@/server/auth/panel-roles";
 import { AppError } from "./errors";
 
+export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 1;
+export const CLOUDPANEL_BROKER_PATH =
+  "/usr/local/libexec/panelavo/panelavo-broker";
+
 type BridgeResult = {
   ok: boolean;
   code?: string | null;
@@ -25,6 +28,122 @@ type BridgeResult = {
   sites?: CloudPanelSite[];
   data?: unknown;
 };
+
+let brokerHealth:
+  | { checkedAt: number; promise: Promise<void> }
+  | undefined;
+
+function parseBrokerOutput(output: string): BridgeResult {
+  try {
+    const jsonStart = output.indexOf("{");
+    const jsonEnd = output.lastIndexOf("}");
+    if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd >= jsonStart) {
+      return JSON.parse(output.slice(jsonStart, jsonEnd + 1)) as BridgeResult;
+    }
+    return JSON.parse(output.trim()) as BridgeResult;
+  } catch {
+    throw new AppError(
+      "CLOUDPANEL_UNAVAILABLE",
+      "The privileged CloudPanel broker returned invalid data.",
+      503,
+    );
+  }
+}
+
+function invokeBroker(
+  input: Record<string, unknown>,
+  timeout = 15_000,
+): Promise<BridgeResult> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      "/usr/bin/sudo",
+      ["-n", CLOUDPANEL_BROKER_PATH],
+      {
+        shell: false,
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    );
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (stdout.length < 5_000_000) stdout += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      if (stderr.length < 500_000) stderr += chunk.toString("utf8");
+    });
+    child.stdin.end(
+      JSON.stringify({
+        protocolVersion: CLOUDPANEL_BROKER_PROTOCOL_VERSION,
+        ...input,
+      }),
+    );
+    const timer = setTimeout(() => child.kill("SIGKILL"), timeout);
+    child.on("error", () => {
+      clearTimeout(timer);
+      reject(
+        new AppError(
+          "CLOUDPANEL_UNAVAILABLE",
+          "The privileged CloudPanel broker could not be started.",
+          503,
+        ),
+      );
+    });
+    child.on("close", (code, signal) => {
+      clearTimeout(timer);
+      if (code === 0) {
+        try {
+          resolve(parseBrokerOutput(stdout));
+        } catch (error) {
+          reject(error);
+        }
+        return;
+      }
+      reject(
+        new AppError(
+          signal === "SIGKILL" ? "REQUEST_TIMEOUT" : "CLOUDPANEL_UNAVAILABLE",
+          signal === "SIGKILL"
+            ? "The privileged CloudPanel broker took too long to respond."
+            : "The privileged CloudPanel broker rejected the request.",
+          signal === "SIGKILL" ? 504 : 503,
+        ),
+      );
+    });
+  });
+}
+
+export async function checkCloudPanelBroker() {
+  const now = Date.now();
+  if (!brokerHealth || now - brokerHealth.checkedAt > 60_000) {
+    const promise = invokeBroker({ action: "broker-health" }).then((result) => {
+      const data = result.data as
+        | {
+            protocolVersion?: number;
+            privileged?: boolean;
+            cloudPanelAvailable?: boolean;
+          }
+        | undefined;
+      if (
+        !result.ok ||
+        data?.protocolVersion !== CLOUDPANEL_BROKER_PROTOCOL_VERSION ||
+        data.privileged !== true ||
+        data.cloudPanelAvailable !== true
+      ) {
+        throw new AppError(
+          "CLOUDPANEL_UNAVAILABLE",
+          "The installed CloudPanel broker is unavailable or incompatible.",
+          503,
+        );
+      }
+    });
+    brokerHealth = { checkedAt: now, promise };
+  }
+  try {
+    await brokerHealth.promise;
+  } catch (error) {
+    brokerHealth = undefined;
+    throw error;
+  }
+}
 
 export function siteSectionBridgeError(result: BridgeResult) {
   if (result.code === "UPLOAD_TOO_LARGE")
@@ -58,67 +177,28 @@ export function siteSectionBridgeError(result: BridgeResult) {
 }
 
 export class LiveCloudPanelClient implements CloudPanelClient {
-  private run(
-    executable: string,
-    args: string[],
-    options: { input?: string; timeout?: number } = {},
-  ) {
-    return new Promise<string>((resolve, reject) => {
-      const child = spawn("/usr/bin/sudo", ["-n", executable, ...args], {
-        shell: false,
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-      let stdout = "";
-      let stderr = "";
-      const collectStdout = (chunk: Buffer) => {
-        if (stdout.length < 5_000_000) stdout += chunk.toString("utf8");
-      };
-      const collectStderr = (chunk: Buffer) => {
-        if (stderr.length < 500_000) stderr += chunk.toString("utf8");
-      };
-      child.stdout.on("data", collectStdout);
-      child.stderr.on("data", collectStderr);
-      if (options.input) child.stdin.end(options.input);
-      else child.stdin.end();
-      const timeout = setTimeout(() => child.kill("SIGKILL"), options.timeout ?? 15_000);
-      child.on("error", () => {
-        clearTimeout(timeout);
-        reject(new AppError("CLOUDPANEL_UNAVAILABLE", "CloudPanel CLI could not be started.", 503));
-      });
-      child.on("close", (code, signal) => {
-        clearTimeout(timeout);
-        if (code === 0) resolve(stdout);
-        else {
-          const cliOutput = `${stdout}\n${stderr}`;
-          const message = signal === "SIGKILL" ? "CloudPanel CLI took too long to respond."
-            : /already exists|duplicate|already in use/i.test(cliOutput) ? "That name is already in use."
-            : /database(Name|UserName)|constraint|not valid|validation/i.test(cliOutput) ? "Use 2–50 characters, starting with a letter and containing only letters, numbers, and hyphens."
-            : "CloudPanel could not complete the operation. Check the submitted values and try again.";
-          reject(new AppError(signal === "SIGKILL" ? "REQUEST_TIMEOUT" : "CLOUDPANEL_UNAVAILABLE", message, signal === "SIGKILL" ? 504 : 422));
-        }
-      });
-    });
-  }
-
   private async bridge(
     input: Record<string, unknown>,
     timeout?: number,
   ): Promise<BridgeResult> {
-    const script = join(process.cwd(), "scripts", "cloudpanel-bridge.php");
-    const output = await this.run("/usr/bin/php", [script], {
-      input: JSON.stringify(input),
-      timeout,
-    });
-    try {
-      const jsonStart = output.indexOf('{');
-      const jsonEnd = output.lastIndexOf('}');
-      if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd >= jsonStart) {
-        return JSON.parse(output.slice(jsonStart, jsonEnd + 1)) as BridgeResult;
-      }
-      return JSON.parse(output.trim()) as BridgeResult;
-    } catch {
-      throw new AppError("CLOUDPANEL_UNAVAILABLE", "CloudPanel CLI returned invalid data.", 503);
-    }
+    await checkCloudPanelBroker();
+    return invokeBroker(input, timeout);
+  }
+
+  private privilegedError(result: BridgeResult, fallback: string) {
+    if (result.code === "REQUEST_TIMEOUT")
+      return new AppError(
+        "REQUEST_TIMEOUT",
+        "CloudPanel took too long to respond.",
+        504,
+      );
+    const detail = result.message ?? "";
+    const message = /already exists|duplicate|already in use/i.test(detail)
+      ? "That name is already in use."
+      : /database(Name|UserName)|constraint|not valid|validation/i.test(detail)
+        ? "Use 2–50 characters, starting with a letter and containing only letters, numbers, and hyphens."
+        : fallback;
+    return new AppError("CLOUDPANEL_UNAVAILABLE", message, 422);
   }
 
   private sessionUser(session: CloudPanelSession) {
@@ -206,15 +286,48 @@ export class LiveCloudPanelClient implements CloudPanelClient {
         sites = all[0].domain;
       }
       const timezone = /^[A-Za-z0-9_+\-/]{1,64}$/.test(String(input.timezone ?? "")) ? String(input.timezone) : "UTC";
-      await this.run("/usr/bin/clpctl", ["user:add", `--userName=${String(input.username)}`, `--email=${String(input.email)}`, `--firstName=${String(input.firstName)}`, `--lastName=${String(input.lastName)}`, `--password=${String(input.password)}`, `--role=${String(input.role)}`, `--sites=${sites}`, `--timezone=${timezone}`, "--status=1"], { timeout: 90_000 });
+      const created = await this.bridge({
+        action: "clpctl-user-add",
+        username: this.sessionUser(session),
+        targetUsername: String(input.username ?? ""),
+        email: String(input.email ?? ""),
+        firstName: String(input.firstName ?? ""),
+        lastName: String(input.lastName ?? ""),
+        password: String(input.password ?? ""),
+        role: String(input.role ?? ""),
+        sites: sites.split(",").map((site) => site.trim()).filter(Boolean),
+        timezone,
+      }, 90_000);
+      if (!created.ok)
+        throw this.privilegedError(
+          created,
+          "CloudPanel could not create the user.",
+        );
       if (placeholder) {
         const cleared = await this.bridge({ action: "manage-user", username: this.sessionUser(session), operation: { username: input.username, role: "user", status: true, sites: [] } });
         if (!cleared.ok) throw new AppError("INVALID_REQUEST", "User was created but the placeholder site could not be removed.", 400);
       }
     }
     else if (action === "update") { const result = await this.bridge({ action: "manage-user", username: this.sessionUser(session), operation: input }); if (!result.ok) throw new AppError("INVALID_REQUEST", "User settings could not be updated.", 400); }
-    else if (action === "reset-password") await this.run("/usr/bin/clpctl", ["user:reset:password", `--userName=${String(input.username)}`, `--password=${String(input.password)}`]);
-    else if (action === "delete") await this.run("/usr/bin/clpctl", ["user:delete", `--userName=${String(input.username)}`, "--force"]);
+    else if (action === "reset-password") {
+      const reset = await this.bridge({
+        action: "clpctl-user-reset-password",
+        username: this.sessionUser(session),
+        targetUsername: String(input.username ?? ""),
+        password: String(input.password ?? ""),
+      });
+      if (!reset.ok)
+        throw this.privilegedError(reset, "CloudPanel could not reset the password.");
+    }
+    else if (action === "delete") {
+      const deleted = await this.bridge({
+        action: "clpctl-user-delete",
+        username: this.sessionUser(session),
+        targetUsername: String(input.username ?? ""),
+      });
+      if (!deleted.ok)
+        throw this.privilegedError(deleted, "CloudPanel could not delete the user.");
+    }
     else throw new AppError("INVALID_REQUEST", "Unknown user action.", 400);
   }
 
@@ -226,11 +339,22 @@ export class LiveCloudPanelClient implements CloudPanelClient {
     try {
       phpVersions = (await readdir("/etc/php")).filter((v) => /^\d+\.\d+$/.test(v)).sort().reverse();
     } catch {}
-    const templates = await this.run("/usr/bin/clpctl", ["vhost-templates:list"]);
-    const vhostTemplates = templates.split("\n")
-      .filter((line) => /^\|/.test(line) && !/Name\s+\|/.test(line))
-      .map((line) => line.split("|")[1]?.trim())
-      .filter((value): value is string => Boolean(value));
+    const templates = await this.bridge({
+      action: "clpctl-vhost-templates",
+      username: this.sessionUser(session),
+    });
+    if (!templates.ok)
+      throw this.privilegedError(
+        templates,
+        "CloudPanel could not list vhost templates.",
+      );
+    const vhostTemplates = Array.isArray(
+      (templates.data as { templates?: unknown } | undefined)?.templates,
+    )
+      ? ((templates.data as { templates: unknown[] }).templates.filter(
+          (value): value is string => typeof value === "string",
+        ))
+      : [];
     return {
       allowedTypes: ["php", "nodejs", "static", "python", "reverse-proxy", "docker"],
       phpVersions,
@@ -250,18 +374,18 @@ export class LiveCloudPanelClient implements CloudPanelClient {
       throw new AppError("INVALID_RUNTIME_VERSION", "That Node.js version is not supported.", 400);
     if (input.type === "python" && !options.pythonVersions.includes(input.pythonVersion))
       throw new AppError("INVALID_RUNTIME_VERSION", "That Python version is not supported.", 400);
-    const args = [
-      `site:add:${input.type}`,
-      `--domainName=${input.domain}`,
-      `--siteUser=${input.siteUser}`,
-      `--siteUserPassword=${input.siteUserPassword}`,
-    ];
-    if (input.type === "php") args.push(`--phpVersion=${input.phpVersion}`, `--vhostTemplate=${input.vhostTemplate}`);
-    if (input.type === "nodejs") args.push(`--nodejsVersion=${input.nodeVersion}`, `--appPort=${input.appPort}`);
-    if (input.type === "python") args.push(`--pythonVersion=${input.pythonVersion}`, `--appPort=${input.appPort}`);
-    if (input.type === "reverse-proxy") args.push(`--reverseProxyUrl=${input.reverseProxyUrl}`);
     try {
-      await this.run("/usr/bin/clpctl", args, { timeout: 90_000 });
+      const result = await this.bridge({
+        action: "clpctl-site-create",
+        username: this.sessionUser(session),
+        panelAdmin: await isPanelAdmin(this.sessionUser(session)),
+        site: input,
+      }, 90_000);
+      if (!result.ok)
+        throw this.privilegedError(
+          result,
+          "CloudPanel could not create the website.",
+        );
     } catch (error) {
       if (error instanceof AppError && error.code === "REQUEST_TIMEOUT") throw error;
       throw new AppError("SITE_CREATION_FAILED", "CloudPanel could not create the website.", 502);
@@ -301,10 +425,15 @@ export class LiveCloudPanelClient implements CloudPanelClient {
   }
 
   async deleteSite(session: CloudPanelSession, domain: string) {
-    await this.requireSiteAccess(session, domain);
-    await this.run("/usr/bin/clpctl", ["site:delete", `--domainName=${domain}`, "--force"], {
-      timeout: 90_000,
-    });
+    const { panelAdmin } = await this.requireSiteAccess(session, domain);
+    const result = await this.bridge({
+      action: "clpctl-site-delete",
+      username: this.sessionUser(session),
+      domain,
+      panelAdmin,
+    }, 90_000);
+    if (!result.ok)
+      throw this.privilegedError(result, "CloudPanel could not delete the website.");
   }
 
   async assignSite(session: CloudPanelSession, domain: string) {
@@ -347,19 +476,39 @@ export class LiveCloudPanelClient implements CloudPanelClient {
         throw new AppError("FORBIDDEN", "That database does not belong to this website.", 403);
     }
     if (section === "databases" && action === "add") {
-      await this.run("/usr/bin/clpctl", [
-        "db:add",
-        `--domainName=${domain}`,
-        `--databaseName=${String(input.name)}`,
-        `--databaseUserName=${String(input.username)}`,
-        `--databaseUserPassword=${String(input.password)}`,
-      ], { timeout: 90_000 });
+      const result = await this.bridge({
+        action: "clpctl-db-add",
+        username: this.sessionUser(session),
+        domain,
+        panelAdmin,
+        databaseName: String(input.name ?? ""),
+        databaseUsername: String(input.username ?? ""),
+        password: String(input.password ?? ""),
+      }, 90_000);
+      if (!result.ok)
+        throw this.privilegedError(result, "CloudPanel could not create the database.");
     } else if (section === "databases" && action === "delete") {
-      await this.run("/usr/bin/clpctl", ["db:delete", `--databaseName=${String(input.name)}`, "--force"], { timeout: 90_000 });
+      const result = await this.bridge({
+        action: "clpctl-db-delete",
+        username: this.sessionUser(session),
+        domain,
+        panelAdmin,
+        databaseName: String(input.name ?? ""),
+      }, 90_000);
+      if (!result.ok)
+        throw this.privilegedError(result, "CloudPanel could not delete the database.");
     } else if (section === "certificates" && action === "lets-encrypt") {
-      const args = ["lets-encrypt:install:certificate", `--domainName=${domain}`];
-      if (input.subjectAlternativeName) args.push(`--subjectAlternativeName=${String(input.subjectAlternativeName)}`);
-      await this.run("/usr/bin/clpctl", args, { timeout: 90_000 });
+      const result = await this.bridge({
+        action: "clpctl-cert-install",
+        username: this.sessionUser(session),
+        domain,
+        panelAdmin,
+        subjectAlternativeNames: input.subjectAlternativeName
+          ? String(input.subjectAlternativeName).split(",").map((name) => name.trim()).filter(Boolean)
+          : [],
+      }, 90_000);
+      if (!result.ok)
+        throw this.privilegedError(result, "CloudPanel could not install the certificate.");
     } else {
       // Site actions (npm install, builds, docker compose…) legitimately run
       // for minutes; everything else stays on the short default timeout.
@@ -405,7 +554,15 @@ export class LiveCloudPanelClient implements CloudPanelClient {
       const check = await this.bridge({ action: "login", username, password: input.currentPassword });
       if (!check.ok)
         throw new AppError("INVALID_CREDENTIALS", "Your current password is incorrect.", 401);
-      await this.run("/usr/bin/clpctl", ["user:reset:password", `--userName=${username}`, `--password=${input.newPassword}`]);
+      const reset = await this.bridge({
+        action: "clpctl-user-reset-password",
+        username,
+        targetUsername: username,
+        password: input.newPassword,
+        selfService: true,
+      });
+      if (!reset.ok)
+        throw this.privilegedError(reset, "CloudPanel could not change your password.");
       return this.getCurrentUser(session);
     }
     const result = await this.bridge({

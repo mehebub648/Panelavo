@@ -6,6 +6,7 @@ import { getCloudPanelClient } from "@/server/cloudpanel";
 import { audit } from "@/server/security/log";
 import {
   assertWriteRequest,
+  assertSecureAuthenticationRequest,
   clientKey,
   rateLimit,
 } from "@/server/security/request";
@@ -15,6 +16,7 @@ export async function POST(request: NextRequest) {
   const requestId = randomUUID();
   try {
     assertWriteRequest(request);
+    assertSecureAuthenticationRequest(request);
     rateLimit(`login:${clientKey(request)}`, 10, 15 * 60_000);
     const input = loginSchema.parse(await request.json());
     await destroySession();

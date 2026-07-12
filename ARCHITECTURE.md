@@ -1,6 +1,6 @@
 # Architecture
 
-Panelavo is a single Next.js App Router application deployed as a CloudPanel Node.js site. Nginx/CloudPanel proxies the panel domain to the single PM2-managed Next.js process on port 10443.
+Panelavo is a single Next.js App Router application deployed as a CloudPanel Node.js site. Nginx/CloudPanel terminates public TLS and proxies the panel domain to the single PM2-managed Next.js process bound only to `127.0.0.1:10443`. Port 10443 is not a public authentication surface; emergency direct access uses an SSH tunnel.
 
 Browser requests enter pages and route handlers in `src/app`. Shared validation lives in `src/schemas`; UI components live in `src/components`. Protected server routes obtain opaque application sessions from `src/server/auth`, revalidate current CloudPanel identity and roles, and call the live adapter in `src/server/cloudpanel`. The adapter invokes `/usr/bin/clpctl` for supported mutations and the allow-listed local `scripts/cloudpanel-bridge.php` for Symfony/Doctrine reads and narrowly mapped site-management actions that the public CLI does not expose. CloudPanel remains authoritative for users, roles, MFA, sites, assignments, site types, runtimes, roots, and upstream settings.
 
@@ -16,7 +16,7 @@ The per-site Terminal executes one browser-submitted command line as the site's 
 
 The Super Admin update API reads a configurable public HTTPS Git repository from the panel settings store. Checks use `git ls-remote`; installs launch the non-root `scripts/self-update.sh` worker. The worker holds a `.data` lock, shallow-clones `main`, verifies the Panelavo package contract, installs from the frozen pnpm lockfile, and completes a production build in staging before synchronizing the live tree. While the persisted state is queued, updating, or reloading, the shared panel layout blocks interaction and authenticated APIs reject normal operations, while server-rendered panel pages remain available behind the overlay. It excludes `.data` and `.env.local`, records durable status and logs, then cleans staging and records the old process PID before asking PM2 to reload. Because PM2 kills the worker with the old process tree, the replacement Panelavo process owns completion of this PID-bound handoff. Legacy states whose installed and remote commits already match are recovered automatically, including removal of their stale update lock. The repository is a trusted application-code source but receives no root execution path.
 
-Application-owned metadata and encrypted credentials live under `.data` in the deployed site. Host configuration comes from `.env.local`; secrets must not reach client components. A single process is required by the current session and in-process rate-limit design.
+Application-owned metadata, persistent request-throttling counters, and encrypted credentials live under `.data` in the deployed site. Host configuration comes from `.env.local`; secrets must not reach client components. A single process is required by the current session and mutation-serialization design.
 
 ## Managed website Operations
 

@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CI: true
+      NEXT_TELEMETRY_DISABLED: 1
+      SESSION_SECRET: ci-session-secret-at-least-thirty-two-characters
+      CREDENTIALS_ENCRYPTION_KEY: ci-credentials-key-at-least-thirty-two-characters
+      NODE_VERSION: 22.23.1
+      PNPM_VERSION: 10.12.1
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Activate pinned pnpm
+        run: |
+          corepack enable
+          corepack prepare "pnpm@${PNPM_VERSION}" --activate
+          test "$(pnpm --version)" = "${PNPM_VERSION}"
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Audit production dependencies
+        run: pnpm audit --prod --audit-level moderate
+
+      - name: Run unit tests
+        run: pnpm test
+
+      - name: Type-check
+        run: pnpm typecheck
+
+      - name: Lint TypeScript
+        run: pnpm lint
+
+      - name: Build production application
+        run: pnpm build
+
+      - name: Validate PHP bridge
+        run: |
+          php -l scripts/cloudpanel-bridge.php
+          php scripts/cloudpanel-bridge.php --self-test-ports
+          php scripts/cloudpanel-bridge.php --self-test-env
+
+      - name: Validate shell syntax
+        run: bash -n setup.sh scripts/self-update.sh
+
+      - name: Run ShellCheck
+        run: shellcheck --severity=warning setup.sh scripts/self-update.sh

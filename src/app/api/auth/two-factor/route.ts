@@ -8,6 +8,7 @@ import { fail, ok } from "@/server/http";
 import { audit } from "@/server/security/log";
 import {
   assertWriteRequest,
+  assertSecureAuthenticationRequest,
   clientKey,
   rateLimit,
 } from "@/server/security/request";
@@ -16,6 +17,7 @@ export async function POST(request: NextRequest) {
   const requestId = randomUUID();
   try {
     assertWriteRequest(request);
+    assertSecureAuthenticationRequest(request);
     rateLimit(`mfa:${clientKey(request)}`, 8, 10 * 60_000);
     const pending = await getSession({ allowPending: true });
     if (!pending?.record.twoFactorPending)

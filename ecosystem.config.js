@@ -16,7 +16,10 @@ module.exports = {
       // Invoke Next's binary directly so we don't depend on pnpm being on PATH
       // (pm2's daemon runs with a minimal environment).
       script: join(__dirname, "node_modules", "next", "dist", "bin", "next"),
-      args: "start -p 10443",
+      // The public TLS boundary is CloudPanel/Nginx. Keeping the application
+      // loopback-only prevents direct plaintext login and bypass of proxy
+      // request limits or trusted forwarding headers.
+      args: "start -H 127.0.0.1 -p 10443",
       interpreter: "node",
       exec_mode: "fork",
       instances: 1,

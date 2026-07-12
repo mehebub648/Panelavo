@@ -1,0 +1,41 @@
+#!/bin/sh
+set -eu
+
+BROKER_ROOT=/usr/local/libexec/panelavo
+BRIDGE=${BROKER_ROOT}/cloudpanel-bridge.php
+
+if [ "$#" -ne 0 ]; then
+  echo "panelavo broker does not accept command-line arguments" >&2
+  exit 64
+fi
+
+if [ "$(id -u)" -ne 0 ]; then
+  echo "panelavo broker must run through its dedicated sudo rule" >&2
+  exit 77
+fi
+
+if [ -L "${BROKER_ROOT}" ] || [ -L "${BRIDGE}" ] || [ ! -f "${BRIDGE}" ]; then
+  echo "panelavo broker installation is invalid" >&2
+  exit 78
+fi
+
+# Refuse a bridge or containing directory that the panel service account could
+# replace. The installer owns both as root and removes all group/other writes.
+ROOT_MODE="$(stat -c '%U:%G:%a' "${BROKER_ROOT}" 2>/dev/null || true)"
+BRIDGE_MODE="$(stat -c '%U:%G:%a' "${BRIDGE}" 2>/dev/null || true)"
+case "${ROOT_MODE}" in root:root:755|root:root:555) ;; *)
+  echo "panelavo broker directory permissions are invalid" >&2
+  exit 78
+esac
+case "${BRIDGE_MODE}" in root:root:644|root:root:444) ;; *)
+  echo "panelavo bridge permissions are invalid" >&2
+  exit 78
+esac
+
+umask 077
+exec /usr/bin/env -i \
+  PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+  HOME=/root \
+  LANG=C.UTF-8 \
+  PANELAVO_BROKER=1 \
+  /usr/bin/php "${BRIDGE}"

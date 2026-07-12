@@ -121,16 +121,24 @@ function sweepExpiredSessions(now: number) {
   }
 }
 
-// The Secure flag must track the actual request scheme, not NODE_ENV: over a
-// plain http://ip:port connection a Secure cookie is silently dropped by the
-// browser (which manifests as "session expired" on every login), while behind
-// an HTTPS reverse proxy the request arrives as http with X-Forwarded-Proto.
+// Production traffic reaches the loopback-only process through Nginx. Trust
+// its forwarded scheme for the Secure flag; local development and an explicit
+// SSH recovery tunnel remain usable without weakening the public TLS boundary.
 async function isSecureRequest(): Promise<boolean> {
   try {
-    const proto = (await headers()).get("x-forwarded-proto");
-    return proto ? proto.split(",")[0].trim() === "https" : false;
+    const incoming = await headers();
+    const proto = incoming.get("x-forwarded-proto");
+    if (proto?.split(",")[0].trim() === "https") return true;
+    const host = incoming.get("host")?.split(":")[0]?.toLowerCase();
+    // A production-domain cookie must stay Secure even if a proxy is
+    // misconfigured and omits the scheme header. Only an explicit loopback
+    // SSH recovery session may use a non-Secure cookie.
+    return (
+      process.env.NODE_ENV === "production" &&
+      !["127.0.0.1", "localhost", "[::1]"].includes(host ?? "")
+    );
   } catch {
-    return false;
+    return process.env.NODE_ENV === "production";
   }
 }
 
@@ -146,7 +154,7 @@ export async function createSession(record: Omit<SessionRecord, "expiresAt">) {
   jar.set(COOKIE_NAME, tokenFor(id), {
     httpOnly: true,
     secure: await isSecureRequest(),
-    sameSite: "lax",
+    sameSite: "strict",
     path: "/",
     maxAge: maxAge(),
   });
@@ -191,7 +199,7 @@ export async function destroySession() {
   jar.set(COOKIE_NAME, "", {
     httpOnly: true,
     secure: await isSecureRequest(),
-    sameSite: "lax",
+    sameSite: "strict",
     path: "/",
     maxAge: 0,
   });

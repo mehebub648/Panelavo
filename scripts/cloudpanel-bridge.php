@@ -29,6 +29,8 @@ use App\Site\Updater\StaticSite as StaticSiteUpdater;
 use Symfony\Component\Dotenv\Dotenv;
 
 const CLOUDPANEL_ROOT = '/home/clp/htdocs/app/files';
+const PANELAVO_BROKER_PROTOCOL_VERSION = 1;
+const PANELAVO_BROKER_MAX_INPUT_BYTES = 100663296;
 
 function respond(array $value, int $status = 0): never
 {
@@ -2504,6 +2506,132 @@ function gitChanges(Site $site): array
     return $changes;
 }
 
+function invalidBrokerRequest(): never
+{
+    respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+}
+
+function brokerString(
+    array $input,
+    string $key,
+    int $minimum,
+    int $maximum,
+    ?string $pattern = null,
+): string {
+    $value = $input[$key] ?? null;
+    if (!is_string($value) || strlen($value) < $minimum || strlen($value) > $maximum) {
+        invalidBrokerRequest();
+    }
+    if ($pattern !== null && preg_match($pattern, $value) !== 1) invalidBrokerRequest();
+    return $value;
+}
+
+function brokerDomainValue(mixed $value): string
+{
+    if (!is_string($value)) invalidBrokerRequest();
+    $domain = strtolower(trim($value));
+    if (strlen($domain) > 253 || preg_match('/^(?=.{1,253}$)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$/', $domain) !== 1) {
+        invalidBrokerRequest();
+    }
+    return $domain;
+}
+
+function brokerPassword(mixed $value): string
+{
+    if (!is_string($value) || strlen($value) < 12 || strlen($value) > 128 || preg_match('/[\x00-\x1f\x7f]/', $value)) {
+        invalidBrokerRequest();
+    }
+    return $value;
+}
+
+function brokerRuntimeValue(mixed $value): string
+{
+    if (!is_string($value) || preg_match('/^[A-Za-z0-9._-]{1,32}$/', $value) !== 1) invalidBrokerRequest();
+    return $value;
+}
+
+function brokerPortValue(mixed $value): int
+{
+    if (!is_int($value) && !(is_string($value) && ctype_digit($value))) invalidBrokerRequest();
+    $port = (int) $value;
+    if ($port < 1024 || $port > 65535) invalidBrokerRequest();
+    return $port;
+}
+
+function panelavoRuntimeDir(): string
+{
+    $path = '/run/panelavo';
+    if (is_link($path)) respond(['ok' => false, 'code' => 'BROKER_INTEGRITY_FAILED'], 1);
+    if (!is_dir($path) && !mkdir($path, 0700, true)) {
+        respond(['ok' => false, 'code' => 'BROKER_INTEGRITY_FAILED'], 1);
+    }
+    $real = realpath($path);
+    $mode = @fileperms($path);
+    if ($real !== $path || @fileowner($path) !== 0 || $mode === false || (($mode & 0077) !== 0)) {
+        respond(['ok' => false, 'code' => 'BROKER_INTEGRITY_FAILED'], 1);
+    }
+    return $path;
+}
+
+function runClpctl(array $args, int $timeout = 90): array
+{
+    foreach ($args as $arg) {
+        if (!is_string($arg) || str_contains($arg, "\0") || strlen($arg) > 4096) invalidBrokerRequest();
+    }
+    $timeout = max(1, min($timeout, 900));
+    $command = array_merge([
+        '/usr/bin/timeout', '--signal=KILL', $timeout . 's',
+        '/usr/bin/env', '-i',
+        'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+        'HOME=/root',
+        'LANG=C.UTF-8',
+        '/usr/bin/clpctl',
+    ], $args);
+    $process = proc_open(
+        $command,
+        [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+        $pipes,
+        '/',
+    );
+    if (!is_resource($process)) respond(['ok' => false, 'code' => 'CLPCTL_FAILED']);
+    fclose($pipes[0]);
+    $stdout = substr((string) stream_get_contents($pipes[1]), 0, 500000);
+    fclose($pipes[1]);
+    $stderr = substr((string) stream_get_contents($pipes[2]), 0, 100000);
+    fclose($pipes[2]);
+    $code = proc_close($process);
+    return [
+        'code' => $code,
+        'timedOut' => in_array($code, [124, 137], true),
+        'stdout' => $stdout,
+        'stderr' => $stderr,
+    ];
+}
+
+function finishClpctl(array $result, ?array $data = null): never
+{
+    if (($result['code'] ?? 1) !== 0) {
+        $detail = trim((string) (($result['stderr'] ?? '') ?: ($result['stdout'] ?? '')));
+        respond([
+            'ok' => false,
+            'code' => !empty($result['timedOut']) ? 'REQUEST_TIMEOUT' : 'CLPCTL_FAILED',
+            // The Node boundary maps this to a fixed public message. Keeping a
+            // bounded detail here preserves duplicate/validation classification.
+            'message' => substr($detail, 0, 2000),
+        ]);
+    }
+    respond(['ok' => true] + ($data === null ? [] : ['data' => $data]));
+}
+
+function requireSiteWriter($manager, User $user, string $domain, bool $panelAdmin): Site
+{
+    $site = authorizedSite($manager, $user, $domain);
+    if (!in_array($user->getRole(), [User::ROLE_ADMIN, User::ROLE_SITE_MANAGER], true) && !$panelAdmin) {
+        respond(['ok' => false, 'code' => 'FORBIDDEN']);
+    }
+    return $site;
+}
+
 function gitChangedPath(Site $site, string $requested): array
 {
     if ($requested === '' || str_contains($requested, "\0")) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
@@ -2625,11 +2753,36 @@ function runEnvSelfTest(): never
 if (($argv[1] ?? '') === '--self-test-ports') runComposePortSelfTest();
 if (($argv[1] ?? '') === '--self-test-env') runEnvSelfTest();
 
+try {
+    $encodedInput = stream_get_contents(STDIN, PANELAVO_BROKER_MAX_INPUT_BYTES + 1);
+    if (!is_string($encodedInput) || strlen($encodedInput) > PANELAVO_BROKER_MAX_INPUT_BYTES) {
+        respond(['ok' => false, 'code' => 'INVALID_REQUEST'], 2);
+    }
+    $input = json_decode($encodedInput, true, 16, JSON_THROW_ON_ERROR);
+    if (!is_array($input)
+        || ($input['protocolVersion'] ?? null) !== PANELAVO_BROKER_PROTOCOL_VERSION
+        || getenv('PANELAVO_BROKER') !== '1') {
+        respond(['ok' => false, 'code' => 'BROKER_PROTOCOL_MISMATCH'], 2);
+    }
+    $effectiveUid = function_exists('posix_geteuid') ? posix_geteuid() : getmyuid();
+    if ($effectiveUid !== 0) respond(['ok' => false, 'code' => 'BROKER_INTEGRITY_FAILED'], 2);
+    if (($input['action'] ?? '') === 'broker-health') {
+        respond(['ok' => true, 'data' => [
+            'broker' => 'panelavo',
+            'protocolVersion' => PANELAVO_BROKER_PROTOCOL_VERSION,
+            'privileged' => true,
+            'cloudPanelAvailable' => is_readable(CLOUDPANEL_ROOT . '/vendor/autoload.php')
+                && is_executable('/usr/bin/clpctl'),
+        ]]);
+    }
+} catch (Throwable) {
+    respond(['ok' => false, 'code' => 'INVALID_REQUEST'], 2);
+}
+
 require CLOUDPANEL_ROOT . '/vendor/autoload.php';
 (new Dotenv())->bootEnv(CLOUDPANEL_ROOT . '/.env');
 
 try {
-    $input = json_decode(stream_get_contents(STDIN), true, 16, JSON_THROW_ON_ERROR);
     $kernel = new Kernel($_SERVER['APP_ENV'] ?? 'prod', false);
     $kernel->boot();
     $manager = $kernel->getContainer()->get('doctrine')->getManager();
@@ -2682,6 +2835,157 @@ try {
             $target->removeSites();
             if ($role === User::ROLE_USER) foreach (($operation['sites'] ?? []) as $domain) { $assigned = $manager->getRepository(Site::class)->findOneBy(['domainName' => (string) $domain]); if ($assigned) $target->addSite($assigned); }
             $manager->flush(); respond(['ok' => true]);
+
+        case 'clpctl-user-add':
+            if ($user->getRole() !== User::ROLE_ADMIN) respond(['ok' => false, 'code' => 'FORBIDDEN']);
+            $targetUsername = strtolower(brokerString($input, 'targetUsername', 2, 64, '/^[A-Za-z0-9._-]+$/'));
+            $email = brokerString($input, 'email', 3, 254);
+            if (!filter_var($email, FILTER_VALIDATE_EMAIL)) invalidBrokerRequest();
+            $firstName = brokerString($input, 'firstName', 0, 64);
+            $lastName = brokerString($input, 'lastName', 0, 64);
+            if (preg_match('/[\x00-\x1f\x7f]/', $firstName . $lastName)) invalidBrokerRequest();
+            $password = brokerPassword($input['password'] ?? null);
+            $role = $input['role'] ?? null;
+            if (!is_string($role) || !in_array($role, ['admin', 'site-manager', 'user'], true)) invalidBrokerRequest();
+            $timezone = brokerString($input, 'timezone', 1, 64, '/^[A-Za-z0-9_+\/-]+$/');
+            $sites = $input['sites'] ?? null;
+            if (!is_array($sites) || count($sites) > 100) invalidBrokerRequest();
+            $siteDomains = [];
+            foreach ($sites as $domain) $siteDomains[] = brokerDomainValue($domain);
+            if ($role === 'user' && !$siteDomains) invalidBrokerRequest();
+            finishClpctl(runClpctl([
+                'user:add',
+                '--userName=' . $targetUsername,
+                '--email=' . $email,
+                '--firstName=' . $firstName,
+                '--lastName=' . $lastName,
+                '--password=' . $password,
+                '--role=' . $role,
+                '--sites=' . implode(',', array_values(array_unique($siteDomains))),
+                '--timezone=' . $timezone,
+                '--status=1',
+            ]));
+
+        case 'clpctl-user-reset-password':
+            $targetUsername = strtolower(brokerString($input, 'targetUsername', 2, 64, '/^[A-Za-z0-9._-]+$/'));
+            $selfService = ($input['selfService'] ?? false) === true;
+            if ($user->getRole() !== User::ROLE_ADMIN
+                && !($selfService && strtolower((string) $user->getUserName()) === $targetUsername)) {
+                respond(['ok' => false, 'code' => 'FORBIDDEN']);
+            }
+            finishClpctl(runClpctl([
+                'user:reset:password',
+                '--userName=' . $targetUsername,
+                '--password=' . brokerPassword($input['password'] ?? null),
+            ]));
+
+        case 'clpctl-user-delete':
+            if ($user->getRole() !== User::ROLE_ADMIN) respond(['ok' => false, 'code' => 'FORBIDDEN']);
+            $targetUsername = strtolower(brokerString($input, 'targetUsername', 2, 64, '/^[A-Za-z0-9._-]+$/'));
+            if (strtolower((string) $user->getUserName()) === $targetUsername) invalidBrokerRequest();
+            finishClpctl(runClpctl(['user:delete', '--userName=' . $targetUsername, '--force']));
+
+        case 'clpctl-vhost-templates':
+            $templateResult = runClpctl(['vhost-templates:list'], 30);
+            if ($templateResult['code'] !== 0) finishClpctl($templateResult);
+            $templates = [];
+            foreach (preg_split('/\R/', (string) $templateResult['stdout']) ?: [] as $line) {
+                if (!preg_match('/^\|/', $line) || preg_match('/Name\s+\|/', $line)) continue;
+                $name = trim((string) (explode('|', $line)[1] ?? ''));
+                if ($name !== '' && preg_match('/^[A-Za-z0-9 ._-]{1,100}$/', $name)) $templates[] = $name;
+            }
+            respond(['ok' => true, 'data' => ['templates' => array_values(array_unique($templates))]]);
+
+        case 'clpctl-site-create':
+            $panelAdmin = ($input['panelAdmin'] ?? false) === true;
+            if (!in_array($user->getRole(), [User::ROLE_ADMIN, User::ROLE_SITE_MANAGER], true) && !$panelAdmin) {
+                respond(['ok' => false, 'code' => 'FORBIDDEN']);
+            }
+            $siteInput = $input['site'] ?? null;
+            if (!is_array($siteInput)) invalidBrokerRequest();
+            $type = $siteInput['type'] ?? null;
+            if (!is_string($type) || !in_array($type, ['php', 'nodejs', 'static', 'python', 'reverse-proxy'], true)) {
+                invalidBrokerRequest();
+            }
+            $allowedKeys = ['type', 'domain', 'siteUser', 'siteUserPassword'];
+            $allowedKeys = array_merge($allowedKeys, match ($type) {
+                'php' => ['phpVersion', 'vhostTemplate'],
+                'nodejs' => ['nodeVersion', 'appPort'],
+                'python' => ['pythonVersion', 'appPort'],
+                'reverse-proxy' => ['reverseProxyUrl'],
+                default => [],
+            });
+            if (array_diff(array_keys($siteInput), $allowedKeys)) invalidBrokerRequest();
+            $domain = brokerDomainValue($siteInput['domain'] ?? null);
+            $siteUser = $siteInput['siteUser'] ?? null;
+            if (!is_string($siteUser) || preg_match('/^[A-Za-z_][A-Za-z0-9._-]{1,63}$/', $siteUser) !== 1) invalidBrokerRequest();
+            $args = [
+                'site:add:' . $type,
+                '--domainName=' . $domain,
+                '--siteUser=' . $siteUser,
+                '--siteUserPassword=' . brokerPassword($siteInput['siteUserPassword'] ?? null),
+            ];
+            if ($type === 'php') {
+                $template = $siteInput['vhostTemplate'] ?? null;
+                if (!is_string($template) || preg_match('/^[A-Za-z0-9 ._-]{1,100}$/', $template) !== 1) invalidBrokerRequest();
+                $args[] = '--phpVersion=' . brokerRuntimeValue($siteInput['phpVersion'] ?? null);
+                $args[] = '--vhostTemplate=' . $template;
+            } elseif ($type === 'nodejs') {
+                $args[] = '--nodejsVersion=' . brokerRuntimeValue($siteInput['nodeVersion'] ?? null);
+                $args[] = '--appPort=' . brokerPortValue($siteInput['appPort'] ?? null);
+            } elseif ($type === 'python') {
+                $args[] = '--pythonVersion=' . brokerRuntimeValue($siteInput['pythonVersion'] ?? null);
+                $args[] = '--appPort=' . brokerPortValue($siteInput['appPort'] ?? null);
+            } elseif ($type === 'reverse-proxy') {
+                $url = $siteInput['reverseProxyUrl'] ?? null;
+                if (!is_string($url) || strlen($url) > 2048 || preg_match('/[\r\n\x00-\x1f\x7f]/', $url)) invalidBrokerRequest();
+                $parts = parse_url($url);
+                if (!is_array($parts)
+                    || !in_array(strtolower((string) ($parts['scheme'] ?? '')), ['http', 'https'], true)
+                    || empty($parts['host'])
+                    || isset($parts['user'])
+                    || isset($parts['pass'])) {
+                    invalidBrokerRequest();
+                }
+                $args[] = '--reverseProxyUrl=' . $url;
+            }
+            finishClpctl(runClpctl($args));
+
+        case 'clpctl-site-delete':
+            $domain = brokerDomainValue($input['domain'] ?? null);
+            requireSiteWriter($manager, $user, $domain, ($input['panelAdmin'] ?? false) === true);
+            finishClpctl(runClpctl(['site:delete', '--domainName=' . $domain, '--force']));
+
+        case 'clpctl-db-add':
+            $domain = brokerDomainValue($input['domain'] ?? null);
+            requireSiteWriter($manager, $user, $domain, ($input['panelAdmin'] ?? false) === true);
+            $databaseName = brokerString($input, 'databaseName', 2, 50, '/^[A-Za-z][A-Za-z0-9-]+$/');
+            $databaseUsername = brokerString($input, 'databaseUsername', 2, 50, '/^[A-Za-z][A-Za-z0-9-]+$/');
+            finishClpctl(runClpctl([
+                'db:add',
+                '--domainName=' . $domain,
+                '--databaseName=' . $databaseName,
+                '--databaseUserName=' . $databaseUsername,
+                '--databaseUserPassword=' . brokerPassword($input['password'] ?? null),
+            ]));
+
+        case 'clpctl-db-delete':
+            $domain = brokerDomainValue($input['domain'] ?? null);
+            $site = requireSiteWriter($manager, $user, $domain, ($input['panelAdmin'] ?? false) === true);
+            $databaseName = brokerString($input, 'databaseName', 2, 50, '/^[A-Za-z][A-Za-z0-9-]+$/');
+            if (!in_array($databaseName, siteDatabaseNames($site), true)) respond(['ok' => false, 'code' => 'FORBIDDEN']);
+            finishClpctl(runClpctl(['db:delete', '--databaseName=' . $databaseName, '--force']));
+
+        case 'clpctl-cert-install':
+            $domain = brokerDomainValue($input['domain'] ?? null);
+            requireSiteWriter($manager, $user, $domain, ($input['panelAdmin'] ?? false) === true);
+            $names = $input['subjectAlternativeNames'] ?? null;
+            if (!is_array($names) || count($names) > 20) invalidBrokerRequest();
+            $san = [];
+            foreach ($names as $name) $san[] = brokerDomainValue($name);
+            $args = ['lets-encrypt:install:certificate', '--domainName=' . $domain];
+            if ($san) $args[] = '--subjectAlternativeName=' . implode(',', array_values(array_unique($san)));
+            finishClpctl(runClpctl($args));
 
         case 'assign-site':
             // Attach a site to the caller's collection. Used by the panel
