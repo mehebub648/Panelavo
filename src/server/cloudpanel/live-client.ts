@@ -15,7 +15,7 @@ import type {
 import { isPanelAdmin } from "@/server/auth/panel-roles";
 import { AppError } from "./errors";
 
-export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 1;
+export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 2;
 export const CLOUDPANEL_BROKER_PATH =
   "/usr/local/libexec/panelavo/panelavo-broker";
 

@@ -29,7 +29,7 @@ use App\Site\Updater\StaticSite as StaticSiteUpdater;
 use Symfony\Component\Dotenv\Dotenv;
 
 const CLOUDPANEL_ROOT = '/home/clp/htdocs/app/files';
-const PANELAVO_BROKER_PROTOCOL_VERSION = 1;
+const PANELAVO_BROKER_PROTOCOL_VERSION = 2;
 const PANELAVO_BROKER_MAX_INPUT_BYTES = 100663296;
 
 function respond(array $value, int $status = 0): never
@@ -2506,6 +2506,61 @@ function gitChanges(Site $site): array
     return $changes;
 }
 
+// A CloudPanel site user must be able to manage every path in its application
+// root even when a rootful container or another runtime owns the inode. Keep
+// ownership intact and grant only that site user read/write/traverse access.
+// Default ACLs on every existing directory make the same access inherit onto
+// future files and directories, including bind-mount writes from containers.
+function ensureSiteProjectAccess(Site $site): void
+{
+    $root = realpath(siteRootPath($site));
+    if (!$root || !is_dir($root)) return;
+    $user = (string) $site->getUser();
+    $homeRoot = realpath('/home/' . $user . '/htdocs');
+    if (!$homeRoot || ($root !== $homeRoot && !str_starts_with($root, $homeRoot . '/'))) {
+        respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+    }
+    $setfacl = findSiteTool('/root', 'setfacl', true);
+    $getfacl = findSiteTool('/root', 'getfacl', true);
+    if (!$setfacl || !$getfacl) {
+        respond([
+            'ok' => false,
+            'code' => 'TOOL_UNAVAILABLE',
+            'message' => 'Project access enforcement requires the acl package. Run the trusted Panelavo setup.sh as root.',
+        ]);
+    }
+
+    // The root default entry is the initialization marker. Once present, all
+    // descendants created under the managed tree inherit the invariant, so
+    // ordinary workspace reads do not repeatedly traverse large repositories.
+    $current = runSiteCommand($site, [$getfacl, '--absolute-names', '--omit-header', $root], 30, true);
+    $quotedUser = preg_quote($user, '/');
+    if ($current['code'] === 0
+        && preg_match('/^user:' . $quotedUser . ':rwx$/m', $current['stdout'])
+        && preg_match('/^default:user:' . $quotedUser . ':rwx$/m', $current['stdout'])) {
+        return;
+    }
+
+    $access = runSiteCommand(
+        $site,
+        [$setfacl, '--physical', '--recursive', '--modify', 'u:' . $user . ':rwX,m::rwX', $root],
+        900,
+        true,
+    );
+    if ($access['code'] !== 0) {
+        respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED', 'message' => 'Could not grant the site user project access: ' . trim($access['stderr'] ?: $access['stdout'])]);
+    }
+    $inheritance = runSiteCommand(
+        $site,
+        ['/usr/bin/find', '-P', $root, '-type', 'd', '-exec', $setfacl, '--modify', 'd:u:' . $user . ':rwx,d:m::rwx', '{}', '+'],
+        900,
+        true,
+    );
+    if ($inheritance['code'] !== 0) {
+        respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED', 'message' => 'Could not enable inherited site-user project access: ' . trim($inheritance['stderr'] ?: $inheritance['stdout'])]);
+    }
+}
+
 function invalidBrokerRequest(): never
 {
     respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
@@ -3027,14 +3082,17 @@ try {
             respond(['ok' => true, 'data' => serverInfo()]);
 
         case 'site':
-            respond(['ok' => true, 'site' => publicSite(authorizedSite(
+            $site = authorizedSite(
                 $manager,
                 $user,
                 (string) ($input['domain'] ?? '')
-            ))]);
+            );
+            ensureSiteProjectAccess($site);
+            respond(['ok' => true, 'site' => publicSite($site)]);
 
         case 'site-section':
             $site = authorizedSite($manager, $user, (string) ($input['domain'] ?? ''));
+            ensureSiteProjectAccess($site);
             $section = (string) ($input['section'] ?? '');
             $data = match ($section) {
                 'vhost' => ['content' => @file_get_contents('/etc/nginx/sites-enabled/' . $site->getDomainName() . '.conf') ?: ''],
@@ -3099,6 +3157,7 @@ try {
             // panelAdmin is set by the trusted Node caller for overlay admins;
             // authorizedSite() above already proved the site is assigned to them.
             if (!in_array($user->getRole(), [User::ROLE_ADMIN, User::ROLE_SITE_MANAGER], true) && empty($input['panelAdmin'])) respond(['ok' => false, 'code' => 'FORBIDDEN']);
+            ensureSiteProjectAccess($site);
             $section = (string) ($input['section'] ?? '');
             $operation = $input['operation'] ?? [];
             $action = (string) ($operation['action'] ?? '');

@@ -138,7 +138,7 @@ log "Detected ${PRETTY_NAME} — CloudPanel DB engine: ${DB_ENGINE}"
 # ---------------------------------------------------------------------------
 log "Installing base packages ..."
 apt-get update -y
-apt-get install -y curl wget sudo ca-certificates rsync openssl git
+apt-get install -y curl wget sudo ca-certificates rsync openssl git acl
 
 # ---------------------------------------------------------------------------
 # 3. Public IP
