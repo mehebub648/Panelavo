@@ -2579,6 +2579,19 @@ function migrationStatus(Site $site, ?array $compose): array
     ];
 }
 
+function rootlessServiceImageId(Site $site, string $file, string $service): ?string
+{
+    $resolved = runRootlessDockerCommand($site, [
+        'docker', 'compose', '-f', $file, '-p', composeProjectName($site),
+        'config', '--images', $service,
+    ], 30);
+    $names = array_values(array_unique(array_filter(preg_split('/\R/', trim($resolved['stdout'])) ?: [], 'strlen')));
+    if ($resolved['code'] !== 0 || count($names) !== 1) return null;
+    $inspect = runRootlessDockerCommand($site, ['docker', 'image', 'inspect', '--format', '{{.Id}}', $names[0]], 30);
+    $id = trim($inspect['stdout']);
+    return $inspect['code'] === 0 && preg_match('/^sha256:[0-9a-f]{64}$/i', $id) ? $id : null;
+}
+
 function prepareRootlessMigration(Site $site, string $service): array
 {
     $root = siteRootPath($site);
@@ -2599,8 +2612,8 @@ function prepareRootlessMigration(Site $site, string $service): array
         $manifest = [];
     }
     foreach ((array) ($manifest['prepared'] ?? []) as $preparedService => $expectedImage) {
-        $image = runRootlessDockerCommand($site, ['docker', 'compose', '-f', $file, '-p', composeProjectName($site), 'images', '-q', (string) $preparedService], 30);
-        if ($image['code'] !== 0 || !hash_equals((string) $expectedImage, trim($image['stdout']))) respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => 'The prepared image for service "' . $preparedService . '" changed or is missing.']);
+        $imageId = rootlessServiceImageId($site, $file, (string) $preparedService);
+        if ($imageId === null || !hash_equals((string) $expectedImage, $imageId)) respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => 'The prepared image for service "' . $preparedService . '" changed or is missing.']);
     }
     foreach ((array) ($analysis['services'] ?? []) as $serviceName => $definition) {
         $previous = (string) ($manifest['services'][$serviceName]['container'] ?? '');
@@ -2614,10 +2627,9 @@ function prepareRootlessMigration(Site $site, string $service): array
         ['command' => 'prepare-rootless-migration', 'label' => 'Build ' . $service, 'display' => 'docker compose build ' . $service, 'exitCode' => $build['code'], 'timedOut' => $build['timedOut'], 'output' => trim($build['stdout'] . "\n" . $build['stderr'])],
     ];
     if ($build['code'] !== 0) return ['steps' => $steps];
-    $image = runRootlessDockerCommand($site, ['docker', 'compose', '-f', $file, '-p', composeProjectName($site), 'images', '-q', $service], 30);
-    $imageId = trim($image['stdout']);
-    if ($image['code'] !== 0 || !preg_match('/^(sha256:)?[0-9a-f]{12,64}$/i', $imageId)) {
-        $steps[] = ['command' => 'prepare-rootless-migration', 'label' => 'Verify ' . $service . ' image', 'display' => 'docker compose images -q ' . $service, 'exitCode' => 1, 'timedOut' => false, 'output' => 'No prepared image ID was found.'];
+    $imageId = rootlessServiceImageId($site, $file, $service);
+    if ($imageId === null) {
+        $steps[] = ['command' => 'prepare-rootless-migration', 'label' => 'Verify ' . $service . ' image', 'display' => 'inspect the prepared service image', 'exitCode' => 1, 'timedOut' => false, 'output' => 'No unique prepared image ID was found.'];
         return ['steps' => $steps];
     }
     $manifest = array_replace($manifest, [
@@ -2743,8 +2755,8 @@ function cutoverRootlessMigration(Site $site): array
         $expectedContainer = (string) ($manifest['services'][$service]['container'] ?? '');
         if ($expectedContainer !== (string) ($definition['container'] ?? '')) respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => 'A legacy rootful container changed after preparation.']);
         $expectedImage = (string) ($manifest['prepared'][$service] ?? '');
-        $image = runRootlessDockerCommand($site, ['docker', 'compose', '-f', $file, '-p', composeProjectName($site), 'images', '-q', (string) $service], 30);
-        if ($expectedImage === '' || $image['code'] !== 0 || !hash_equals($expectedImage, trim($image['stdout']))) {
+        $imageId = rootlessServiceImageId($site, $file, (string) $service);
+        if ($expectedImage === '' || $imageId === null || !hash_equals($expectedImage, $imageId)) {
             respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => 'A prepared rootless image changed or is missing.']);
         }
     }
