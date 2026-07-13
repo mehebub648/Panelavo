@@ -390,19 +390,6 @@ mkdir -p "${SITE_ROOT}/.data"
 chown -R "${SITE_USER}:${SITE_USER}" "${SITE_ROOT}"
 chmod 700 "${SITE_ROOT}/.data"
 chmod 600 "${SITE_ROOT}/.env.local"
-if [ ! -f "${SITE_ROOT}/.data/update-state.json" ]; then
-  SOURCE_COMMIT="$(git -C "${SRC_DIR}" rev-parse HEAD 2>/dev/null || true)"
-  SOURCE_VERSION="$(node -p "require('${SRC_DIR}/package.json').version")"
-  sudo -u "${SITE_USER}" env UPDATE_STATE_FILE="${SITE_ROOT}/.data/update-state.json" SOURCE_COMMIT="${SOURCE_COMMIT}" SOURCE_VERSION="${SOURCE_VERSION}" PANEL_UPDATE_REPOSITORY="${PANEL_UPDATE_REPOSITORY:-https://github.com/mehebub648/Panelavo.git}" node <<'NODE'
-const fs = require('node:fs');
-fs.writeFileSync(process.env.UPDATE_STATE_FILE, JSON.stringify({
-  status: 'idle', currentVersion: process.env.SOURCE_VERSION,
-  repository: process.env.PANEL_UPDATE_REPOSITORY || 'https://github.com/mehebub648/Panelavo.git',
-  branch: 'main', installedCommit: process.env.SOURCE_COMMIT || undefined,
-  logFile: '.data/update.log'
-}), { mode: 0o600 });
-NODE
-fi
 
 log "Installing dependencies and building (as ${SITE_USER}) ..."
 sudo -u "${SITE_USER}" bash -c "cd '${SITE_ROOT}' && export PATH=/usr/local/bin:\$PATH && npx -y pnpm@10.12.1 install --frozen-lockfile && npx -y pnpm@10.12.1 build"
@@ -416,6 +403,31 @@ sudo -u "${SITE_USER}" bash -c "cd '${SITE_ROOT}' && export PATH=/usr/local/bin:
 # systemd unit so the PM2 process list survives reboots.
 env PATH="/usr/local/bin:${PATH}" /usr/local/bin/pm2 startup systemd -u "${SITE_USER}" --hp "/home/${SITE_USER}" >/dev/null
 sudo -u "${SITE_USER}" /usr/local/bin/pm2 save >/dev/null
+
+# Only mark the trusted release current after its build and PM2 reload both
+# succeed. Preserve operator-selected update settings while clearing stale
+# worker failure state from the release that setup just replaced.
+SOURCE_COMMIT="$(git -C "${SRC_DIR}" rev-parse HEAD 2>/dev/null || true)"
+SOURCE_VERSION="$(node -p "require('${SRC_DIR}/package.json').version")"
+sudo -u "${SITE_USER}" env UPDATE_STATE_FILE="${SITE_ROOT}/.data/update-state.json" SOURCE_COMMIT="${SOURCE_COMMIT}" SOURCE_VERSION="${SOURCE_VERSION}" PANEL_UPDATE_REPOSITORY="${PANEL_UPDATE_REPOSITORY:-}" node <<'NODE'
+const fs = require('node:fs');
+let existing = {};
+try { existing = JSON.parse(fs.readFileSync(process.env.UPDATE_STATE_FILE, 'utf8')); } catch {}
+const installedCommit = process.env.SOURCE_COMMIT || existing.installedCommit;
+const state = {
+  status: installedCommit ? 'current' : 'idle',
+  currentVersion: process.env.SOURCE_VERSION,
+  repository: process.env.PANEL_UPDATE_REPOSITORY || existing.repository || 'https://github.com/mehebub648/Panelavo.git',
+  branch: existing.branch || 'main',
+  installedCommit,
+  remoteCommit: installedCommit,
+  completedAt: new Date().toISOString(),
+  logFile: existing.logFile || '.data/update.log'
+};
+const temporary = `${process.env.UPDATE_STATE_FILE}.setup-${process.pid}`;
+fs.writeFileSync(temporary, JSON.stringify(state), { mode: 0o600 });
+fs.renameSync(temporary, process.env.UPDATE_STATE_FILE);
+NODE
 
 # ---------------------------------------------------------------------------
 # 11. Firewall rules: expose the panel, hide CloudPanel's own port (8443).
