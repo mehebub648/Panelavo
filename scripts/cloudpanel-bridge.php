@@ -863,6 +863,12 @@ function siteIdentity(Site $site): array
     return ['user' => $user, 'uid' => (int) $record['uid'], 'gid' => (int) $record['gid'], 'home' => '/home/' . $user];
 }
 
+function pathIsSocket(string $path): bool
+{
+    clearstatcache(true, $path);
+    return @filetype($path) === 'socket';
+}
+
 function subordinateRange(string $file, string $user): ?array
 {
     $ranges = [];
@@ -966,10 +972,10 @@ function rootlessCapability(Site $site): array
         'runtimeDirectoryReady' => is_dir($runtime)
             && (int) (@fileowner($runtime) ?: -1) === $identity['uid']
             && (((int) @fileperms($runtime)) & 0777) === 0700,
-        'userBusReady' => is_socket($runtime . '/bus')
+        'userBusReady' => pathIsSocket($runtime . '/bus')
             && (int) (@fileowner($runtime . '/bus') ?: -1) === $identity['uid']
             && ((((int) @fileperms($runtime . '/bus')) & 0007) === 0),
-        'socketReady' => is_socket($runtime . '/docker.sock')
+        'socketReady' => pathIsSocket($runtime . '/docker.sock')
             && (int) (@fileowner($runtime . '/docker.sock') ?: -1) === $identity['uid']
             && ((((int) @fileperms($runtime . '/docker.sock')) & 0007) === 0),
         'daemonAvailable' => false,
@@ -1029,8 +1035,8 @@ function cleanupRootlessDockerBeforeSiteDelete(Site $site): void
     $unit = $identity['home'] . '/.config/systemd/user/docker.service';
     $manifest = rootlessMigrationPath($site);
     $journal = rootlessMigrationPath($site, 'ownership.journal');
-    if (!is_socket($runtime . '/docker.sock') && !is_dir($dataRoot) && !is_file($unit) && !is_file($manifest) && !is_file($journal)) return;
-    if (is_socket($runtime . '/docker.sock')) {
+    if (!pathIsSocket($runtime . '/docker.sock') && !is_dir($dataRoot) && !is_file($unit) && !is_file($manifest) && !is_file($journal)) return;
+    if (pathIsSocket($runtime . '/docker.sock')) {
         $containers = runRootlessDockerCommand($site, ['docker', 'ps', '-aq'], 30);
         $ids = preg_split('/\s+/', trim($containers['stdout'])) ?: [];
         $ids = array_values(array_filter($ids, static fn(string $id): bool => preg_match('/^[0-9a-f]{12,64}$/i', $id) === 1));
@@ -1041,9 +1047,9 @@ function cleanupRootlessDockerBeforeSiteDelete(Site $site): void
         $prune = runRootlessDockerCommand($site, ['docker', 'system', 'prune', '--all', '--force', '--volumes'], 300);
         if ($prune['code'] !== 0) respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED', 'message' => 'The site user Docker data could not be cleaned before website deletion.']);
     }
-    if (is_socket($runtime . '/bus')) {
+    if (pathIsSocket($runtime . '/bus')) {
         $stop = runRootlessSystemdCommand($site, ['systemctl', '--user', 'disable', '--now', 'docker.service'], 120);
-        if ($stop['code'] !== 0 && is_socket($runtime . '/docker.sock')) respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED', 'message' => 'The site user Docker service could not be stopped before website deletion.']);
+        if ($stop['code'] !== 0 && pathIsSocket($runtime . '/docker.sock')) respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED', 'message' => 'The site user Docker service could not be stopped before website deletion.']);
     }
     if (is_dir($dataRoot)) deleteTree($dataRoot);
     @unlink($manifest); @unlink($journal);
@@ -1051,7 +1057,7 @@ function cleanupRootlessDockerBeforeSiteDelete(Site $site): void
     if ($linger['code'] !== 0) respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED', 'message' => 'The site user linger state could not be removed before website deletion.']);
     runSiteCommand($site, ['systemctl', 'stop', 'user@' . $identity['uid'] . '.service'], 60, true);
     clearstatcache(true, $runtime . '/docker.sock');
-    if (is_socket($runtime . '/docker.sock')) respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED', 'message' => 'The site user Docker socket is still active; website deletion was stopped safely.']);
+    if (pathIsSocket($runtime . '/docker.sock')) respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED', 'message' => 'The site user Docker socket is still active; website deletion was stopped safely.']);
 }
 
 // Panel terminal: runs one user-supplied command line strictly as the
@@ -2283,7 +2289,7 @@ function initializeRootlessDocker(Site $site, string $fix, array &$results): voi
     $ready = false;
     for ($attempt = 0; $attempt < 50; $attempt++) {
         clearstatcache(true, $runtime . '/bus');
-        if (is_dir($runtime) && is_socket($runtime . '/bus')
+        if (is_dir($runtime) && pathIsSocket($runtime . '/bus')
             && (int) (@fileowner($runtime) ?: -1) === $identity['uid']
             && (((int) @fileperms($runtime)) & 0777) === 0700
             && (int) (@fileowner($runtime . '/bus') ?: -1) === $identity['uid']
@@ -2322,7 +2328,7 @@ function initializeRootlessDocker(Site $site, string $fix, array &$results): voi
         'output' => trim($enable['stdout'] . ($enable['stderr'] !== '' ? "\n" . $enable['stderr'] : '')),
     ];
     if ($enable['code'] !== 0) return;
-    for ($attempt = 0; $attempt < 100 && !is_socket($runtime . '/docker.sock'); $attempt++) usleep(100000);
+    for ($attempt = 0; $attempt < 100 && !pathIsSocket($runtime . '/docker.sock'); $attempt++) usleep(100000);
     $capability = rootlessCapability($site);
     if (!empty($capability['daemonAvailable']) && empty($capability['storageReady'])) {
         if (!runFixStep($site, $results, $fix, 'Install rootless storage fallback', ['apt-get', 'install', '-y', 'fuse-overlayfs'], 600)) return;
@@ -3593,6 +3599,14 @@ function runRootlessSelfTest(): never
     $paths = iterator_to_array(migrationTreeEntries($temporary));
     $assert(in_array('data', array_map('basename', $paths), true), 'physical descendants must be inventoried');
     if ($linked) $assert(!in_array('outside', array_map('basename', $paths), true), 'symlinks must not be traversed or inventoried');
+    if (DIRECTORY_SEPARATOR === '/') {
+        $socketPath = $temporary . '/probe.sock';
+        $errorCode = 0; $errorMessage = '';
+        $server = @stream_socket_server('unix://' . $socketPath, $errorCode, $errorMessage);
+        $assert(is_resource($server) && pathIsSocket($socketPath), 'Unix socket paths must be detected through their filesystem type');
+        if (is_resource($server)) fclose($server);
+        @unlink($socketPath);
+    }
     @unlink($temporary . '/outside'); @unlink($temporary . '/data'); @rmdir($temporary);
     echo "Rootless Docker ownership self-test passed.\n";
     exit(0);
