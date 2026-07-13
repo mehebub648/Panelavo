@@ -2809,6 +2809,54 @@ function migrationStep(string $command, string $label, string $display, array $r
         'output' => trim((string) ($result['stdout'] ?? '') . (!empty($result['stderr']) ? "\n" . $result['stderr'] : ''))];
 }
 
+function decodeComposePsRows(string $output): array
+{
+    $decoded = json_decode(trim($output), true);
+    if (is_array($decoded)) return array_is_list($decoded) ? $decoded : [$decoded];
+    $rows = [];
+    foreach (preg_split('/\R/', trim($output)) ?: [] as $line) {
+        $row = json_decode($line, true);
+        if (is_array($row)) $rows[] = $row;
+    }
+    return $rows;
+}
+
+function composeMigrationRowsReady(array $rows, int $serviceCount): bool
+{
+    if (count($rows) !== $serviceCount) return false;
+    foreach ($rows as $row) {
+        $health = strtolower((string) ($row['Health'] ?? ''));
+        if (($row['State'] ?? '') !== 'running' || $health === 'starting' || $health === 'unhealthy') return false;
+    }
+    return true;
+}
+
+function waitForRootlessCompose(Site $site, string $file, int $serviceCount): array
+{
+    $last = ['code' => 1, 'timedOut' => false, 'stdout' => '', 'stderr' => 'No service-state probe ran.'];
+    for ($attempt = 0; $attempt < 45; $attempt++) {
+        $last = runRootlessDockerCommand($site, ['docker', 'compose', '-f', $file, '-p', composeProjectName($site), 'ps', '-a', '--format', 'json'], 30);
+        $rows = $last['code'] === 0 ? decodeComposePsRows($last['stdout']) : [];
+        if ($last['code'] === 0 && composeMigrationRowsReady($rows, $serviceCount)) return $last;
+        if (count(array_filter($rows, static fn(array $row): bool => strtolower((string) ($row['Health'] ?? '')) === 'unhealthy')) > 0) break;
+        usleep(1000000);
+    }
+    $last['code'] = 1;
+    $last['stderr'] = trim((string) ($last['stderr'] ?? '') . "\nOne or more rootless services did not become running and healthy.");
+    return $last;
+}
+
+function waitForLoopbackHttp(Site $site, int $port): array
+{
+    $last = ['code' => 1, 'timedOut' => false, 'stdout' => '', 'stderr' => 'No HTTP readiness probe ran.'];
+    for ($attempt = 0; $attempt < 30; $attempt++) {
+        $last = runSiteCommand($site, ['curl', '--fail', '--silent', '--show-error', '--max-time', '5', 'http://127.0.0.1:' . $port . '/'], 10, true);
+        if ($last['code'] === 0) return $last;
+        usleep(1000000);
+    }
+    return $last;
+}
+
 function cutoverRootlessMigration(Site $site): array
 {
     $manifest = migrationManifest($site);
@@ -2871,20 +2919,12 @@ function cutoverRootlessMigration(Site $site): array
         }
         $up = runRootlessDockerCommand($site, ['docker', 'compose', '-f', $runtimeFile, '-p', composeProjectName($site), 'up', '-d', '--no-build', '--remove-orphans'], 300);
         $steps[] = migrationStep('cutover-rootless-migration', 'Start prepared rootless project', 'docker compose up -d --no-build --remove-orphans', $up);
-        $ps = $up['code'] === 0 ? runRootlessDockerCommand($site, ['docker', 'compose', '-f', $runtimeFile, '-p', composeProjectName($site), 'ps', '-a', '--format', 'json'], 30) : ['code' => 1, 'timedOut' => false, 'stdout' => '', 'stderr' => 'Rootless start failed.'];
-        if ($ps['code'] === 0) {
-            $rows = json_decode(trim($ps['stdout']), true);
-            if (!is_array($rows) || array_is_list($rows) === false) {
-                $rows = [];
-                foreach (preg_split('/\R/', trim($ps['stdout'])) ?: [] as $line) { $row = json_decode($line, true); if (is_array($row)) $rows[] = $row; }
-            }
-            if (count($rows) !== count((array) $model['services']) || count(array_filter($rows, static fn(array $row): bool => ($row['State'] ?? '') !== 'running' || strtolower((string) ($row['Health'] ?? '')) === 'unhealthy')) > 0) {
-                $ps['code'] = 1; $ps['stderr'] .= "\nOne or more rootless services are not running or healthy.";
-            }
-        }
+        $ps = $up['code'] === 0
+            ? waitForRootlessCompose($site, $runtimeFile, count((array) $model['services']))
+            : ['code' => 1, 'timedOut' => false, 'stdout' => '', 'stderr' => 'Rootless start failed.'];
         $steps[] = migrationStep('cutover-rootless-migration', 'Verify rootless service state', 'docker compose ps -a', $ps);
         $verify = $up['code'] === 0 && $ps['code'] === 0 && !empty($composeCapability['expectedPort'])
-            ? runSiteCommand($site, ['curl', '--fail', '--silent', '--show-error', '--max-time', '10', 'http://127.0.0.1:' . (int) $composeCapability['expectedPort'] . '/'], 20, true)
+            ? waitForLoopbackHttp($site, (int) $composeCapability['expectedPort'])
             : ['code' => 1, 'timedOut' => false, 'stdout' => '', 'stderr' => 'Rootless service-state verification failed.'];
         $steps[] = migrationStep('cutover-rootless-migration', 'Verify website entry port', 'HTTP probe on the CloudPanel loopback port', $verify);
         if ($up['code'] === 0 && $ps['code'] === 0 && $verify['code'] === 0) {
@@ -2909,7 +2949,7 @@ function cutoverRootlessMigration(Site $site): array
         $restart = runSiteCommand($site, ['docker', 'compose', '-f', $file, '-p', composeProjectName($site), 'start'], 300, true);
         $steps[] = migrationStep('cutover-rootless-migration', 'Restart legacy rootful project', 'docker compose start', $restart);
         $rollbackVerify = $restart['code'] === 0 && !empty($manifest['expectedPort'])
-            ? runSiteCommand($site, ['curl', '--fail', '--silent', '--show-error', '--max-time', '10', 'http://127.0.0.1:' . (int) $manifest['expectedPort'] . '/'], 20, true)
+            ? waitForLoopbackHttp($site, (int) $manifest['expectedPort'])
             : ['code' => 1, 'timedOut' => false, 'stdout' => '', 'stderr' => 'The legacy project did not restart.'];
         $steps[] = migrationStep('cutover-rootless-migration', 'Verify restored website endpoint', 'HTTP probe on the original loopback port', $rollbackVerify);
     }
@@ -3722,6 +3762,10 @@ function runRootlessSelfTest(): never
     $assert(effectiveContainerRuntimeIdentity(['uid' => 0, 'gid' => 0], [['uid' => 0, 'gid' => 0], ['uid' => 1000, 'gid' => 1000]]) === ['uid' => 1000, 'gid' => 1000], 'a unique privilege-dropped child must define the effective runtime identity');
     $assert(effectiveContainerRuntimeIdentity(['uid' => 0, 'gid' => 0], [['uid' => 0, 'gid' => 0]]) === ['uid' => 0, 'gid' => 0], 'an all-root process tree must remain root');
     $assert(effectiveContainerRuntimeIdentity(['uid' => 0, 'gid' => 0], [['uid' => 1000, 'gid' => 1000], ['uid' => 33, 'gid' => 33]]) === null, 'multiple non-root identities must remain ambiguous');
+    $rows = decodeComposePsRows("{\"State\":\"running\",\"Health\":\"healthy\"}\n{\"State\":\"running\",\"Health\":\"starting\"}");
+    $assert(count($rows) === 2, 'newline-delimited Compose JSON must decode every service');
+    $assert(!composeMigrationRowsReady($rows, 2), 'starting health must not pass migration readiness');
+    $assert(composeMigrationRowsReady([['State' => 'running', 'Health' => 'healthy'], ['State' => 'running', 'Health' => '']], 2), 'healthy services and services without healthchecks must pass readiness');
     $assert(rootlessStorageDriverReady('overlay2'), 'overlay2 must be accepted as native rootless storage');
     $assert(rootlessStorageDriverReady('overlayfs'), 'Docker 29 overlayfs must be accepted as native rootless storage');
     $assert(rootlessStorageDriverReady('fuse-overlayfs'), 'fuse-overlayfs must be accepted as the fallback storage driver');
