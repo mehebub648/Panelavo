@@ -973,8 +973,7 @@ function rootlessCapability(Site $site): array
             && (int) (@fileowner($runtime) ?: -1) === $identity['uid']
             && (((int) @fileperms($runtime)) & 0777) === 0700,
         'userBusReady' => pathIsSocket($runtime . '/bus')
-            && (int) (@fileowner($runtime . '/bus') ?: -1) === $identity['uid']
-            && ((((int) @fileperms($runtime . '/bus')) & 0007) === 0),
+            && (int) (@fileowner($runtime . '/bus') ?: -1) === $identity['uid'],
         'socketReady' => pathIsSocket($runtime . '/docker.sock')
             && (int) (@fileowner($runtime . '/docker.sock') ?: -1) === $identity['uid']
             && ((((int) @fileperms($runtime . '/docker.sock')) & 0007) === 0),
@@ -2292,8 +2291,7 @@ function initializeRootlessDocker(Site $site, string $fix, array &$results): voi
         if (is_dir($runtime) && pathIsSocket($runtime . '/bus')
             && (int) (@fileowner($runtime) ?: -1) === $identity['uid']
             && (((int) @fileperms($runtime)) & 0777) === 0700
-            && (int) (@fileowner($runtime . '/bus') ?: -1) === $identity['uid']
-            && ((((int) @fileperms($runtime . '/bus')) & 0007) === 0)) {
+            && (int) (@fileowner($runtime . '/bus') ?: -1) === $identity['uid']) {
             $ready = true;
             break;
         }
