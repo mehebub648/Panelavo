@@ -2446,6 +2446,62 @@ function rootlessMappedId(int $containerId, int $siteId, int $subordinateStart):
     return $containerId === 0 ? $siteId : $subordinateStart + $containerId - 1;
 }
 
+function mappedBindAncestors(Site $site, string $source): array
+{
+    $home = realpath(siteIdentity($site)['home']);
+    $parent = realpath(dirname($source));
+    if (!$home || !$parent || ($parent !== $home && !pathIsContained($parent, $home))) return [];
+    $paths = [];
+    while ($parent === $home || pathIsContained($parent, $home)) {
+        $paths[] = $parent;
+        if ($parent === $home) break;
+        $next = dirname($parent);
+        if ($next === $parent) return [];
+        $parent = $next;
+    }
+    return array_reverse($paths);
+}
+
+function mappedBindAclIsAvailable(Site $site, string $source, int $mappedUid): bool
+{
+    $getfacl = findSiteTool('/root', 'getfacl', true);
+    $ancestors = mappedBindAncestors($site, $source);
+    if (!$getfacl || !$ancestors) return false;
+    $treeAcl = runSiteCommand($site, [$getfacl, '--numeric', '--recursive', '--absolute-names', $source], 900, true);
+    $ancestorAcl = runSiteCommand($site, array_merge([$getfacl, '--numeric', '--absolute-names'], $ancestors), 300, true);
+    $output = $treeAcl['stdout'] . "\n" . $ancestorAcl['stdout'];
+    return $treeAcl['code'] === 0 && $ancestorAcl['code'] === 0
+        && !str_contains($output, '[stdout truncated by Panelavo]')
+        && preg_match('/^(?:default:)?user:' . preg_quote((string) $mappedUid, '/') . ':/m', $output) !== 1;
+}
+
+function changeMappedBindAccess(Site $site, array $manifest, bool $grant): bool
+{
+    $setfacl = findSiteTool('/root', 'setfacl', true);
+    if (!$setfacl) return false;
+    $identity = $manifest['identity']; $subuid = $manifest['subuid'];
+    $ok = true;
+    foreach ((array) ($manifest['sources'] ?? []) as $source => $definition) {
+        $mappedUid = rootlessMappedId((int) ($definition['runtimeUid'] ?? 0), (int) $identity['uid'], (int) $subuid['start']);
+        if ($mappedUid === (int) $identity['uid']) continue;
+        $ancestors = mappedBindAncestors($site, (string) $source);
+        if (!$ancestors) return false;
+        $ancestorArgs = $grant
+            ? [$setfacl, '--modify', 'u:' . $mappedUid . ':--x']
+            : [$setfacl, '--remove', 'u:' . $mappedUid];
+        $ancestorResult = runSiteCommand($site, array_merge($ancestorArgs, $ancestors), 300, true);
+        $accessResult = runSiteCommand($site, $grant
+            ? [$setfacl, '--physical', '--recursive', '--modify', 'u:' . $mappedUid . ':rwX', (string) $source]
+            : [$setfacl, '--physical', '--recursive', '--remove', 'u:' . $mappedUid, (string) $source], 900, true);
+        $defaultResult = runSiteCommand($site, [
+            '/usr/bin/find', '-P', (string) $source, '-type', 'd', '-exec', $setfacl,
+            $grant ? '--modify' : '--remove', ($grant ? 'd:u:' . $mappedUid . ':rwx' : 'd:u:' . $mappedUid), '{}', '+',
+        ], 900, true);
+        if ($ancestorResult['code'] !== 0 || $accessResult['code'] !== 0 || $defaultResult['code'] !== 0) $ok = false;
+    }
+    return $ok;
+}
+
 function effectiveContainerRuntimeIdentity(array $primary, array $processes): ?array
 {
     $primaryUid = (int) ($primary['uid'] ?? -1);
@@ -2552,6 +2608,10 @@ function analyzeRootlessMigration(Site $site, array $model): array
         if (count($runtimeUids) > 1 || count($runtimeGids) > 1) respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => 'Services with conflicting runtime identities share bind source ' . $source . '.']);
         $definition['runtimeUid'] = $runtimeUids[0] ?? 0;
         $definition['runtimeGid'] = $runtimeGids[0] ?? 0;
+        $mappedUid = rootlessMappedId($definition['runtimeUid'], $identity['uid'], (int) $subuid['start']);
+        if ($mappedUid !== $identity['uid'] && !mappedBindAclIsAvailable($site, $source, $mappedUid)) {
+            respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => $source . ': the mapped runtime UID already has an ACL entry or the ACL inventory could not be completed safely.']);
+        }
         $definition['inventory'] = ownershipInventory($source, array_values(array_unique([0, $identity['uid'], $definition['runtimeUid']])), array_values(array_unique([0, $identity['gid'], $definition['runtimeGid']])));
         if (empty($definition['inventory']['valid'])) respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => $source . ': ' . $definition['inventory']['detail']]);
         unset($definition['uids'], $definition['gids']);
@@ -2700,6 +2760,10 @@ function translateMigrationOwnership(Site $site, array $manifest): string
     }
     fclose($handle);
     ensureSiteProjectAccess($site);
+    if (!changeMappedBindAccess($site, $manifest, true)) {
+        restoreMigrationOwnership($site, $manifest);
+        throw new RuntimeException('Mapped runtime ACL access could not be applied safely.');
+    }
     return $journal;
 }
 
@@ -2709,7 +2773,7 @@ function restoreMigrationOwnership(Site $site, array $manifest): bool
     if (!is_file($journal) || is_link($journal)) return true;
     $lines = @file($journal, FILE_IGNORE_NEW_LINES);
     if (!is_array($lines)) return false;
-    $ok = true; $journaled = [];
+    $ok = changeMappedBindAccess($site, $manifest, false); $journaled = [];
     foreach (array_reverse($lines) as $line) {
         $parts = explode("\t", $line);
         $path = isset($parts[0]) ? base64_decode($parts[0], true) : false;
