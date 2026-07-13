@@ -2446,6 +2446,33 @@ function rootlessMappedId(int $containerId, int $siteId, int $subordinateStart):
     return $containerId === 0 ? $siteId : $subordinateStart + $containerId - 1;
 }
 
+function effectiveContainerRuntimeIdentity(array $primary, array $processes): ?array
+{
+    $primaryUid = (int) ($primary['uid'] ?? -1);
+    $primaryGid = (int) ($primary['gid'] ?? -1);
+    if ($primaryUid < 0 || $primaryGid < 0) return null;
+    if ($primaryUid !== 0 || $primaryGid !== 0) return ['uid' => $primaryUid, 'gid' => $primaryGid];
+    $nonRoot = [];
+    foreach ($processes as $process) {
+        $uid = (int) ($process['uid'] ?? -1); $gid = (int) ($process['gid'] ?? -1);
+        if ($uid < 0 || $gid < 0 || ($uid === 0 && $gid === 0)) continue;
+        $nonRoot[$uid . ':' . $gid] = ['uid' => $uid, 'gid' => $gid];
+    }
+    if (count($nonRoot) > 1) return null;
+    return $nonRoot ? array_values($nonRoot)[0] : ['uid' => 0, 'gid' => 0];
+}
+
+function processNumericIdentity(int $pid): ?array
+{
+    $status = $pid > 1 ? @file('/proc/' . $pid . '/status', FILE_IGNORE_NEW_LINES) : false;
+    $uid = null; $gid = null;
+    foreach (is_array($status) ? $status : [] as $line) {
+        if (preg_match('/^Uid:\s+(\d+)/', $line, $match)) $uid = (int) $match[1];
+        if (preg_match('/^Gid:\s+(\d+)/', $line, $match)) $gid = (int) $match[1];
+    }
+    return $uid === null || $gid === null ? null : ['uid' => $uid, 'gid' => $gid];
+}
+
 function rootfulServiceIdentity(Site $site, string $file, string $service): array
 {
     $id = runSiteCommand($site, ['docker', 'compose', '-f', $file, '-p', composeProjectName($site), 'ps', '-q', $service], 20, true);
@@ -2455,14 +2482,23 @@ function rootfulServiceIdentity(Site $site, string $file, string $service): arra
     }
     $pidResult = runSiteCommand($site, ['docker', 'inspect', '--format', '{{.State.Pid}}', $container], 20, true);
     $pid = (int) trim($pidResult['stdout']);
-    $status = $pid > 1 ? @file('/proc/' . $pid . '/status', FILE_IGNORE_NEW_LINES) : false;
-    $uid = null; $gid = null;
-    foreach (is_array($status) ? $status : [] as $line) {
-        if (preg_match('/^Uid:\s+(\d+)/', $line, $match)) $uid = (int) $match[1];
-        if (preg_match('/^Gid:\s+(\d+)/', $line, $match)) $gid = (int) $match[1];
+    $primary = processNumericIdentity($pid);
+    if ($primary === null) respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => 'The runtime UID/GID for service "' . $service . '" could not be resolved.']);
+    $processes = [];
+    if ($primary['uid'] === 0 && $primary['gid'] === 0) {
+        // `init: true` and privilege-dropping entrypoints leave PID 1 as root
+        // while the long-running application child uses the effective bind UID.
+        $top = runSiteCommand($site, ['docker', 'top', $container, '-eo', 'pid'], 20, true);
+        foreach (preg_split('/\R/', trim($top['stdout'])) ?: [] as $line) {
+            $candidate = trim($line);
+            if (!ctype_digit($candidate)) continue;
+            $identity = processNumericIdentity((int) $candidate);
+            if ($identity !== null) $processes[] = $identity;
+        }
     }
-    if ($uid === null || $gid === null) respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => 'The runtime UID/GID for service "' . $service . '" could not be resolved.']);
-    return ['container' => $container, 'uid' => $uid, 'gid' => $gid];
+    $effective = effectiveContainerRuntimeIdentity($primary, $processes);
+    if ($effective === null) respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => 'Service "' . $service . '" has multiple non-root runtime identities, so bind ownership cannot be translated safely.']);
+    return ['container' => $container] + $effective;
 }
 
 function analyzeRootlessMigration(Site $site, array $model): array
@@ -3595,6 +3631,10 @@ function runRootlessSelfTest(): never
     $assert(rootlessMappedId(0, 1003, 296608) === 1003, 'container root must map to the site user');
     $assert(rootlessMappedId(1, 1003, 296608) === 296608, 'container UID 1 must map to the subordinate range start');
     $assert(rootlessMappedId(1000, 1003, 296608) === 297607, 'container UID 1000 must map with the rootless n-1 formula');
+    $assert(effectiveContainerRuntimeIdentity(['uid' => 1000, 'gid' => 1000], []) === ['uid' => 1000, 'gid' => 1000], 'a non-root PID 1 must remain authoritative');
+    $assert(effectiveContainerRuntimeIdentity(['uid' => 0, 'gid' => 0], [['uid' => 0, 'gid' => 0], ['uid' => 1000, 'gid' => 1000]]) === ['uid' => 1000, 'gid' => 1000], 'a unique privilege-dropped child must define the effective runtime identity');
+    $assert(effectiveContainerRuntimeIdentity(['uid' => 0, 'gid' => 0], [['uid' => 0, 'gid' => 0]]) === ['uid' => 0, 'gid' => 0], 'an all-root process tree must remain root');
+    $assert(effectiveContainerRuntimeIdentity(['uid' => 0, 'gid' => 0], [['uid' => 1000, 'gid' => 1000], ['uid' => 33, 'gid' => 33]]) === null, 'multiple non-root identities must remain ambiguous');
     $assert(rootlessStorageDriverReady('overlay2'), 'overlay2 must be accepted as native rootless storage');
     $assert(rootlessStorageDriverReady('overlayfs'), 'Docker 29 overlayfs must be accepted as native rootless storage');
     $assert(rootlessStorageDriverReady('fuse-overlayfs'), 'fuse-overlayfs must be accepted as the fallback storage driver');
