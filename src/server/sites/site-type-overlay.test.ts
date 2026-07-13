@@ -25,7 +25,9 @@ describe("site type overlay", () => {
   it("starts empty and stores overrides case-insensitively", async () => {
     expect(await getSiteTypeOverrides()).toEqual({});
     await setSiteTypeOverride("App.Example.COM", "docker");
-    expect(await getSiteTypeOverrides()).toEqual({ "app.example.com": "docker" });
+    expect(await getSiteTypeOverrides()).toEqual({
+      "app.example.com": "docker",
+    });
   });
 
   it("removes overrides and tolerates removing missing ones", async () => {
@@ -46,6 +48,12 @@ describe("site type overlay", () => {
 
   it("limits explicit Docker sites to Compose operations", () => {
     expect(isSiteActionAllowed("docker", "compose-up")).toBe(true);
+    expect(isSiteActionAllowed("docker", "prepare-rootless-migration")).toBe(
+      true,
+    );
+    expect(isSiteActionAllowed("docker", "cutover-rootless-migration")).toBe(
+      true,
+    );
     expect(isSiteActionAllowed("docker", "npm-install")).toBe(false);
     expect(isSiteActionAllowed("nodejs", "npm-install")).toBe(true);
   });

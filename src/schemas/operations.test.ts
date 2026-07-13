@@ -28,6 +28,17 @@ describe("operationsRequestSchema", () => {
         command: "compose-deploy",
       }),
     ).toEqual({ action: "run", command: "compose-deploy" });
+    expect(
+      operationsRequestSchema.parse({
+        action: "run",
+        command: "prepare-rootless-migration",
+        name: "web",
+      }),
+    ).toEqual({
+      action: "run",
+      command: "prepare-rootless-migration",
+      name: "web",
+    });
   });
 
   it("rejects arbitrary commands, arguments, and unknown fields", () => {
@@ -53,6 +64,12 @@ describe("operationsRequestSchema", () => {
     expect(
       operationsRequestSchema.parse({ action: "fix", fix: "install-docker" }),
     ).toEqual({ action: "fix", fix: "install-docker" });
+    expect(
+      operationsRequestSchema.parse({
+        action: "fix",
+        fix: "initialize-rootless-docker",
+      }),
+    ).toEqual({ action: "fix", fix: "initialize-rootless-docker" });
     expect(() =>
       operationsRequestSchema.parse({ action: "fix", fix: "install-anything" }),
     ).toThrow();
@@ -79,6 +96,19 @@ describe("operationsRequestSchema", () => {
       operationsRequestSchema.parse({
         action: "run",
         command: "compose-ps",
+        name: "unexpected",
+      }),
+    ).toThrow();
+    expect(() =>
+      operationsRequestSchema.parse({
+        action: "run",
+        command: "prepare-rootless-migration",
+      }),
+    ).toThrow();
+    expect(() =>
+      operationsRequestSchema.parse({
+        action: "run",
+        command: "cutover-rootless-migration",
         name: "unexpected",
       }),
     ).toThrow();
@@ -130,7 +160,11 @@ describe("envRequestSchema", () => {
 
   it("rejects other files, invalid keys, and multiline values", () => {
     expect(() =>
-      envRequestSchema.parse({ action: "save", file: "../.bashrc", entries: [] }),
+      envRequestSchema.parse({
+        action: "save",
+        file: "../.bashrc",
+        entries: [],
+      }),
     ).toThrow();
     expect(() =>
       envRequestSchema.parse({

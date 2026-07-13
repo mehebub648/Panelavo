@@ -202,7 +202,7 @@ function makeFix(
 ): OperationFix {
   const hostRoot = fix.scope === "host-root";
   const authorized = hostRoot
-    ? Boolean(raw.permissions?.docker)
+    ? Boolean(raw.permissions?.hostAdmin)
     : Boolean(raw.permissions?.manage);
   const blockedBy = authorized
     ? []
@@ -218,6 +218,20 @@ const FIXES: Record<
   OperationFix["id"],
   Omit<OperationFix, "status" | "blockedBy">
 > = {
+  "initialize-rootless-docker": {
+    id: "initialize-rootless-docker",
+    label: "Initialize rootless Docker",
+    description:
+      "Install the verified rootless prerequisites and initialize this site user's private Docker daemon.",
+    risk: "disruptive",
+    scope: "host-root",
+    confirmation: {
+      title: "Initialize rootless Docker for this site user?",
+      message:
+        "Panelavo will install uidmap, D-Bus user-session support, slirp4netns, and Docker rootless packages when missing, enable lingering, and start a private user daemon. It will not grant docker-group access.",
+      confirmText: "Initialize rootless Docker",
+    },
+  },
   "install-docker": {
     id: "install-docker",
     label: "Install Docker Engine",
@@ -338,18 +352,49 @@ function preflightChecks(raw: RawOperationsData, type: string) {
         },
       ),
       check(
-        "docker-daemon",
-        "Docker daemon",
-        Boolean(raw.compose?.daemonAvailable),
-        "The Docker daemon is reachable.",
-        "The Docker daemon is stopped or unreachable.",
-        "Start Docker and verify it with docker info.",
+        "rootless-prerequisites",
+        "Rootless prerequisites",
+        Boolean(
+          raw.compose?.rootless?.uidmapAvailable &&
+          raw.compose.rootless.rootlessExtrasAvailable &&
+          raw.compose.rootless.buildxAvailable &&
+          raw.compose.rootless.networkHelperAvailable &&
+          raw.compose.rootless.subuidReady &&
+          raw.compose.rootless.subgidReady,
+        ),
+        "UID/GID mapping, Docker rootless extras, and userspace networking are ready.",
+        "The site user is missing one or more rootless Docker prerequisites.",
+        "A Super Admin can initialize the verified rootless runtime for this site user.",
         {
-          fix:
-            raw.compose?.cliAvailable && raw.compose?.pluginAvailable
-              ? makeFix(raw, FIXES["start-docker"])
-              : undefined,
+          fix: makeFix(raw, FIXES["initialize-rootless-docker"]),
         },
+      ),
+      check(
+        "rootless-user-manager",
+        "Site user service manager",
+        Boolean(
+          raw.compose?.rootless?.lingerEnabled &&
+          raw.compose.rootless.runtimeDirectoryReady &&
+          raw.compose.rootless.userBusReady,
+        ),
+        "The lingering systemd user manager and private D-Bus are ready.",
+        "The site user's persistent systemd manager is not ready.",
+        "Initialize rootless Docker to enable lingering and start the verified user manager.",
+        { fix: makeFix(raw, FIXES["initialize-rootless-docker"]) },
+      ),
+      check(
+        "docker-daemon",
+        "Private rootless daemon",
+        Boolean(
+          raw.compose?.daemonAvailable &&
+          raw.compose.rootless?.securityRootless &&
+          raw.compose.rootless?.storageReady &&
+          raw.compose.rootless?.cgroupReady,
+        ),
+        `The site user's rootless daemon is reachable${raw.compose?.rootless?.storageDriver ? ` using ${raw.compose.rootless.storageDriver}` : ""} with cgroup v2 support.`,
+        "The private rootless Docker daemon is stopped, unreachable, not actually rootless, or lacks supported storage/cgroup v2.",
+        "Initialize or repair the site user's rootless daemon. Panelavo will not fall back to the root socket.",
+        { fix: makeFix(raw, FIXES["initialize-rootless-docker"]) },
       ),
       check(
         "compose-config",
@@ -372,9 +417,9 @@ function preflightChecks(raw: RawOperationsData, type: string) {
             "compose-safety",
             "Host safety policy",
             raw.compose?.safe === true,
-            "No unsafe root-level Compose features were detected.",
+            "No unsupported Compose privilege or host-sharing features were detected.",
             raw.compose?.detail ||
-              "The Compose configuration uses a host-level feature Panelavo will not run as root.",
+              "The Compose configuration uses a privilege or host-sharing feature Panelavo blocks.",
             "Use loopback-only ports and keep bind mounts, build contexts, configs, and secrets inside the site root.",
             {},
           ),
@@ -407,11 +452,11 @@ function preflightChecks(raw: RawOperationsData, type: string) {
       },
       check(
         "docker-permission",
-        "Root deployment approval",
-        Boolean(raw.permissions?.docker),
-        "Super Admin approval is available.",
-        "Rootful Docker deployment is restricted to Super Admins.",
-        "Ask a Super Admin to review and deploy this Compose project.",
+        "Site-user Docker boundary",
+        Boolean(raw.permissions?.manage),
+        "Compose runs with the same site-user authority available through SSH and Terminal.",
+        "Operations management permission is required.",
+        "Ask a Panelavo Admin, Manager, or Super Admin with site-write access.",
       ),
     );
   } else if (type === "nodejs" || (type === "static" && raw.hasPackageJson)) {
@@ -598,19 +643,23 @@ function makeAction(
   action: Omit<OperationAction, "status" | "blockedBy"> & {
     blockers?: string[];
     docker?: boolean;
+    host?: boolean;
   },
 ): OperationAction {
   const authorized =
     Boolean(raw.permissions?.manage) &&
-    (!action.docker || Boolean(raw.permissions?.docker));
+    (!action.host || Boolean(raw.permissions?.hostAdmin));
   const blockedBy = [...(action.blockers ?? [])];
   if (!raw.permissions?.manage)
     blockedBy.unshift("Operations permission is required.");
-  else if (action.docker && !raw.permissions?.docker)
-    blockedBy.unshift("Rootful Docker operations require a Super Admin.");
+  else if (action.host && !raw.permissions?.hostAdmin)
+    blockedBy.unshift(
+      "This host or migration operation requires a Super Admin.",
+    );
   const rest = { ...action };
   delete rest.blockers;
   delete rest.docker;
+  delete rest.host;
   return { ...rest, blockedBy, status: statusFrom(blockedBy, authorized) };
 }
 
@@ -1057,7 +1106,7 @@ function actionGroups(
         iconKey: "check",
         commandPreview: "docker compose config --quiet",
         risk: "safe",
-        scope: "host-root",
+        scope: "site-user",
         blockers: configBlockers.filter(
           (item) => !item.includes("invalid") && !item.includes("safety"),
         ),
@@ -1071,13 +1120,13 @@ function actionGroups(
         iconKey: "play",
         commandPreview: "docker compose up -d",
         risk: "disruptive",
-        scope: "host-root",
+        scope: "site-user",
         blockers: daemonBlockers,
         docker: true,
         confirmation: {
-          title: "Start the Compose project as root?",
+          title: "Start this site's rootless Compose project?",
           message:
-            "Panelavo will run the reviewed Compose configuration through the host Docker daemon.",
+            "Panelavo will run the reviewed Compose configuration through this site user's private rootless daemon.",
           confirmText: "Start services",
         },
       }),
@@ -1090,11 +1139,11 @@ function actionGroups(
         iconKey: "build",
         commandPreview: "docker compose up -d --build --remove-orphans",
         risk: "disruptive",
-        scope: "host-root",
+        scope: "site-user",
         blockers: daemonBlockers,
         docker: true,
         confirmation: {
-          title: "Build and start the Compose project as root?",
+          title: "Build and start this site's rootless Compose project?",
           message:
             "Panelavo will rebuild images from the reviewed Compose configuration, recreate services when required, remove orphaned project containers, and verify the website entry port.",
           confirmText: "Build & start",
@@ -1108,7 +1157,7 @@ function actionGroups(
         iconKey: "refresh",
         commandPreview: "docker compose restart",
         risk: "disruptive",
-        scope: "host-root",
+        scope: "site-user",
         blockers: daemonBlockers,
         docker: true,
         confirmation: {
@@ -1127,7 +1176,7 @@ function actionGroups(
         iconKey: "refresh",
         commandPreview: "docker compose pull --ignore-buildable",
         risk: "disruptive",
-        scope: "host-root",
+        scope: "site-user",
         blockers: daemonBlockers,
         docker: true,
         confirmation: {
@@ -1145,7 +1194,7 @@ function actionGroups(
         iconKey: "box",
         commandPreview: "docker compose ps",
         risk: "safe",
-        scope: "host-root",
+        scope: "site-user",
         blockers: daemonBlockers,
         docker: true,
       }),
@@ -1157,7 +1206,7 @@ function actionGroups(
         iconKey: "logs",
         commandPreview: "docker compose logs --tail 200 --no-color",
         risk: "safe",
-        scope: "host-root",
+        scope: "site-user",
         blockers: daemonBlockers,
         docker: true,
       }),
@@ -1170,7 +1219,7 @@ function actionGroups(
         iconKey: "stop",
         commandPreview: "docker compose down",
         risk: "destructive",
-        scope: "host-root",
+        scope: "site-user",
         blockers: daemonBlockers,
         docker: true,
         confirmation: {
@@ -1181,6 +1230,83 @@ function actionGroups(
         },
       }),
     );
+    if (raw.migration?.legacyRootfulDetected) {
+      for (const service of raw.compose?.services ?? []) {
+        const prepared = raw.migration.preparedServices?.includes(service);
+        runtimeActions.push(
+          makeAction(raw, {
+            id: "prepare-rootless-migration",
+            group: "migration",
+            label: prepared ? `${service} prepared` : `Prepare ${service}`,
+            description: prepared
+              ? "This service image is ready in the private rootless image store. Re-run after application or Compose changes."
+              : "Pull and cold-build this service in the rootless daemon while the legacy project remains online.",
+            iconKey: prepared ? "check" : "build",
+            commandPreview: `docker compose build ${service}`,
+            risk: "disruptive",
+            scope: "host-root",
+            host: true,
+            input: { name: service },
+            blockers: daemonBlockers,
+            confirmation: prepared
+              ? undefined
+              : {
+                  title: `Prepare ${service} for rootless migration?`,
+                  message:
+                    "The legacy rootful project remains online. This request may pull and build for up to 15 minutes.",
+                  confirmText: "Prepare service",
+                },
+          }),
+        );
+      }
+      runtimeActions.push(
+        makeAction(raw, {
+          id: "cutover-rootless-migration",
+          group: "migration",
+          label: "Cut over to rootless Docker",
+          description:
+            "Stop the retained rootful project, journal and translate bind ownership, start prepared rootless services, verify them, and roll back on failure.",
+          iconKey: "refresh",
+          commandPreview: "prepared rootless cutover with ownership journal",
+          risk: "destructive",
+          scope: "host-root",
+          host: true,
+          blockers: [
+            ...daemonBlockers,
+            ...(!raw.migration.allServicesPrepared
+              ? ["Prepare every Compose service before cutover."]
+              : []),
+          ],
+          confirmation: {
+            title: "Cut over this website to rootless Docker?",
+            message:
+              "The website will briefly stop. Panelavo will translate bind-mounted UID/GID ownership, preserve a recovery journal, verify the new endpoint, and restart the retained rootful containers if cutover fails.",
+            confirmText: "Cut over website",
+          },
+        }),
+      );
+    }
+    if (raw.migration?.recoveryRequired) {
+      runtimeActions.push(
+        makeAction(raw, {
+          id: "recover-rootless-migration",
+          group: "migration",
+          label: "Recover migration ownership",
+          description:
+            "Restore the retained numeric-ownership journal and restart the legacy rootful project.",
+          iconKey: "refresh",
+          risk: "destructive",
+          scope: "host-root",
+          host: true,
+          confirmation: {
+            title: "Recover the interrupted migration?",
+            message:
+              "Panelavo will restore original bind ownership and restart the retained rootful project. The journal is removed only after successful restoration.",
+            confirmText: "Recover migration",
+          },
+        }),
+      );
+    }
   }
 
   if (raw.hasEcosystem || raw.hasStartScript || raw.pm2?.length) {
@@ -1264,7 +1390,11 @@ function actionGroups(
             "runtime",
             "Runtime & lifecycle",
             "Targeted controls for this website's Compose project.",
-            runtimeActions.filter((action) => action.id.startsWith("compose-")),
+            runtimeActions.filter(
+              (action) =>
+                action.id.startsWith("compose-") ||
+                action.id.includes("rootless-migration"),
+            ),
           ],
         ]
       : [
@@ -1340,11 +1470,7 @@ function planFor(
       ...rest,
       blockedBy: [...new Set(blockedBy)],
       warnings: [...new Set([...warnings, ...(planWarnings ?? [])])],
-      status: statusFrom(
-        blockedBy,
-        authorized &&
-          (rest.id !== "compose" || Boolean(raw.permissions?.docker)),
-      ),
+      status: statusFrom(blockedBy, authorized),
     };
   };
 
@@ -1355,7 +1481,7 @@ function planFor(
       description:
         "Validate the selected file, build or recreate services, then report their final state.",
       risk: "disruptive",
-      scope: "host-root",
+      scope: "site-user",
       steps: [
         {
           command: "compose-validate",
@@ -1384,9 +1510,9 @@ function planFor(
           : []),
       ],
       confirmation: {
-        title: "Deploy this Compose project as root?",
+        title: "Deploy this rootless Compose project?",
         message:
-          "Panelavo will execute the reviewed, site-contained Compose configuration through the host Docker daemon. Existing services may restart.",
+          "Panelavo will execute the reviewed, site-contained Compose configuration through this site user's private rootless daemon. Existing services may restart.",
         confirmText: "Deploy project",
       },
     });
@@ -1630,6 +1756,7 @@ export function normalizeOperationsData(
   const permissions = {
     manage: Boolean(raw.permissions?.manage || options.panelAdmin),
     docker: Boolean(raw.permissions?.docker),
+    hostAdmin: Boolean(options.panelAdmin),
   };
   const composeFailure = composeConfigFailure(raw.compose?.detail);
   const normalizedRaw = {

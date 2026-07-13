@@ -50,6 +50,9 @@ export const operationCommands = [
   "compose-ps",
   "compose-logs",
   "compose-down",
+  "prepare-rootless-migration",
+  "cutover-rootless-migration",
+  "recover-rootless-migration",
   "pm2-start",
   "pm2-restart",
   "pm2-stop",
@@ -81,6 +84,7 @@ const runOperationSchema = z
       "pm2-restart-one",
       "pm2-stop-one",
       "pm2-delete-one",
+      "prepare-rootless-migration",
     ].includes(value.command);
     if (needsScript !== Boolean(value.script))
       context.addIssue({
@@ -108,6 +112,7 @@ const deployOperationSchema = z
   .strict();
 
 export const operationFixCommands = [
+  "initialize-rootless-docker",
   "install-docker",
   "install-compose-plugin",
   "start-docker",

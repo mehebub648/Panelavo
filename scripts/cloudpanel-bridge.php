@@ -29,8 +29,10 @@ use App\Site\Updater\StaticSite as StaticSiteUpdater;
 use Symfony\Component\Dotenv\Dotenv;
 
 const CLOUDPANEL_ROOT = '/home/clp/htdocs/app/files';
-const PANELAVO_BROKER_PROTOCOL_VERSION = 2;
+const PANELAVO_BROKER_PROTOCOL_VERSION = 3;
 const PANELAVO_BROKER_MAX_INPUT_BYTES = 100663296;
+const PANELAVO_ROOTLESS_MIGRATION_ROOT = '/var/lib/panelavo/rootless-migrations';
+const PANELAVO_ROOTLESS_MIGRATION_TTL = 86400;
 
 function respond(array $value, int $status = 0): never
 {
@@ -851,6 +853,207 @@ function runSiteCommand(Site $site, array $args, int $timeout = 300, bool $asRoo
     ];
 }
 
+function siteIdentity(Site $site): array
+{
+    $user = (string) $site->getUser();
+    $record = function_exists('posix_getpwnam') ? posix_getpwnam($user) : false;
+    if (!is_array($record) || !isset($record['uid'], $record['gid'])) {
+        respond(['ok' => false, 'code' => 'SITE_NOT_FOUND']);
+    }
+    return ['user' => $user, 'uid' => (int) $record['uid'], 'gid' => (int) $record['gid'], 'home' => '/home/' . $user];
+}
+
+function subordinateRange(string $file, string $user): ?array
+{
+    $ranges = [];
+    foreach (@file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as $line) {
+        $parts = explode(':', $line);
+        if (count($parts) !== 3 || !ctype_digit($parts[1]) || !ctype_digit($parts[2])) continue;
+        $ranges[] = ['user' => $parts[0], 'start' => (int) $parts[1], 'count' => (int) $parts[2]];
+    }
+    $owned = array_values(array_filter($ranges, static fn(array $range): bool => hash_equals($user, $range['user']) && $range['count'] >= 65536));
+    if (count($owned) !== 1) return null;
+    $selected = $owned[0];
+    $selectedEnd = $selected['start'] + $selected['count'] - 1;
+    foreach ($ranges as $range) {
+        if (hash_equals($user, $range['user'])) continue;
+        $end = $range['start'] + $range['count'] - 1;
+        if ($selected['start'] <= $end && $range['start'] <= $selectedEnd) return null;
+    }
+    return ['start' => $selected['start'], 'count' => $selected['count']];
+}
+
+function uidmapHelperReady(string $path): bool
+{
+    $permissions = @fileperms($path);
+    return is_executable($path) && @fileowner($path) === 0 && is_int($permissions) && ($permissions & 04000) !== 0;
+}
+
+function nextSubordinateStart(string $file): int
+{
+    $highest = 100000;
+    foreach (@file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as $line) {
+        $parts = explode(':', $line);
+        if (count($parts) !== 3 || !ctype_digit($parts[1]) || !ctype_digit($parts[2])) continue;
+        $highest = max($highest, (int) $parts[1] + (int) $parts[2]);
+    }
+    return (int) (ceil($highest / 65536) * 65536);
+}
+
+function hasSubordinateEntry(string $file, string $user): bool
+{
+    foreach (@file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as $line) {
+        if (str_starts_with($line, $user . ':')) return true;
+    }
+    return false;
+}
+
+function rootlessDockerEnvironment(Site $site, bool $systemd = false): array
+{
+    $identity = siteIdentity($site);
+    $runtime = '/run/user/' . $identity['uid'];
+    $environment = [
+        'XDG_RUNTIME_DIR' => $runtime,
+        'DOCKER_HOST' => 'unix://' . $runtime . '/docker.sock',
+    ];
+    if ($systemd) $environment['DBUS_SESSION_BUS_ADDRESS'] = 'unix:path=' . $runtime . '/bus';
+    return $environment;
+}
+
+// Docker commands are deliberately pinned to the site user's private socket.
+// There is no fallback to /var/run/docker.sock when the user daemon is absent.
+function runRootlessDockerCommand(Site $site, array $args, int $timeout = 300, ?string $workingDirectory = null): array
+{
+    return runSiteCommand($site, $args, $timeout, false, rootlessDockerEnvironment($site), $workingDirectory);
+}
+
+function runRootlessSystemdCommand(Site $site, array $args, int $timeout = 120): array
+{
+    return runSiteCommand($site, $args, $timeout, false, rootlessDockerEnvironment($site, true), '/home/' . $site->getUser());
+}
+
+function rootlessMigrationPath(Site $site, string $suffix = 'manifest.json'): string
+{
+    if (!is_dir(PANELAVO_ROOTLESS_MIGRATION_ROOT)) {
+        if (!@mkdir(PANELAVO_ROOTLESS_MIGRATION_ROOT, 0700, true)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+    }
+    if (is_link(PANELAVO_ROOTLESS_MIGRATION_ROOT)) respond(['ok' => false, 'code' => 'BROKER_INTEGRITY_FAILED']);
+    @chmod(dirname(PANELAVO_ROOTLESS_MIGRATION_ROOT), 0755);
+    @chmod(PANELAVO_ROOTLESS_MIGRATION_ROOT, 0700);
+    return PANELAVO_ROOTLESS_MIGRATION_ROOT . '/' . hash('sha256', strtolower((string) $site->getDomainName())) . '-' . $suffix;
+}
+
+function rootlessCapability(Site $site): array
+{
+    $identity = siteIdentity($site);
+    $runtime = '/run/user/' . $identity['uid'];
+    $subuid = subordinateRange('/etc/subuid', $identity['user']);
+    $subgid = subordinateRange('/etc/subgid', $identity['user']);
+    $capability = [
+        'mode' => 'rootless',
+        'user' => $identity['user'],
+        'uid' => $identity['uid'],
+        'socket' => $runtime . '/docker.sock',
+        'dataRoot' => $identity['home'] . '/.local/share/docker',
+        'uidmapAvailable' => uidmapHelperReady('/usr/bin/newuidmap') && uidmapHelperReady('/usr/bin/newgidmap'),
+        'rootlessExtrasAvailable' => is_executable('/usr/bin/dockerd-rootless-setuptool.sh'),
+        'buildxAvailable' => false,
+        'networkHelperAvailable' => is_executable('/usr/bin/slirp4netns') || is_executable('/usr/bin/pasta'),
+        'subuidReady' => $subuid !== null,
+        'subgidReady' => $subgid !== null,
+        'subuid' => $subuid,
+        'subgid' => $subgid,
+        'runtimeDirectoryReady' => is_dir($runtime)
+            && (int) (@fileowner($runtime) ?: -1) === $identity['uid']
+            && (((int) @fileperms($runtime)) & 0777) === 0700,
+        'userBusReady' => is_socket($runtime . '/bus')
+            && (int) (@fileowner($runtime . '/bus') ?: -1) === $identity['uid']
+            && ((((int) @fileperms($runtime . '/bus')) & 0007) === 0),
+        'socketReady' => is_socket($runtime . '/docker.sock')
+            && (int) (@fileowner($runtime . '/docker.sock') ?: -1) === $identity['uid']
+            && ((((int) @fileperms($runtime . '/docker.sock')) & 0007) === 0),
+        'daemonAvailable' => false,
+        'securityRootless' => false,
+    ];
+    $linger = runSiteCommand($site, ['loginctl', 'show-user', $identity['user'], '--property=Linger', '--value'], 15, true);
+    $capability['lingerEnabled'] = $linger['code'] === 0 && trim($linger['stdout']) === 'yes';
+    if ($capability['socketReady']) {
+        $buildx = runRootlessDockerCommand($site, ['docker', 'buildx', 'version'], 20);
+        $capability['buildxAvailable'] = $buildx['code'] === 0;
+        $info = runRootlessDockerCommand($site, ['docker', 'info', '--format', '{{json .}}'], 20);
+        $decoded = $info['code'] === 0 ? json_decode(trim($info['stdout']), true) : null;
+        $capability['daemonAvailable'] = is_array($decoded);
+        if (is_array($decoded)) {
+            $security = array_map('strval', (array) ($decoded['SecurityOptions'] ?? []));
+            $capability['securityRootless'] = count(array_filter($security, static fn(string $value): bool => str_contains(strtolower($value), 'rootless'))) > 0;
+            $capability['serverVersion'] = (string) ($decoded['ServerVersion'] ?? '');
+            $capability['storageDriver'] = (string) ($decoded['Driver'] ?? '');
+            $capability['cgroupDriver'] = (string) ($decoded['CgroupDriver'] ?? '');
+            $capability['cgroupVersion'] = (string) ($decoded['CgroupVersion'] ?? '');
+            $capability['dockerRootDir'] = (string) ($decoded['DockerRootDir'] ?? $capability['dataRoot']);
+            $capability['cgroupReady'] = ($decoded['CgroupVersion'] ?? null) === '2' || ($decoded['CgroupVersion'] ?? null) === 2;
+            $capability['storageReady'] = in_array(strtolower((string) ($decoded['Driver'] ?? '')), ['overlay2', 'fuse-overlayfs'], true);
+        }
+        $usage = runRootlessDockerCommand($site, ['docker', 'system', 'df', '--format', '{{json .}}'], 20);
+        if ($usage['code'] === 0) {
+            $capability['diskUsage'] = substr(trim($usage['stdout']), 0, 20000);
+            foreach (preg_split('/\R/', trim($usage['stdout'])) ?: [] as $line) {
+                $row = json_decode($line, true);
+                if (is_array($row) && strtolower((string) ($row['Type'] ?? '')) === 'images') {
+                    $capability['imageUsage'] = (string) ($row['Size'] ?? '');
+                    $capability['imageReclaimable'] = (string) ($row['Reclaimable'] ?? '');
+                    break;
+                }
+            }
+        }
+    }
+    $space = @disk_free_space($identity['home']);
+    $capability['availableBytes'] = $space === false ? null : (int) $space;
+    $capability['ready'] = $capability['uidmapAvailable']
+        && $capability['rootlessExtrasAvailable']
+        && $capability['buildxAvailable']
+        && $capability['networkHelperAvailable']
+        && $capability['subuidReady'] && $capability['subgidReady']
+        && $capability['lingerEnabled'] && $capability['runtimeDirectoryReady']
+        && $capability['userBusReady'] && $capability['socketReady']
+        && $capability['daemonAvailable'] && $capability['securityRootless']
+        && !empty($capability['cgroupReady']) && !empty($capability['storageReady']);
+    return $capability;
+}
+
+function cleanupRootlessDockerBeforeSiteDelete(Site $site): void
+{
+    $identity = siteIdentity($site);
+    $runtime = '/run/user/' . $identity['uid'];
+    $dataRoot = $identity['home'] . '/.local/share/docker';
+    $unit = $identity['home'] . '/.config/systemd/user/docker.service';
+    $manifest = rootlessMigrationPath($site);
+    $journal = rootlessMigrationPath($site, 'ownership.journal');
+    if (!is_socket($runtime . '/docker.sock') && !is_dir($dataRoot) && !is_file($unit) && !is_file($manifest) && !is_file($journal)) return;
+    if (is_socket($runtime . '/docker.sock')) {
+        $containers = runRootlessDockerCommand($site, ['docker', 'ps', '-aq'], 30);
+        $ids = preg_split('/\s+/', trim($containers['stdout'])) ?: [];
+        $ids = array_values(array_filter($ids, static fn(string $id): bool => preg_match('/^[0-9a-f]{12,64}$/i', $id) === 1));
+        if ($ids) {
+            $remove = runRootlessDockerCommand($site, array_merge(['docker', 'rm', '-f'], $ids), 300);
+            if ($remove['code'] !== 0) respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED', 'message' => 'The site user Docker containers could not be removed before website deletion.']);
+        }
+        $prune = runRootlessDockerCommand($site, ['docker', 'system', 'prune', '--all', '--force', '--volumes'], 300);
+        if ($prune['code'] !== 0) respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED', 'message' => 'The site user Docker data could not be cleaned before website deletion.']);
+    }
+    if (is_socket($runtime . '/bus')) {
+        $stop = runRootlessSystemdCommand($site, ['systemctl', '--user', 'disable', '--now', 'docker.service'], 120);
+        if ($stop['code'] !== 0 && is_socket($runtime . '/docker.sock')) respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED', 'message' => 'The site user Docker service could not be stopped before website deletion.']);
+    }
+    if (is_dir($dataRoot)) deleteTree($dataRoot);
+    @unlink($manifest); @unlink($journal);
+    $linger = runSiteCommand($site, ['loginctl', 'disable-linger', $identity['user']], 60, true);
+    if ($linger['code'] !== 0) respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED', 'message' => 'The site user linger state could not be removed before website deletion.']);
+    runSiteCommand($site, ['systemctl', 'stop', 'user@' . $identity['uid'] . '.service'], 60, true);
+    clearstatcache(true, $runtime . '/docker.sock');
+    if (is_socket($runtime . '/docker.sock')) respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED', 'message' => 'The site user Docker socket is still active; website deletion was stopped safely.']);
+}
+
 // Panel terminal: runs one user-supplied command line strictly as the
 // unprivileged site user through a login shell (so ~/.profile — including the
 // Panelavo-managed environment block — is loaded), with a bounded timeout and
@@ -1389,22 +1592,24 @@ function composeCapability(Site $site, string $root, ?string $file): array
     foreach (['/usr/bin/docker', '/usr/local/bin/docker'] as $candidate) {
         if (is_executable($candidate)) { $cli = $candidate; break; }
     }
+    $rootless = rootlessCapability($site);
     $capability = [
         'file' => $file,
         'expectedPort' => expectedSitePort($site),
         'cliAvailable' => $cli !== null,
         'pluginAvailable' => false,
         'daemonAvailable' => false,
+        'engineMode' => 'rootless',
+        'rootless' => $rootless,
         'warnings' => [],
     ];
     if (!$file || !$cli) return $capability;
-    $version = runSiteCommand($site, ['docker', 'compose', 'version', '--short'], 15, true);
+    $version = runRootlessDockerCommand($site, ['docker', 'compose', 'version', '--short'], 15);
     if ($version['code'] !== 0) return $capability;
     $capability['pluginAvailable'] = true;
     $capability['version'] = trim($version['stdout']);
-    $info = runSiteCommand($site, ['docker', 'info', '--format', '{{.ServerVersion}}'], 15, true);
-    $capability['daemonAvailable'] = $info['code'] === 0;
-    $config = runSiteCommand($site, ['docker', 'compose', '-f', $file, '-p', composeProjectName($site), 'config', '--format', 'json'], 60, true);
+    $capability['daemonAvailable'] = !empty($rootless['ready']);
+    $config = runRootlessDockerCommand($site, ['docker', 'compose', '-f', $file, '-p', composeProjectName($site), 'config', '--format', 'json'], 60);
     if ($config['code'] !== 0) {
         $capability['configValid'] = false;
         $detail = trim($config['stderr'] !== '' ? $config['stderr'] : $config['stdout']);
@@ -1528,6 +1733,7 @@ function operationsState(Site $site, User $user): array
             'manage' => in_array($user->getRole(), [User::ROLE_ADMIN, User::ROLE_SITE_MANAGER], true),
             'docker' => $user->getRole() === User::ROLE_ADMIN,
         ],
+        '_rootlessEnv' => rootlessDockerEnvironment($site),
         'ecosystemFile' => $ecosystem,
         'venvPython' => $venvPython,
         'composeProject' => composeProjectName($site),
@@ -1603,7 +1809,7 @@ function actionsSection(Site $site, User $user): array
     $containers = [];
     $compose = $state['compose'] ?? null;
     if (is_array($compose) && !empty($compose['daemonAvailable']) && !empty($compose['pluginAvailable']) && !empty($compose['file'])) {
-        $ps = runSiteCommand($site, ['docker', 'compose', '-f', $compose['file'], '-p', $state['composeProject'], 'ps', '-a', '--format', 'json'], 20, true);
+        $ps = runRootlessDockerCommand($site, ['docker', 'compose', '-f', $compose['file'], '-p', $state['composeProject'], 'ps', '-a', '--format', 'json'], 20);
         if ($ps['code'] === 0) {
             $rows = json_decode(trim($ps['stdout']), true);
             if (!is_array($rows) || array_is_list($rows) === false) {
@@ -1635,7 +1841,7 @@ function actionsSection(Site $site, User $user): array
                 }
             }
             if ($dotenv && $entryContainerId !== null && preg_match('/^[0-9a-f]{12,64}$/i', $entryContainerId)) {
-                $inspect = runSiteCommand($site, ['docker', 'inspect', '--format', '{{json .Config.Env}}', $entryContainerId], 15, true);
+                $inspect = runRootlessDockerCommand($site, ['docker', 'inspect', '--format', '{{json .Config.Env}}', $entryContainerId], 15);
                 $containerEnv = $inspect['code'] === 0 ? json_decode(trim($inspect['stdout']), true) : null;
                 if (is_array($containerEnv)) {
                     $running = [];
@@ -1655,7 +1861,8 @@ function actionsSection(Site $site, User $user): array
         'env' => $runningEnvSets ? envDriftForRunning($dotenv, $runningEnvSets) : [],
         'checkedAt' => gmdate(DATE_ATOM),
     ];
-    unset($state['ecosystemFile'], $state['venvPython'], $state['composeProject']);
+    if (is_array($state['compose'] ?? null)) $state['migration'] = migrationStatus($site, $state['compose']);
+    unset($state['ecosystemFile'], $state['venvPython'], $state['composeProject'], $state['_rootlessEnv']);
     if (is_array($state['compose'] ?? null)) unset($state['compose']['_runtimeConfig']);
     return $state + ['pm2' => $processes, 'runtime' => $runtime];
 }
@@ -1719,7 +1926,8 @@ function resolveOperationStep(array $state, string $command, array $operation): 
             'label' => $label,
             'args' => array_merge(['docker', 'compose', '-f', $mapped ? '@PANELAVO_COMPOSE_CONFIG@' : $compose['file'], '-p', $state['composeProject']], $verb),
             'timeout' => $timeout,
-            'asRoot' => true,
+            'asRoot' => false,
+            'env' => $state['_rootlessEnv'],
         ] + ($mapped ? ['composeConfig' => $compose['_runtimeConfig']] : []);
     };
     $script = (string) ($operation['script'] ?? '');
@@ -2040,13 +2248,580 @@ function configureDockerRepository(Site $site, string $fix, array &$results): bo
     return runFixStep($site, $results, $fix, 'Refresh package index', ['apt-get', 'update'], 600);
 }
 
+function initializeRootlessDocker(Site $site, string $fix, array &$results): void
+{
+    $identity = siteIdentity($site);
+    $systemdHost = trim((string) @file_get_contents('/proc/1/comm')) === 'systemd';
+    $cgroupV2Host = is_file('/sys/fs/cgroup/cgroup.controllers');
+    if (!syntheticFixStep($results, $fix, 'Verify cgroup host', 'inspect PID 1 and /sys/fs/cgroup/cgroup.controllers', $systemdHost && $cgroupV2Host,
+        $systemdHost && $cgroupV2Host ? 'The host uses systemd with cgroup v2.' : 'Rootless Docker requires systemd as PID 1 and cgroup v2.')) return;
+    $subuid = subordinateRange('/etc/subuid', $identity['user']);
+    $subgid = subordinateRange('/etc/subgid', $identity['user']);
+    if (!$subuid || !$subgid) {
+        if ((!$subuid && hasSubordinateEntry('/etc/subuid', $identity['user']))
+            || (!$subgid && hasSubordinateEntry('/etc/subgid', $identity['user']))) {
+            syntheticFixStep($results, $fix, 'Verify subordinate IDs', 'inspect /etc/subuid and /etc/subgid', false,
+                'The site user has overlapping, duplicate, or undersized subordinate ranges. Correct them before initialization.');
+            return;
+        }
+        $uidStart = nextSubordinateStart('/etc/subuid');
+        $gidStart = nextSubordinateStart('/etc/subgid');
+        if (!runFixStep($site, $results, $fix, 'Allocate subordinate IDs', [
+            'usermod',
+            '--add-subuids', $uidStart . '-' . ($uidStart + 65535),
+            '--add-subgids', $gidStart . '-' . ($gidStart + 65535),
+            $identity['user'],
+        ], 60)) return;
+        $subuid = subordinateRange('/etc/subuid', $identity['user']);
+        $subgid = subordinateRange('/etc/subgid', $identity['user']);
+        if (!syntheticFixStep($results, $fix, 'Verify subordinate IDs', 'inspect /etc/subuid and /etc/subgid', $subuid !== null && $subgid !== null,
+            $subuid && $subgid ? 'Non-overlapping subordinate UID/GID ranges are ready.' : 'A safe subordinate UID/GID range could not be allocated.')) return;
+    }
+    if (!runFixStep($site, $results, $fix, 'Enable user service persistence', ['loginctl', 'enable-linger', $identity['user']], 60)) return;
+    if (!runFixStep($site, $results, $fix, 'Start the user manager', ['systemctl', 'start', 'user@' . $identity['uid'] . '.service'], 60)) return;
+    $runtime = '/run/user/' . $identity['uid'];
+    $ready = false;
+    for ($attempt = 0; $attempt < 50; $attempt++) {
+        clearstatcache(true, $runtime . '/bus');
+        if (is_dir($runtime) && is_socket($runtime . '/bus')
+            && (int) (@fileowner($runtime) ?: -1) === $identity['uid']
+            && (((int) @fileperms($runtime)) & 0777) === 0700
+            && (int) (@fileowner($runtime . '/bus') ?: -1) === $identity['uid']
+            && ((((int) @fileperms($runtime . '/bus')) & 0007) === 0)) {
+            $ready = true;
+            break;
+        }
+        usleep(100000);
+    }
+    if (!syntheticFixStep($results, $fix, 'Verify user D-Bus', 'inspect ' . $runtime . '/bus', $ready,
+        $ready ? 'The site user runtime directory and D-Bus socket are ready.' : 'The site user manager did not create a safe runtime directory and D-Bus socket.')) return;
+    $setup = runSiteCommand(
+        $site,
+        ['/usr/bin/dockerd-rootless-setuptool.sh', 'install', '--force'],
+        300,
+        false,
+        rootlessDockerEnvironment($site, true),
+        $identity['home'],
+    );
+    $results[] = [
+        'command' => $fix,
+        'label' => 'Install the site user daemon',
+        'display' => 'dockerd-rootless-setuptool.sh install --force',
+        'exitCode' => $setup['code'],
+        'timedOut' => $setup['timedOut'],
+        'output' => trim($setup['stdout'] . ($setup['stderr'] !== '' ? "\n" . $setup['stderr'] : '')),
+    ];
+    if ($setup['code'] !== 0) return;
+    $enable = runRootlessSystemdCommand($site, ['systemctl', '--user', 'enable', '--now', 'docker.service'], 120);
+    $results[] = [
+        'command' => $fix,
+        'label' => 'Enable and start the site user daemon',
+        'display' => 'systemctl --user enable --now docker.service',
+        'exitCode' => $enable['code'],
+        'timedOut' => $enable['timedOut'],
+        'output' => trim($enable['stdout'] . ($enable['stderr'] !== '' ? "\n" . $enable['stderr'] : '')),
+    ];
+    if ($enable['code'] !== 0) return;
+    for ($attempt = 0; $attempt < 100 && !is_socket($runtime . '/docker.sock'); $attempt++) usleep(100000);
+    $capability = rootlessCapability($site);
+    if (!empty($capability['daemonAvailable']) && empty($capability['storageReady'])) {
+        if (!runFixStep($site, $results, $fix, 'Install rootless storage fallback', ['apt-get', 'install', '-y', 'fuse-overlayfs'], 600)) return;
+        $restart = runRootlessSystemdCommand($site, ['systemctl', '--user', 'restart', 'docker.service'], 120);
+        $results[] = migrationStep($fix, 'Restart the site user daemon', 'systemctl --user restart docker.service', $restart);
+        if ($restart['code'] !== 0) return;
+        $capability = rootlessCapability($site);
+    }
+    syntheticFixStep($results, $fix, 'Verify rootless daemon', 'docker info on the site-user socket', !empty($capability['ready']),
+        !empty($capability['ready'])
+            ? 'Rootless Docker is ready with ' . ($capability['storageDriver'] ?? 'an available storage driver') . '.'
+            : 'The daemon started but did not pass the complete rootless readiness check.');
+}
+
+function rootfulComposeModel(Site $site, string $file): array
+{
+    $result = runSiteCommand($site, ['docker', 'compose', '-f', $file, '-p', composeProjectName($site), 'config', '--format', 'json'], 60, true);
+    $model = $result['code'] === 0 ? json_decode(trim($result['stdout']), true) : null;
+    if (!is_array($model)) respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => 'The legacy rootful Compose project could not be resolved.']);
+    return $model;
+}
+
+function migrationManifest(Site $site): ?array
+{
+    $path = rootlessMigrationPath($site);
+    if (!is_file($path) || is_link($path)) return null;
+    $value = json_decode((string) @file_get_contents($path), true);
+    return is_array($value) ? $value : null;
+}
+
+function writeMigrationManifest(Site $site, array $manifest): void
+{
+    $path = rootlessMigrationPath($site);
+    $temporary = $path . '.tmp-' . bin2hex(random_bytes(4));
+    $encoded = json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+    if (!is_string($encoded) || @file_put_contents($temporary, $encoded, LOCK_EX) === false || !@chmod($temporary, 0600) || !@rename($temporary, $path)) {
+        @unlink($temporary);
+        respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+    }
+}
+
+function migrationTreeEntries(string $source): Generator
+{
+    $real = realpath($source);
+    if (!$real || is_link($source)) return;
+    yield $real;
+    $iterator = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($real, FilesystemIterator::SKIP_DOTS),
+        RecursiveIteratorIterator::SELF_FIRST,
+    );
+    foreach ($iterator as $entry) {
+        $path = $entry->getPathname();
+        if ($entry->isLink()) continue;
+        yield $path;
+    }
+}
+
+function migrationTreeContainsSymlink(string $source): bool
+{
+    $real = realpath($source);
+    if (!$real || is_link($source)) return true;
+    $iterator = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($real, FilesystemIterator::SKIP_DOTS),
+        RecursiveIteratorIterator::SELF_FIRST,
+    );
+    foreach ($iterator as $entry) if ($entry->isLink()) return true;
+    return false;
+}
+
+function ownershipInventory(string $source, array $allowedUids, array $allowedGids): array
+{
+    if (migrationTreeContainsSymlink($source)) {
+        return ['valid' => false, 'detail' => 'A bind source contains a symbolic link; automatic ownership translation requires a physical tree.', 'count' => 0];
+    }
+    $uids = []; $gids = []; $unknownUids = []; $unknownGids = []; $count = 0;
+    foreach (migrationTreeEntries($source) as $path) {
+        if (++$count > 200000) return ['valid' => false, 'detail' => 'A bind source contains more than 200,000 paths; migrate it manually.', 'count' => $count];
+        $stat = @lstat($path);
+        if (!is_array($stat)) return ['valid' => false, 'detail' => 'A bind-mounted path changed during ownership inspection.', 'count' => $count];
+        $uid = (int) $stat['uid']; $gid = (int) $stat['gid'];
+        $uids[$uid] = ($uids[$uid] ?? 0) + 1; $gids[$gid] = ($gids[$gid] ?? 0) + 1;
+        if (!in_array($uid, $allowedUids, true)) $unknownUids[$uid] = true;
+        if (!in_array($gid, $allowedGids, true)) $unknownGids[$gid] = true;
+    }
+    return [
+        'valid' => !$unknownUids && !$unknownGids,
+        'detail' => $unknownUids || $unknownGids
+            ? 'Unclassified owners were found (UIDs: ' . implode(', ', array_keys($unknownUids)) . '; GIDs: ' . implode(', ', array_keys($unknownGids)) . ').'
+            : 'Every inode owner has a deterministic rootless mapping.',
+        'count' => $count,
+        'uids' => $uids,
+        'gids' => $gids,
+    ];
+}
+
+function revalidateManifestOwnership(array $manifest): bool
+{
+    $identity = (array) ($manifest['identity'] ?? []);
+    foreach ((array) ($manifest['sources'] ?? []) as $source => $definition) {
+        $inventory = ownershipInventory(
+            (string) $source,
+            array_values(array_unique([0, (int) ($identity['uid'] ?? -1), (int) ($definition['runtimeUid'] ?? -1)])),
+            array_values(array_unique([0, (int) ($identity['gid'] ?? -1), (int) ($definition['runtimeGid'] ?? -1)])),
+        );
+        if (empty($inventory['valid']) || json_encode($inventory) !== json_encode($definition['inventory'] ?? null)) return false;
+    }
+    return true;
+}
+
+function rootlessMappedId(int $containerId, int $siteId, int $subordinateStart): int
+{
+    return $containerId === 0 ? $siteId : $subordinateStart + $containerId - 1;
+}
+
+function rootfulServiceIdentity(Site $site, string $file, string $service): array
+{
+    $id = runSiteCommand($site, ['docker', 'compose', '-f', $file, '-p', composeProjectName($site), 'ps', '-q', $service], 20, true);
+    $container = trim($id['stdout']);
+    if ($id['code'] !== 0 || !preg_match('/^[0-9a-f]{12,64}$/i', $container)) {
+        respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => 'Legacy service "' . $service . '" must be running so its numeric runtime identity can be verified.']);
+    }
+    $pidResult = runSiteCommand($site, ['docker', 'inspect', '--format', '{{.State.Pid}}', $container], 20, true);
+    $pid = (int) trim($pidResult['stdout']);
+    $status = $pid > 1 ? @file('/proc/' . $pid . '/status', FILE_IGNORE_NEW_LINES) : false;
+    $uid = null; $gid = null;
+    foreach (is_array($status) ? $status : [] as $line) {
+        if (preg_match('/^Uid:\s+(\d+)/', $line, $match)) $uid = (int) $match[1];
+        if (preg_match('/^Gid:\s+(\d+)/', $line, $match)) $gid = (int) $match[1];
+    }
+    if ($uid === null || $gid === null) respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => 'The runtime UID/GID for service "' . $service . '" could not be resolved.']);
+    return ['container' => $container, 'uid' => $uid, 'gid' => $gid];
+}
+
+function analyzeRootlessMigration(Site $site, array $model): array
+{
+    $root = realpath(siteRootPath($site));
+    $identity = siteIdentity($site);
+    $subuid = subordinateRange('/etc/subuid', $identity['user']);
+    $subgid = subordinateRange('/etc/subgid', $identity['user']);
+    if (!$root || !$subuid || !$subgid) respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => 'The site user has no valid subordinate UID/GID ranges.']);
+    foreach ((array) ($model['networks'] ?? []) as $network) {
+        if (is_array($network) && !empty($network['external'])) respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => 'External networks are not supported by automatic rootless migration.']);
+    }
+    $sources = [];
+    $services = [];
+    $file = null;
+    foreach (['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml'] as $candidate) if (is_file($root . '/' . $candidate)) { $file = $candidate; break; }
+    if ($file === null) respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE']);
+    foreach ((array) ($model['services'] ?? []) as $name => $service) {
+        if (!is_array($service)) continue;
+        $binds = [];
+        foreach ((array) ($service['volumes'] ?? []) as $volume) {
+            if (!is_array($volume)) continue;
+            if (($volume['type'] ?? '') !== 'bind') respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => 'Named and external volumes are not supported by automatic rootless migration.']);
+            if (!empty($volume['read_only'])) continue;
+            $source = realpath((string) ($volume['source'] ?? ''));
+            if (!$source || !pathIsContained($source, $root) || is_link((string) $volume['source'])) respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => 'Every writable bind source must be a physical path inside the site root.']);
+            $binds[] = $source;
+        }
+        $runtime = $binds ? rootfulServiceIdentity($site, $file, (string) $name) : ['container' => '', 'uid' => 0, 'gid' => 0];
+        if (($runtime['uid'] !== 0 && $runtime['uid'] === $identity['uid']) || ($runtime['gid'] !== 0 && $runtime['gid'] === $identity['gid'])) {
+            respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => 'A container runtime UID/GID collides with the site user host identity.']);
+        }
+        $services[(string) $name] = $runtime + ['binds' => $binds];
+        foreach ($binds as $source) {
+            $sources[$source]['services'][] = (string) $name;
+            $sources[$source]['uids'][$runtime['uid']] = true;
+            $sources[$source]['gids'][$runtime['gid']] = true;
+        }
+    }
+    $sourcePaths = array_keys($sources);
+    foreach ($sourcePaths as $index => $source) {
+        foreach (array_slice($sourcePaths, $index + 1) as $other) {
+            if (pathIsContained($source, $other) || pathIsContained($other, $source)) {
+                respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => 'Overlapping writable bind sources cannot be translated safely: ' . $source . ' and ' . $other . '.']);
+            }
+        }
+    }
+    foreach ($sources as $source => &$definition) {
+        $runtimeUids = array_map('intval', array_keys($definition['uids']));
+        $runtimeGids = array_map('intval', array_keys($definition['gids']));
+        if (count($runtimeUids) > 1 || count($runtimeGids) > 1) respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => 'Services with conflicting runtime identities share bind source ' . $source . '.']);
+        $definition['runtimeUid'] = $runtimeUids[0] ?? 0;
+        $definition['runtimeGid'] = $runtimeGids[0] ?? 0;
+        $definition['inventory'] = ownershipInventory($source, array_values(array_unique([0, $identity['uid'], $definition['runtimeUid']])), array_values(array_unique([0, $identity['gid'], $definition['runtimeGid']])));
+        if (empty($definition['inventory']['valid'])) respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => $source . ': ' . $definition['inventory']['detail']]);
+        unset($definition['uids'], $definition['gids']);
+    }
+    unset($definition);
+    return ['identity' => $identity, 'subuid' => $subuid, 'subgid' => $subgid, 'services' => $services, 'sources' => $sources];
+}
+
+function migrationStatus(Site $site, ?array $compose): array
+{
+    $manifest = migrationManifest($site);
+    $expired = is_array($manifest) && time() - (int) ($manifest['updatedAt'] ?? 0) > PANELAVO_ROOTLESS_MIGRATION_TTL;
+    $rootful = false;
+    if (is_array($compose) && !empty($compose['file']) && is_executable('/usr/bin/docker')) {
+        $legacy = runSiteCommand($site, ['docker', 'compose', '-f', $compose['file'], '-p', composeProjectName($site), 'ps', '-q'], 15, true);
+        $rootful = $legacy['code'] === 0 && trim($legacy['stdout']) !== '';
+    }
+    return [
+        'legacyRootfulDetected' => $rootful,
+        'preparedServices' => $expired ? [] : array_values(array_keys((array) ($manifest['prepared'] ?? []))),
+        'allServicesPrepared' => !$expired && !empty($manifest['allPrepared']),
+        'preparedAt' => !$expired ? ($manifest['updatedAtIso'] ?? null) : null,
+        'expiresAt' => !$expired && isset($manifest['updatedAt']) ? gmdate(DATE_ATOM, (int) $manifest['updatedAt'] + PANELAVO_ROOTLESS_MIGRATION_TTL) : null,
+        'recoveryRequired' => is_file(rootlessMigrationPath($site, 'ownership.journal')),
+    ];
+}
+
+function prepareRootlessMigration(Site $site, string $service): array
+{
+    $root = siteRootPath($site);
+    $file = null;
+    foreach (['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml'] as $candidate) if (is_file($root . '/' . $candidate)) { $file = $candidate; break; }
+    if (!$file || !preg_match('/^[A-Za-z0-9._-]{1,100}$/', $service)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+    $rootless = rootlessCapability($site);
+    if (empty($rootless['ready'])) respond(['ok' => false, 'code' => 'TOOL_UNAVAILABLE', 'message' => 'Initialize the site user rootless daemon first.']);
+    $model = rootfulComposeModel($site, $file);
+    if (!isset($model['services'][$service])) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+    $analysis = analyzeRootlessMigration($site, $model);
+    $digest = hash('sha256', json_encode($model, JSON_UNESCAPED_SLASHES) ?: '');
+    $manifest = migrationManifest($site) ?? [];
+    if (($manifest['configDigest'] ?? $digest) !== $digest
+        || (($manifest['subuid'] ?? $analysis['subuid']) !== $analysis['subuid'])
+        || (($manifest['subgid'] ?? $analysis['subgid']) !== $analysis['subgid'])
+        || (($manifest['expectedPort'] ?? expectedSitePort($site)) !== expectedSitePort($site))) {
+        $manifest = [];
+    }
+    foreach ((array) ($manifest['prepared'] ?? []) as $preparedService => $expectedImage) {
+        $image = runRootlessDockerCommand($site, ['docker', 'compose', '-f', $file, '-p', composeProjectName($site), 'images', '-q', (string) $preparedService], 30);
+        if ($image['code'] !== 0 || !hash_equals((string) $expectedImage, trim($image['stdout']))) respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => 'The prepared image for service "' . $preparedService . '" changed or is missing.']);
+    }
+    foreach ((array) ($analysis['services'] ?? []) as $serviceName => $definition) {
+        $previous = (string) ($manifest['services'][$serviceName]['container'] ?? '');
+        if ($previous !== '' && !hash_equals($previous, (string) ($definition['container'] ?? ''))) respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => 'A legacy container changed after preparation. Prepare again.']);
+    }
+    $pull = runRootlessDockerCommand($site, ['docker', 'compose', '-f', $file, '-p', composeProjectName($site), 'pull', '--ignore-buildable', $service], 900);
+    if ($pull['code'] !== 0) return ['steps' => [['command' => 'prepare-rootless-migration', 'label' => 'Pull ' . $service, 'display' => 'docker compose pull ' . $service, 'exitCode' => $pull['code'], 'timedOut' => $pull['timedOut'], 'output' => trim($pull['stdout'] . "\n" . $pull['stderr'])]]];
+    $build = runRootlessDockerCommand($site, ['docker', 'compose', '-f', $file, '-p', composeProjectName($site), 'build', $service], 900);
+    $steps = [
+        ['command' => 'prepare-rootless-migration', 'label' => 'Pull ' . $service, 'display' => 'docker compose pull ' . $service, 'exitCode' => 0, 'timedOut' => false, 'output' => trim($pull['stdout'] . "\n" . $pull['stderr'])],
+        ['command' => 'prepare-rootless-migration', 'label' => 'Build ' . $service, 'display' => 'docker compose build ' . $service, 'exitCode' => $build['code'], 'timedOut' => $build['timedOut'], 'output' => trim($build['stdout'] . "\n" . $build['stderr'])],
+    ];
+    if ($build['code'] !== 0) return ['steps' => $steps];
+    $image = runRootlessDockerCommand($site, ['docker', 'compose', '-f', $file, '-p', composeProjectName($site), 'images', '-q', $service], 30);
+    $imageId = trim($image['stdout']);
+    if ($image['code'] !== 0 || !preg_match('/^(sha256:)?[0-9a-f]{12,64}$/i', $imageId)) {
+        $steps[] = ['command' => 'prepare-rootless-migration', 'label' => 'Verify ' . $service . ' image', 'display' => 'docker compose images -q ' . $service, 'exitCode' => 1, 'timedOut' => false, 'output' => 'No prepared image ID was found.'];
+        return ['steps' => $steps];
+    }
+    $manifest = array_replace($manifest, [
+        'domain' => (string) $site->getDomainName(), 'file' => $file, 'configDigest' => $digest,
+        'services' => $analysis['services'], 'sources' => $analysis['sources'], 'identity' => $analysis['identity'],
+        'subuid' => $analysis['subuid'], 'subgid' => $analysis['subgid'], 'expectedPort' => expectedSitePort($site),
+        'updatedAt' => time(), 'updatedAtIso' => gmdate(DATE_ATOM),
+    ]);
+    $manifest['prepared'][$service] = $imageId;
+    $manifest['allPrepared'] = count(array_diff(array_keys((array) $model['services']), array_keys((array) $manifest['prepared']))) === 0;
+    writeMigrationManifest($site, $manifest);
+    return ['steps' => $steps, 'message' => $service . ' is prepared in the rootless image store.'];
+}
+
+function writeRootlessComposeConfig(Site $site, array $config): string
+{
+    $identity = siteIdentity($site);
+    $directory = '/run/user/' . $identity['uid'] . '/panelavo-compose';
+    if (!is_dir(dirname($directory)) || (int) (@fileowner(dirname($directory)) ?: -1) !== $identity['uid']) respond(['ok' => false, 'code' => 'TOOL_UNAVAILABLE']);
+    if (!is_dir($directory) && !@mkdir($directory, 0700)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+    if (is_link($directory) || !@chown($directory, $identity['uid']) || !@chgrp($directory, $identity['gid']) || !@chmod($directory, 0700)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+    $path = $directory . '/migration-' . bin2hex(random_bytes(8)) . '.json';
+    $encoded = json_encode($config, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    if (!is_string($encoded) || @file_put_contents($path, $encoded, LOCK_EX) === false
+        || !@chown($path, $identity['uid']) || !@chgrp($path, $identity['gid']) || !@chmod($path, 0600)) {
+        @unlink($path); respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+    }
+    return $path;
+}
+
+function translateMigrationOwnership(Site $site, array $manifest): string
+{
+    $journal = rootlessMigrationPath($site, 'ownership.journal');
+    if (is_file($journal)) respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => 'An ownership recovery journal already exists. Recover it before retrying cutover.']);
+    $handle = @fopen($journal, 'xb');
+    if (!$handle || !@chmod($journal, 0600)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+    $identity = $manifest['identity']; $subuid = $manifest['subuid']; $subgid = $manifest['subgid'];
+    try {
+        foreach ((array) ($manifest['sources'] ?? []) as $source => $definition) {
+            foreach (migrationTreeEntries((string) $source) as $path) {
+                $stat = @lstat($path);
+                if (!is_array($stat)) throw new RuntimeException('A bind path changed during ownership translation.');
+                $oldUid = (int) $stat['uid']; $oldGid = (int) $stat['gid'];
+                $newUid = $oldUid === (int) $identity['uid'] ? $oldUid : rootlessMappedId($oldUid, (int) $identity['uid'], (int) $subuid['start']);
+                $newGid = $oldGid === (int) $identity['gid'] ? $oldGid : rootlessMappedId($oldGid, (int) $identity['gid'], (int) $subgid['start']);
+                if ($newUid === $oldUid && $newGid === $oldGid) continue;
+                if (fwrite($handle, base64_encode($path) . "\t" . $oldUid . "\t" . $oldGid . "\n") === false) throw new RuntimeException('The ownership journal could not be written.');
+                if (($newUid !== $oldUid && !@chown($path, $newUid)) || ($newGid !== $oldGid && !@chgrp($path, $newGid))) {
+                    throw new RuntimeException('Ownership translation failed for a bind-mounted path.');
+                }
+            }
+        }
+    } catch (Throwable $error) {
+        fclose($handle);
+        restoreMigrationOwnership($site, $manifest);
+        throw $error;
+    }
+    fclose($handle);
+    ensureSiteProjectAccess($site);
+    return $journal;
+}
+
+function restoreMigrationOwnership(Site $site, array $manifest): bool
+{
+    $journal = rootlessMigrationPath($site, 'ownership.journal');
+    if (!is_file($journal) || is_link($journal)) return true;
+    $lines = @file($journal, FILE_IGNORE_NEW_LINES);
+    if (!is_array($lines)) return false;
+    $ok = true; $journaled = [];
+    foreach (array_reverse($lines) as $line) {
+        $parts = explode("\t", $line);
+        $path = isset($parts[0]) ? base64_decode($parts[0], true) : false;
+        if (!is_string($path) || !isset($parts[1], $parts[2]) || !ctype_digit($parts[1]) || !ctype_digit($parts[2])) { $ok = false; continue; }
+        $journaled[$path] = true;
+        $contained = false;
+        foreach (array_keys((array) ($manifest['sources'] ?? [])) as $source) if ($path === $source || pathIsContained($path, (string) $source)) { $contained = true; break; }
+        if (!$contained || is_link($path) || !file_exists($path)) continue;
+        if (!@chown($path, (int) $parts[1]) || !@chgrp($path, (int) $parts[2])) $ok = false;
+    }
+    // Files created after translation are not in the journal. Reverse any
+    // subordinate owner deterministically; site-user ownership is retained
+    // because it is also the valid rootless representation of container root.
+    $subuidStart = (int) ($manifest['subuid']['start'] ?? 0); $subuidCount = (int) ($manifest['subuid']['count'] ?? 0);
+    $subgidStart = (int) ($manifest['subgid']['start'] ?? 0); $subgidCount = (int) ($manifest['subgid']['count'] ?? 0);
+    foreach (array_keys((array) ($manifest['sources'] ?? [])) as $source) {
+        foreach (migrationTreeEntries((string) $source) as $path) {
+            if (isset($journaled[$path])) continue;
+            $stat = @lstat($path); if (!is_array($stat)) { $ok = false; continue; }
+            $uid = (int) $stat['uid']; $gid = (int) $stat['gid'];
+            if ($uid >= $subuidStart && $uid < $subuidStart + $subuidCount && !@chown($path, $uid - $subuidStart + 1)) $ok = false;
+            if ($gid >= $subgidStart && $gid < $subgidStart + $subgidCount && !@chgrp($path, $gid - $subgidStart + 1)) $ok = false;
+        }
+    }
+    ensureSiteProjectAccess($site);
+    if ($ok) @unlink($journal);
+    return $ok;
+}
+
+function migrationStep(string $command, string $label, string $display, array $result): array
+{
+    return ['command' => $command, 'label' => $label, 'display' => $display, 'exitCode' => $result['code'], 'timedOut' => $result['timedOut'] ?? false,
+        'output' => trim((string) ($result['stdout'] ?? '') . (!empty($result['stderr']) ? "\n" . $result['stderr'] : ''))];
+}
+
+function cutoverRootlessMigration(Site $site): array
+{
+    $manifest = migrationManifest($site);
+    if (!$manifest || empty($manifest['allPrepared']) || time() - (int) ($manifest['updatedAt'] ?? 0) > PANELAVO_ROOTLESS_MIGRATION_TTL) {
+        respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => 'Prepare every service again before cutover.']);
+    }
+    $file = (string) $manifest['file'];
+    $model = rootfulComposeModel($site, $file);
+    $digest = hash('sha256', json_encode($model, JSON_UNESCAPED_SLASHES) ?: '');
+    if (!hash_equals((string) $manifest['configDigest'], $digest)) respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => 'The Compose configuration changed after preparation.']);
+    $analysis = analyzeRootlessMigration($site, $model);
+    if (($manifest['subuid'] ?? null) !== $analysis['subuid'] || ($manifest['subgid'] ?? null) !== $analysis['subgid']) {
+        respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => 'The site user subordinate UID/GID ranges changed after preparation.']);
+    }
+    if (($manifest['expectedPort'] ?? null) !== expectedSitePort($site)) {
+        respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => 'The CloudPanel entry port changed after preparation.']);
+    }
+    foreach ((array) ($analysis['services'] ?? []) as $service => $definition) {
+        $expectedContainer = (string) ($manifest['services'][$service]['container'] ?? '');
+        if ($expectedContainer !== (string) ($definition['container'] ?? '')) respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => 'A legacy rootful container changed after preparation.']);
+        $expectedImage = (string) ($manifest['prepared'][$service] ?? '');
+        $image = runRootlessDockerCommand($site, ['docker', 'compose', '-f', $file, '-p', composeProjectName($site), 'images', '-q', (string) $service], 30);
+        if ($expectedImage === '' || $image['code'] !== 0 || !hash_equals($expectedImage, trim($image['stdout']))) {
+            respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => 'A prepared rootless image changed or is missing.']);
+        }
+    }
+    foreach ($analysis['sources'] as $source => $definition) {
+        if (json_encode($definition['inventory']) !== json_encode($manifest['sources'][$source]['inventory'] ?? null)) respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => 'Bind-mounted ownership changed after preparation. Prepare again.']);
+    }
+    $composeCapability = composeCapability($site, siteRootPath($site), $file);
+    if (empty($composeCapability['ready']) && empty($composeCapability['daemonAvailable'])) respond(['ok' => false, 'code' => 'TOOL_UNAVAILABLE']);
+    $runtimeConfig = $composeCapability['_runtimeConfig'] ?? null;
+    if (!is_array($runtimeConfig)) respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE']);
+    $runtimeFile = writeRootlessComposeConfig($site, $runtimeConfig);
+    $steps = [];
+    $rootfulStop = runSiteCommand($site, ['docker', 'compose', '-f', $file, '-p', composeProjectName($site), 'stop'], 300, true);
+    $steps[] = migrationStep('cutover-rootless-migration', 'Stop legacy rootful project', 'docker compose stop', $rootfulStop);
+    if ($rootfulStop['code'] !== 0) { @unlink($runtimeFile); return ['steps' => $steps]; }
+    if (!revalidateManifestOwnership($manifest)) {
+        $restart = runSiteCommand($site, ['docker', 'compose', '-f', $file, '-p', composeProjectName($site), 'start'], 300, true);
+        $steps[] = migrationStep('cutover-rootless-migration', 'Restart legacy rootful project', 'docker compose start', $restart);
+        @unlink($runtimeFile);
+        $steps[] = [
+            'command' => 'cutover-rootless-migration', 'label' => 'Revalidate bind ownership',
+            'display' => 'rescan stopped bind sources', 'exitCode' => 1, 'timedOut' => false,
+            'output' => 'Bind ownership changed or a symlink appeared after preparation. The legacy project was restarted without translating ownership.',
+        ];
+        return ['steps' => $steps];
+    }
+    try {
+        translateMigrationOwnership($site, $manifest);
+        $steps[] = ['command' => 'cutover-rootless-migration', 'label' => 'Translate bind ownership', 'display' => 'journaled UID/GID translation and ACL repair', 'exitCode' => 0, 'timedOut' => false, 'output' => 'Bind ownership was translated and the site-user ACL invariant was reapplied.'];
+        foreach ((array) ($manifest['sources'] ?? []) as $source => $definition) {
+            $mappedUid = rootlessMappedId((int) ($definition['runtimeUid'] ?? 0), (int) $manifest['identity']['uid'], (int) $manifest['subuid']['start']);
+            $mappedGid = rootlessMappedId((int) ($definition['runtimeGid'] ?? 0), (int) $manifest['identity']['gid'], (int) $manifest['subgid']['start']);
+            $access = runSiteCommand($site, ['setpriv', '--reuid=' . $mappedUid, '--regid=' . $mappedGid, '--clear-groups', '/usr/bin/test', '-r', (string) $source], 30, true);
+            if ($access['code'] === 0) $access = runSiteCommand($site, ['setpriv', '--reuid=' . $mappedUid, '--regid=' . $mappedGid, '--clear-groups', '/usr/bin/test', '-w', (string) $source], 30, true);
+            $steps[] = migrationStep('cutover-rootless-migration', 'Verify bind access', 'test read/write access as mapped UID ' . $mappedUid, $access);
+            if ($access['code'] !== 0) throw new RuntimeException('Mapped runtime identity cannot read and write bind source ' . $source . '.');
+        }
+        $up = runRootlessDockerCommand($site, ['docker', 'compose', '-f', $runtimeFile, '-p', composeProjectName($site), 'up', '-d', '--no-build', '--remove-orphans'], 300);
+        $steps[] = migrationStep('cutover-rootless-migration', 'Start prepared rootless project', 'docker compose up -d --no-build --remove-orphans', $up);
+        $ps = $up['code'] === 0 ? runRootlessDockerCommand($site, ['docker', 'compose', '-f', $runtimeFile, '-p', composeProjectName($site), 'ps', '-a', '--format', 'json'], 30) : ['code' => 1, 'timedOut' => false, 'stdout' => '', 'stderr' => 'Rootless start failed.'];
+        if ($ps['code'] === 0) {
+            $rows = json_decode(trim($ps['stdout']), true);
+            if (!is_array($rows) || array_is_list($rows) === false) {
+                $rows = [];
+                foreach (preg_split('/\R/', trim($ps['stdout'])) ?: [] as $line) { $row = json_decode($line, true); if (is_array($row)) $rows[] = $row; }
+            }
+            if (count($rows) !== count((array) $model['services']) || count(array_filter($rows, static fn(array $row): bool => ($row['State'] ?? '') !== 'running' || strtolower((string) ($row['Health'] ?? '')) === 'unhealthy')) > 0) {
+                $ps['code'] = 1; $ps['stderr'] .= "\nOne or more rootless services are not running or healthy.";
+            }
+        }
+        $steps[] = migrationStep('cutover-rootless-migration', 'Verify rootless service state', 'docker compose ps -a', $ps);
+        $verify = $up['code'] === 0 && $ps['code'] === 0 && !empty($composeCapability['expectedPort'])
+            ? runSiteCommand($site, ['curl', '--fail', '--silent', '--show-error', '--max-time', '10', 'http://127.0.0.1:' . (int) $composeCapability['expectedPort'] . '/'], 20, true)
+            : ['code' => 1, 'timedOut' => false, 'stdout' => '', 'stderr' => 'Rootless service-state verification failed.'];
+        $steps[] = migrationStep('cutover-rootless-migration', 'Verify website entry port', 'HTTP probe on the CloudPanel loopback port', $verify);
+        if ($up['code'] === 0 && $ps['code'] === 0 && $verify['code'] === 0) {
+            $cleanup = runSiteCommand($site, ['docker', 'compose', '-f', $file, '-p', composeProjectName($site), 'down', '--remove-orphans', '--rmi', 'local'], 300, true);
+            $steps[] = migrationStep('cutover-rootless-migration', 'Remove legacy rootful project', 'docker compose down --remove-orphans --rmi local', $cleanup);
+            if ($cleanup['code'] === 0) {
+                @unlink(rootlessMigrationPath($site, 'ownership.journal'));
+                @unlink(rootlessMigrationPath($site));
+            }
+            return ['steps' => $steps];
+        }
+    } catch (Throwable $error) {
+        $steps[] = ['command' => 'cutover-rootless-migration', 'label' => 'Translate bind ownership', 'display' => 'journaled UID/GID translation', 'exitCode' => 1, 'timedOut' => false, 'output' => $error->getMessage()];
+    } finally {
+        @unlink($runtimeFile);
+    }
+    $down = runRootlessDockerCommand($site, ['docker', 'compose', '-f', $file, '-p', composeProjectName($site), 'down', '--remove-orphans'], 300);
+    $steps[] = migrationStep('cutover-rootless-migration', 'Remove incomplete rootless project', 'docker compose down --remove-orphans', $down);
+    $restored = restoreMigrationOwnership($site, $manifest);
+    $steps[] = ['command' => 'cutover-rootless-migration', 'label' => 'Restore original ownership', 'display' => 'restore ownership journal and ACLs', 'exitCode' => $restored ? 0 : 1, 'timedOut' => false, 'output' => $restored ? 'Original ownership and ACL access were restored.' : 'Ownership recovery is incomplete; the recovery blocker remains.'];
+    if ($restored) {
+        $restart = runSiteCommand($site, ['docker', 'compose', '-f', $file, '-p', composeProjectName($site), 'start'], 300, true);
+        $steps[] = migrationStep('cutover-rootless-migration', 'Restart legacy rootful project', 'docker compose start', $restart);
+        $rollbackVerify = $restart['code'] === 0 && !empty($manifest['expectedPort'])
+            ? runSiteCommand($site, ['curl', '--fail', '--silent', '--show-error', '--max-time', '10', 'http://127.0.0.1:' . (int) $manifest['expectedPort'] . '/'], 20, true)
+            : ['code' => 1, 'timedOut' => false, 'stdout' => '', 'stderr' => 'The legacy project did not restart.'];
+        $steps[] = migrationStep('cutover-rootless-migration', 'Verify restored website endpoint', 'HTTP probe on the original loopback port', $rollbackVerify);
+    }
+    $steps[] = [
+        'command' => 'cutover-rootless-migration', 'label' => 'Cutover result',
+        'display' => 'rootless cutover with automatic rollback', 'exitCode' => 1, 'timedOut' => false,
+        'output' => $restored ? 'Rootless cutover failed; the ownership rollback completed. Review the preceding verification steps.' : 'Rootless cutover and ownership rollback are incomplete. Run migration recovery.',
+    ];
+    return ['steps' => $steps];
+}
+
+function recoverRootlessMigration(Site $site): array
+{
+    $manifest = migrationManifest($site);
+    if (!$manifest) respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE']);
+    $restored = restoreMigrationOwnership($site, $manifest);
+    $steps = [['command' => 'recover-rootless-migration', 'label' => 'Restore ownership journal', 'display' => 'restore ownership and ACLs', 'exitCode' => $restored ? 0 : 1, 'timedOut' => false, 'output' => $restored ? 'Ownership recovery completed.' : 'Ownership recovery remains incomplete.']];
+    if ($restored) {
+        $restart = runSiteCommand($site, ['docker', 'compose', '-f', (string) $manifest['file'], '-p', composeProjectName($site), 'start'], 300, true);
+        $steps[] = migrationStep('recover-rootless-migration', 'Restart legacy rootful project', 'docker compose start', $restart);
+        $verify = $restart['code'] === 0 && !empty($manifest['expectedPort'])
+            ? runSiteCommand($site, ['curl', '--fail', '--silent', '--show-error', '--max-time', '10', 'http://127.0.0.1:' . (int) $manifest['expectedPort'] . '/'], 20, true)
+            : ['code' => 1, 'timedOut' => false, 'stdout' => '', 'stderr' => 'The legacy project did not restart.'];
+        $steps[] = migrationStep('recover-rootless-migration', 'Verify restored website endpoint', 'HTTP probe on the original loopback port', $verify);
+    }
+    return ['steps' => $steps];
+}
+
 function executeFix(Site $site, string $fix, array &$results): void
 {
     switch ($fix) {
+        case 'initialize-rootless-docker':
+            if (!runFixStep($site, $results, $fix, 'Install rootless prerequisites', ['apt-get', 'install', '-y', 'uidmap', 'dbus-user-session', 'slirp4netns'], 900)) return;
+            if (!is_executable('/usr/bin/docker') || !is_executable('/usr/bin/dockerd-rootless-setuptool.sh')) {
+                if (!runFixStep($site, $results, $fix, 'Install repository prerequisites', ['apt-get', 'install', '-y', 'ca-certificates', 'curl'], 600)) return;
+                if (!configureDockerRepository($site, $fix, $results)) return;
+                if (!runFixStep($site, $results, $fix, 'Install Docker rootless runtime', ['apt-get', 'install', '-y', 'docker-ce', 'docker-ce-cli', 'containerd.io', 'docker-buildx-plugin', 'docker-compose-plugin', 'docker-ce-rootless-extras'], 900)) return;
+            } elseif (!runFixStep($site, $results, $fix, 'Verify Docker rootless packages', ['apt-get', 'install', '-y', 'docker-buildx-plugin', 'docker-compose-plugin', 'docker-ce-rootless-extras'], 900)) return;
+            initializeRootlessDocker($site, $fix, $results);
+            return;
         case 'install-docker':
             if (!runFixStep($site, $results, $fix, 'Install prerequisites', ['apt-get', 'install', '-y', 'ca-certificates', 'curl'], 600)) return;
             if (!configureDockerRepository($site, $fix, $results)) return;
-            if (!runFixStep($site, $results, $fix, 'Install Docker Engine and Compose plugin', ['apt-get', 'install', '-y', 'docker-ce', 'docker-ce-cli', 'containerd.io', 'docker-buildx-plugin', 'docker-compose-plugin'], 900)) return;
+            if (!runFixStep($site, $results, $fix, 'Install Docker Engine and Compose plugin', ['apt-get', 'install', '-y', 'docker-ce', 'docker-ce-cli', 'containerd.io', 'docker-buildx-plugin', 'docker-compose-plugin', 'docker-ce-rootless-extras', 'uidmap', 'dbus-user-session', 'slirp4netns'], 900)) return;
             if (!runFixStep($site, $results, $fix, 'Enable and start the daemon', ['systemctl', 'enable', '--now', 'docker'], 120)) return;
             runFixStep($site, $results, $fix, 'Verify installation', ['docker', 'compose', 'version'], 60);
             return;
@@ -2805,8 +3580,27 @@ function runEnvSelfTest(): never
     exit(0);
 }
 
+function runRootlessSelfTest(): never
+{
+    $assert = static function (bool $condition, string $message): void { if (!$condition) throw new RuntimeException($message); };
+    $assert(rootlessMappedId(0, 1003, 296608) === 1003, 'container root must map to the site user');
+    $assert(rootlessMappedId(1, 1003, 296608) === 296608, 'container UID 1 must map to the subordinate range start');
+    $assert(rootlessMappedId(1000, 1003, 296608) === 297607, 'container UID 1000 must map with the rootless n-1 formula');
+    $temporary = sys_get_temp_dir() . '/panelavo-rootless-self-test-' . bin2hex(random_bytes(4));
+    mkdir($temporary, 0700);
+    file_put_contents($temporary . '/data', 'ok');
+    $linked = @symlink('/etc/passwd', $temporary . '/outside');
+    $paths = iterator_to_array(migrationTreeEntries($temporary));
+    $assert(in_array('data', array_map('basename', $paths), true), 'physical descendants must be inventoried');
+    if ($linked) $assert(!in_array('outside', array_map('basename', $paths), true), 'symlinks must not be traversed or inventoried');
+    @unlink($temporary . '/outside'); @unlink($temporary . '/data'); @rmdir($temporary);
+    echo "Rootless Docker ownership self-test passed.\n";
+    exit(0);
+}
+
 if (($argv[1] ?? '') === '--self-test-ports') runComposePortSelfTest();
 if (($argv[1] ?? '') === '--self-test-env') runEnvSelfTest();
+if (($argv[1] ?? '') === '--self-test-rootless') runRootlessSelfTest();
 
 try {
     $encodedInput = stream_get_contents(STDIN, PANELAVO_BROKER_MAX_INPUT_BYTES + 1);
@@ -3008,7 +3802,8 @@ try {
 
         case 'clpctl-site-delete':
             $domain = brokerDomainValue($input['domain'] ?? null);
-            requireSiteWriter($manager, $user, $domain, ($input['panelAdmin'] ?? false) === true);
+            $site = requireSiteWriter($manager, $user, $domain, ($input['panelAdmin'] ?? false) === true);
+            cleanupRootlessDockerBeforeSiteDelete($site);
             finishClpctl(runClpctl(['site:delete', '--domainName=' . $domain, '--force']));
 
         case 'clpctl-db-add':
@@ -3373,7 +4168,7 @@ try {
                     // Host-software repairs are a Super Admin boundary and are
                     // serialized host-wide because they change shared APT and
                     // systemd state.
-                    if ($user->getRole() !== User::ROLE_ADMIN) respond(['ok' => false, 'code' => 'FORBIDDEN']);
+                    if (($input['panelAdmin'] ?? false) !== true) respond(['ok' => false, 'code' => 'FORBIDDEN']);
                     $lockPath = '/var/lock/panelavo-host-fix.lock';
                     $runner = static function () use ($site, $fix, &$results): void { executeFix($site, $fix, $results); };
                     $lock = @fopen($lockPath, 'c');
@@ -3398,6 +4193,32 @@ try {
                     ]] + actionsSection($site, $user)]);
                 }
                 if (!in_array($action, ['run', 'deploy'], true)) respond(['ok' => false, 'code' => 'INVALID_ACTION']);
+                $migrationCommands = ['prepare-rootless-migration', 'cutover-rootless-migration', 'recover-rootless-migration'];
+                if ($action === 'run' && in_array((string) ($operation['command'] ?? ''), $migrationCommands, true)) {
+                    if (($input['panelAdmin'] ?? false) !== true) respond(['ok' => false, 'code' => 'FORBIDDEN']);
+                    $lock = @fopen('/var/lock/panelavo-operations-' . $site->getUser() . '.lock', 'c');
+                    if (!$lock || !flock($lock, LOCK_EX | LOCK_NB)) respond(['ok' => false, 'code' => 'OPERATION_BUSY']);
+                    $startedAt = gmdate(DATE_ATOM);
+                    try {
+                        $command = (string) $operation['command'];
+                        $outcome = match ($command) {
+                            'prepare-rootless-migration' => prepareRootlessMigration($site, (string) ($operation['name'] ?? '')),
+                            'cutover-rootless-migration' => cutoverRootlessMigration($site),
+                            'recover-rootless-migration' => recoverRootlessMigration($site),
+                        };
+                    } finally {
+                        flock($lock, LOCK_UN); fclose($lock);
+                    }
+                    $results = (array) ($outcome['steps'] ?? []);
+                    $last = end($results) ?: ['exitCode' => 1, 'timedOut' => false, 'output' => 'No migration step ran.'];
+                    $run = [
+                        'command' => $command, 'display' => count($results) . ' migration step(s) executed',
+                        'exitCode' => (int) $last['exitCode'], 'timedOut' => !empty($last['timedOut']),
+                        'output' => implode("\n\n", array_map(static fn(array $item): string => '── ' . $item['label'] . ' (' . $item['display'] . ")\n" . ($item['output'] !== '' ? $item['output'] : '(no output)'), $results)),
+                        'startedAt' => $startedAt, 'finishedAt' => gmdate(DATE_ATOM), 'steps' => $results,
+                    ];
+                    respond(['ok' => true, 'data' => ['run' => $run] + actionsSection($site, $user)]);
+                }
                 $state = operationsState($site, $user);
                 $plan = null;
                 if ($action === 'run') {
@@ -3412,9 +4233,9 @@ try {
                     $plan = (string) ($operation['plan'] ?? '');
                     $steps = resolveDeploymentPlan($site, $state, $plan);
                 }
-                // Rootful Docker Compose is a Super Admin (CloudPanel admin)
-                // boundary; everything else needs the site-write access the
-                // manage-section gate above already proved.
+                // Ordinary Compose now runs through the same unprivileged site
+                // user boundary as SSH and Terminal. Only explicit host fixes
+                // and rootful-to-rootless migration remain Super Admin-only.
                 foreach ($steps as $stepDefinition) {
                     if (!empty($stepDefinition['asRoot']) && $user->getRole() !== User::ROLE_ADMIN) {
                         respond(['ok' => false, 'code' => 'FORBIDDEN']);
@@ -3433,14 +4254,24 @@ try {
                     if (isset($stepDefinition['composeConfig'])) {
                         $encoded = json_encode($stepDefinition['composeConfig'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
                         if (!is_string($encoded)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
-                        $temporaryCompose = '/run/panelavo-compose-' . hash('sha256', (string) $site->getDomainName()) . '-' . bin2hex(random_bytes(6)) . '.json';
+                        $identity = siteIdentity($site);
+                        $runtimeDirectory = '/run/user/' . $identity['uid'];
+                        $composeDirectory = $runtimeDirectory . '/panelavo-compose';
+                        if (!is_dir($runtimeDirectory) || (int) (@fileowner($runtimeDirectory) ?: -1) !== $identity['uid']) {
+                            respond(['ok' => false, 'code' => 'TOOL_UNAVAILABLE', 'message' => 'The rootless Docker user runtime directory is unavailable.']);
+                        }
+                        if (!is_dir($composeDirectory) && !@mkdir($composeDirectory, 0700)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                        if (is_link($composeDirectory) || !@chown($composeDirectory, $identity['uid']) || !@chgrp($composeDirectory, $identity['gid']) || !@chmod($composeDirectory, 0700)) {
+                            respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                        }
+                        $temporaryCompose = $composeDirectory . '/' . hash('sha256', (string) $site->getDomainName()) . '-' . bin2hex(random_bytes(6)) . '.json';
                         $previousUmask = umask(0077);
                         try {
                             if (@file_put_contents($temporaryCompose, $encoded, LOCK_EX) === false) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
                         } finally {
                             umask($previousUmask);
                         }
-                        if (!@chmod($temporaryCompose, 0600)) {
+                        if (!@chown($temporaryCompose, $identity['uid']) || !@chgrp($temporaryCompose, $identity['gid']) || !@chmod($temporaryCompose, 0600)) {
                             @unlink($temporaryCompose);
                             respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
                         }

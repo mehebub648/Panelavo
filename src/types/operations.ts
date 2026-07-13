@@ -86,6 +86,49 @@ export type ComposeCapability = {
   detail?: string;
   missingEnvVariables?: string[];
   warnings?: string[];
+  engineMode?: "rootless";
+  rootless?: RootlessDockerCapability;
+};
+
+export type RootlessDockerCapability = {
+  mode: "rootless";
+  user?: string;
+  uid?: number;
+  socket?: string;
+  dataRoot?: string;
+  ready?: boolean;
+  uidmapAvailable?: boolean;
+  rootlessExtrasAvailable?: boolean;
+  buildxAvailable?: boolean;
+  networkHelperAvailable?: boolean;
+  subuidReady?: boolean;
+  subgidReady?: boolean;
+  lingerEnabled?: boolean;
+  runtimeDirectoryReady?: boolean;
+  userBusReady?: boolean;
+  socketReady?: boolean;
+  daemonAvailable?: boolean;
+  securityRootless?: boolean;
+  serverVersion?: string;
+  storageDriver?: string;
+  cgroupDriver?: string;
+  cgroupVersion?: string;
+  cgroupReady?: boolean;
+  storageReady?: boolean;
+  dockerRootDir?: string;
+  diskUsage?: string;
+  imageUsage?: string;
+  imageReclaimable?: string;
+  availableBytes?: number | null;
+};
+
+export type RootlessMigrationStatus = {
+  legacyRootfulDetected?: boolean;
+  preparedServices?: string[];
+  allServicesPrepared?: boolean;
+  preparedAt?: string | null;
+  expiresAt?: string | null;
+  recoveryRequired?: boolean;
 };
 
 export type ServicePort = {
@@ -156,7 +199,8 @@ export type RawOperationsData = {
   pythonManager?: DependencyManager;
   tools?: Record<string, OperationTool>;
   compose?: ComposeCapability;
-  permissions?: { manage: boolean; docker: boolean };
+  permissions?: { manage: boolean; docker: boolean; hostAdmin?: boolean };
+  migration?: RootlessMigrationStatus;
   pm2Available?: boolean;
   dockerAvailable?: boolean;
   pm2?: Pm2Process[];
@@ -175,6 +219,7 @@ export type ArchitectureDetection = {
 };
 
 export type OperationFixId =
+  | "initialize-rootless-docker"
   | "install-docker"
   | "install-compose-plugin"
   | "start-docker"

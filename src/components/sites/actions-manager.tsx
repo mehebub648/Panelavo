@@ -445,7 +445,7 @@ export function ActionsManager({
   const ReadinessIcon = readiness.icon;
   const runtime = data.runtime;
   const hasRuntime = Boolean(
-    data.pm2?.length || runtime?.containers?.length || runtime?.listeners?.length,
+    data.pm2?.length || runtime?.containers?.length || runtime?.listeners?.length || data.compose?.rootless,
   );
   const envDrift = (runtime?.env ?? []).filter(
     (item) => item.status === "differs" || item.status === "missing",
@@ -855,6 +855,52 @@ export function ActionsManager({
               Refresh
             </Button>
           </div>
+
+          {data.compose?.rootless ? (
+            <div className="mt-4 grid gap-3 rounded-xl border border-slate-200/80 bg-slate-50/70 p-4 sm:grid-cols-2 xl:grid-cols-4">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Docker engine</p>
+                <p className="mt-1 text-sm font-semibold text-slate-700">
+                  Rootless · {data.compose.rootless.ready ? "Ready" : "Needs setup"}
+                </p>
+              </div>
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Owner</p>
+                <p className="mt-1 truncate font-mono text-xs text-slate-700">
+                  {data.compose.rootless.user ?? "site user"}
+                  {data.compose.rootless.uid !== undefined ? ` · UID ${data.compose.rootless.uid}` : ""}
+                </p>
+              </div>
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Storage</p>
+                <p className="mt-1 text-sm font-semibold text-slate-700">
+                  {data.compose.rootless.storageDriver || "Not available"}
+                </p>
+                <p className="mt-1 text-[11px] text-slate-500">
+                  Images {data.compose.rootless.imageUsage || "unknown"} · {data.compose.rootless.imageReclaimable || "unknown"} reclaimable
+                </p>
+              </div>
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Home filesystem free</p>
+                <p className="mt-1 text-sm font-semibold text-slate-700">
+                  {typeof data.compose.rootless.availableBytes === "number" ? formatBytes(data.compose.rootless.availableBytes) : "Unknown"}
+                </p>
+              </div>
+              <p className="break-all font-mono text-[11px] text-slate-500 sm:col-span-2 xl:col-span-4">
+                Socket: {data.compose.rootless.socket || "not initialized"}
+                {data.compose.rootless.cgroupVersion ? ` · cgroup v${data.compose.rootless.cgroupVersion}` : ""}
+                {data.compose.rootless.networkHelperAvailable ? " · userspace network ready" : " · network helper missing"}
+              </p>
+            </div>
+          ) : null}
+
+          {data.migration?.legacyRootfulDetected || data.migration?.recoveryRequired ? (
+            <div className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800 ring-1 ring-inset ring-amber-200">
+              {data.migration.recoveryRequired
+                ? "An ownership recovery journal is active. Recover it before another cutover."
+                : `${data.migration.preparedServices?.length ?? 0} service(s) prepared for rootless migration${data.migration.expiresAt ? ` · expires ${data.migration.expiresAt}` : ""}.`}
+            </div>
+          ) : null}
 
           {runtime?.listeners?.length ? (
             <div className="mt-4 flex flex-wrap items-center gap-2">

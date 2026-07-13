@@ -111,7 +111,10 @@ export function SiteSettings({
   function remove() {
     setConfirmAction({
       title: "Delete website",
-      message: `Permanently delete ${site.domain} and its files? This action cannot be undone.`,
+      message:
+        site.type === "docker"
+          ? `Permanently delete ${site.domain}, stop and remove every container in its dedicated rootless daemon, remove its images, volumes, migration state, and files, then disable the user service and lingering? This action cannot be undone.`
+          : `Permanently delete ${site.domain} and its files? This action cannot be undone.`,
       onConfirm: async () => {
         setConfirmAction(null);
         setBusy(true);

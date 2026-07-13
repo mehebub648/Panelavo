@@ -13,7 +13,15 @@ const storeFile = () => join(dataDir(), "site-types.json");
 type Store = { types: Record<string, SiteType> };
 
 export function isSiteActionAllowed(type: SiteType | undefined, command: string) {
-  return type !== "docker" || command.startsWith("compose-");
+  return (
+    type !== "docker" ||
+    command.startsWith("compose-") ||
+    [
+      "prepare-rootless-migration",
+      "cutover-rootless-migration",
+      "recover-rootless-migration",
+    ].includes(command)
+  );
 }
 
 async function load(): Promise<Store> {

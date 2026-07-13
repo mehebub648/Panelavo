@@ -15,7 +15,7 @@ import type {
 import { isPanelAdmin } from "@/server/auth/panel-roles";
 import { AppError } from "./errors";
 
-export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 2;
+export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 3;
 export const CLOUDPANEL_BROKER_PATH =
   "/usr/local/libexec/panelavo/panelavo-broker";
 
@@ -435,7 +435,7 @@ export class LiveCloudPanelClient implements CloudPanelClient {
       username: this.sessionUser(session),
       domain,
       panelAdmin,
-    }, 90_000);
+    }, 1_850_000);
     if (!result.ok)
       throw this.privilegedError(result, "CloudPanel could not delete the website.");
   }

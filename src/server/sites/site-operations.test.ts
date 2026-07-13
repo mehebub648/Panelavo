@@ -18,6 +18,26 @@ const base: RawOperationsData = {
   },
 };
 
+const rootlessReady = {
+  mode: "rootless" as const,
+  ready: true,
+  uidmapAvailable: true,
+  rootlessExtrasAvailable: true,
+  buildxAvailable: true,
+  networkHelperAvailable: true,
+  subuidReady: true,
+  subgidReady: true,
+  lingerEnabled: true,
+  runtimeDirectoryReady: true,
+  userBusReady: true,
+  socketReady: true,
+  daemonAvailable: true,
+  securityRootless: true,
+  storageReady: true,
+  cgroupReady: true,
+  storageDriver: "overlay2",
+};
+
 describe("normalizeOperationsData", () => {
   it("keeps a detected Compose project visible but blocks deployment when Docker is missing", () => {
     const data = normalizeOperationsData(
@@ -36,7 +56,7 @@ describe("normalizeOperationsData", () => {
           daemonAvailable: false,
         },
       },
-      { typeOverride: "docker" },
+      { typeOverride: "docker", panelAdmin: true },
     );
 
     expect(data.architecture.primary.id).toBe("compose");
@@ -70,17 +90,18 @@ describe("normalizeOperationsData", () => {
     ).toBe(false);
   });
 
-  it("marks a validated, site-contained Compose deployment ready only for a Super Admin", () => {
+  it("allows a site-write user to manage a healthy private rootless project", () => {
     const data = normalizeOperationsData(
       {
         ...base,
-        permissions: { manage: true, docker: true },
+        permissions: { manage: true, docker: false },
         hasCompose: true,
         compose: {
           file: "docker-compose.yml",
           cliAvailable: true,
           pluginAvailable: true,
           daemonAvailable: true,
+          rootless: rootlessReady,
           configValid: true,
           safe: true,
           services: ["web", "worker"],
@@ -101,7 +122,7 @@ describe("normalizeOperationsData", () => {
     expect(data.plan).toMatchObject({
       id: "compose",
       status: "ready",
-      scope: "host-root",
+      scope: "site-user",
     });
     expect(data.plan?.steps.map((step) => step.command)).toEqual([
       "compose-validate",
@@ -120,6 +141,54 @@ describe("normalizeOperationsData", () => {
     });
   });
 
+  it("keeps migration preparation and cutover Super Admin-only", () => {
+    const raw: RawOperationsData = {
+      ...base,
+      permissions: { manage: true, docker: false },
+      hasCompose: true,
+      compose: {
+        file: "compose.yaml",
+        cliAvailable: true,
+        pluginAvailable: true,
+        daemonAvailable: true,
+        rootless: rootlessReady,
+        configValid: true,
+        safe: true,
+        services: ["web", "worker"],
+      },
+      migration: {
+        legacyRootfulDetected: true,
+        preparedServices: ["web"],
+        allServicesPrepared: false,
+      },
+    };
+    const regularAdmin = normalizeOperationsData(raw, {
+      typeOverride: "docker",
+    });
+    expect(
+      regularAdmin.groups
+        .flatMap((group) => group.actions)
+        .find(
+          (action) =>
+            action.id === "prepare-rootless-migration" &&
+            action.input?.name === "worker",
+        ),
+    ).toMatchObject({ status: "unauthorized", scope: "host-root" });
+
+    const superAdmin = normalizeOperationsData(
+      {
+        ...raw,
+        migration: { ...raw.migration, allServicesPrepared: true },
+      },
+      { typeOverride: "docker", panelAdmin: true },
+    );
+    expect(
+      superAdmin.groups
+        .flatMap((group) => group.actions)
+        .find((action) => action.id === "cutover-rootless-migration"),
+    ).toMatchObject({ status: "ready", scope: "host-root" });
+  });
+
   it("keeps host-safety review pending when Compose validation fails", () => {
     const data = normalizeOperationsData(
       {
@@ -131,11 +200,12 @@ describe("normalizeOperationsData", () => {
           cliAvailable: true,
           pluginAvailable: true,
           daemonAvailable: true,
+          rootless: rootlessReady,
           configValid: false,
           detail: "HEALTHCHECK_RETRIES is not set: invalid syntax",
         },
       },
-      { typeOverride: "docker" },
+      { typeOverride: "docker", panelAdmin: true },
     );
 
     expect(
@@ -171,7 +241,7 @@ describe("normalizeOperationsData", () => {
             'time="2026-07-12T05:30:18Z" level=warning msg="The \\"HOST_DATA_DIR\\" variable is not set. Defaulting to a blank string." time="2026-07-12T05:30:18Z" level=warning msg="The \\"BACKEND_DATA_DIR\\" variable is not set. Defaulting to a blank string."',
         },
       },
-      { typeOverride: "docker" },
+      { typeOverride: "docker", panelAdmin: true },
     );
 
     const validation = data.preflight.checks.find(
@@ -195,6 +265,7 @@ describe("normalizeOperationsData", () => {
           cliAvailable: true,
           pluginAvailable: true,
           daemonAvailable: true,
+          rootless: rootlessReady,
           configValid: true,
           safe: true,
           services: ["backend", "frontend"],
@@ -216,7 +287,7 @@ describe("normalizeOperationsData", () => {
           ],
         },
       },
-      { typeOverride: "docker" },
+      { typeOverride: "docker", panelAdmin: true },
     );
 
     expect(data.preflight.status).toBe("warning");
@@ -383,7 +454,7 @@ describe("normalizeOperationsData", () => {
           daemonAvailable: false,
         },
       },
-      { typeOverride: "docker" },
+      { typeOverride: "docker", panelAdmin: true },
     );
 
     const cli = data.preflight.checks.find((item) => item.id === "docker-cli");
@@ -396,10 +467,9 @@ describe("normalizeOperationsData", () => {
     expect(
       data.preflight.checks.find((item) => item.id === "compose-plugin")?.fix,
     ).toMatchObject({ id: "install-docker" });
-    // The daemon cannot be started before the engine exists.
     expect(
       data.preflight.checks.find((item) => item.id === "docker-daemon")?.fix,
-    ).toBeUndefined();
+    ).toMatchObject({ id: "initialize-rootless-docker", status: "ready" });
   });
 
   it("blocks fixes for admins who are not Super Admins", () => {
@@ -423,23 +493,26 @@ describe("normalizeOperationsData", () => {
       (item) => item.id === "docker-daemon",
     );
     expect(daemon?.fix).toMatchObject({
-      id: "start-docker",
+      id: "initialize-rootless-docker",
       status: "unauthorized",
     });
     expect(daemon?.fix?.blockedBy[0]).toContain("Super Admin");
   });
 
   it("attaches a Composer installer fix on PHP sites missing Composer", () => {
-    const data = normalizeOperationsData({
-      ...base,
-      type: "php",
-      permissions: { manage: true, docker: true },
-      hasComposer: true,
-      tools: {
-        ...base.tools,
-        composer: { id: "composer", label: "Composer", available: false },
+    const data = normalizeOperationsData(
+      {
+        ...base,
+        type: "php",
+        permissions: { manage: true, docker: true },
+        hasComposer: true,
+        tools: {
+          ...base.tools,
+          composer: { id: "composer", label: "Composer", available: false },
+        },
       },
-    });
+      { panelAdmin: true },
+    );
 
     expect(
       data.preflight.checks.find((item) => item.id === "composer")?.fix,

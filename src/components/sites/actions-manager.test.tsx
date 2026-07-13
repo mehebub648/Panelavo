@@ -50,6 +50,25 @@ function dockerData(ready: boolean): OperationsData {
       cliAvailable: ready,
       pluginAvailable: ready,
       daemonAvailable: ready,
+      rootless: {
+        mode: "rootless",
+        ready,
+        uidmapAvailable: ready,
+        rootlessExtrasAvailable: ready,
+        buildxAvailable: ready,
+        networkHelperAvailable: ready,
+        subuidReady: ready,
+        subgidReady: ready,
+        lingerEnabled: ready,
+        runtimeDirectoryReady: ready,
+        userBusReady: ready,
+        socketReady: ready,
+        daemonAvailable: ready,
+        securityRootless: ready,
+        storageReady: ready,
+        cgroupReady: ready,
+        storageDriver: ready ? "overlay2" : undefined,
+      },
       configValid: ready,
       safe: ready,
       services: ready ? ["web", "database"] : [],
@@ -64,7 +83,7 @@ function dockerData(ready: boolean): OperationsData {
         : undefined,
     },
   };
-  return normalizeOperationsData(raw, { typeOverride: "docker" });
+  return normalizeOperationsData(raw, { typeOverride: "docker", panelAdmin: true });
 }
 
 describe("ActionsManager", () => {
@@ -135,7 +154,7 @@ describe("ActionsManager", () => {
     fireEvent.click(screen.getByRole("button", { name: "Deploy now" }));
 
     const dialog = await screen.findByRole("dialog", {
-      name: "Deploy this Compose project as root?",
+      name: "Deploy this rootless Compose project?",
     });
     expect(fetch).not.toHaveBeenCalled();
     fireEvent.click(

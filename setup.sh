@@ -138,7 +138,7 @@ log "Detected ${PRETTY_NAME} — CloudPanel DB engine: ${DB_ENGINE}"
 # ---------------------------------------------------------------------------
 log "Installing base packages ..."
 apt-get update -y
-apt-get install -y curl wget sudo ca-certificates rsync openssl git acl
+apt-get install -y curl wget sudo ca-certificates rsync openssl git acl uidmap dbus-user-session slirp4netns
 
 # ---------------------------------------------------------------------------
 # 3. Public IP
@@ -332,6 +332,7 @@ SUDOERS_FILE="/etc/sudoers.d/panelavo-${SITE_USER}"
 
 # Root must never execute the site-user-owned bridge from the deployed tree.
 install -d -o root -g root -m 0755 "${BROKER_ROOT}"
+install -d -o root -g root -m 0700 /var/lib/panelavo/rootless-migrations
 install -o root -g root -m 0755 "${SRC_DIR}/scripts/panelavo-broker" "${BROKER_PATH}"
 install -o root -g root -m 0644 "${SRC_DIR}/scripts/cloudpanel-bridge.php" "${BROKER_ROOT}/cloudpanel-bridge.php"
 
