@@ -997,7 +997,7 @@ function rootlessCapability(Site $site): array
             $capability['cgroupVersion'] = (string) ($decoded['CgroupVersion'] ?? '');
             $capability['dockerRootDir'] = (string) ($decoded['DockerRootDir'] ?? $capability['dataRoot']);
             $capability['cgroupReady'] = ($decoded['CgroupVersion'] ?? null) === '2' || ($decoded['CgroupVersion'] ?? null) === 2;
-            $capability['storageReady'] = in_array(strtolower((string) ($decoded['Driver'] ?? '')), ['overlay2', 'fuse-overlayfs'], true);
+            $capability['storageReady'] = rootlessStorageDriverReady((string) ($decoded['Driver'] ?? ''));
         }
         $usage = runRootlessDockerCommand($site, ['docker', 'system', 'df', '--format', '{{json .}}'], 20);
         if ($usage['code'] === 0) {
@@ -1024,6 +1024,11 @@ function rootlessCapability(Site $site): array
         && $capability['daemonAvailable'] && $capability['securityRootless']
         && !empty($capability['cgroupReady']) && !empty($capability['storageReady']);
     return $capability;
+}
+
+function rootlessStorageDriverReady(string $driver): bool
+{
+    return in_array(strtolower(trim($driver)), ['overlay2', 'overlayfs', 'fuse-overlayfs'], true);
 }
 
 function cleanupRootlessDockerBeforeSiteDelete(Site $site): void
@@ -3590,6 +3595,10 @@ function runRootlessSelfTest(): never
     $assert(rootlessMappedId(0, 1003, 296608) === 1003, 'container root must map to the site user');
     $assert(rootlessMappedId(1, 1003, 296608) === 296608, 'container UID 1 must map to the subordinate range start');
     $assert(rootlessMappedId(1000, 1003, 296608) === 297607, 'container UID 1000 must map with the rootless n-1 formula');
+    $assert(rootlessStorageDriverReady('overlay2'), 'overlay2 must be accepted as native rootless storage');
+    $assert(rootlessStorageDriverReady('overlayfs'), 'Docker 29 overlayfs must be accepted as native rootless storage');
+    $assert(rootlessStorageDriverReady('fuse-overlayfs'), 'fuse-overlayfs must be accepted as the fallback storage driver');
+    $assert(!rootlessStorageDriverReady('vfs'), 'unsupported storage drivers must remain blocked');
     $temporary = sys_get_temp_dir() . '/panelavo-rootless-self-test-' . bin2hex(random_bytes(4));
     mkdir($temporary, 0700);
     file_put_contents($temporary . '/data', 'ok');

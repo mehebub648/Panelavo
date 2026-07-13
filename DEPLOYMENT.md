@@ -101,7 +101,7 @@ The lifecycle actions intentionally distinguish **Start services** (`docker comp
 
 ### Docker Compose prerequisite and policy
 
-Docker is optional and is never installed automatically during preflight or by `setup.sh`. A Super Admin can run the explicit rootless initialization fix, which installs missing Docker packages from the official repository and validates cgroup v2/systemd, at least 65,536 non-overlapping subordinate UIDs/GIDs, functional `newuidmap`/`newgidmap`, the user manager and D-Bus, native rootless `overlay2` (with `fuse-overlayfs` guidance only when its probe fails), linger, and the private socket. Ports below 1024 are unsupported.
+Docker is optional and is never installed automatically during preflight or by `setup.sh`. A Super Admin can run the explicit rootless initialization fix, which installs missing Docker packages from the official repository and validates cgroup v2/systemd, at least 65,536 non-overlapping subordinate UIDs/GIDs, functional `newuidmap`/`newgidmap`, the user manager and D-Bus, native rootless overlay storage (`overlay2` or Docker 29's `overlayfs`, with `fuse-overlayfs` guidance only when the native probe fails), linger, and the private socket. Ports below 1024 are unsupported.
 
 ```bash
 docker context use rootless
