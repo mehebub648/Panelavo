@@ -29,7 +29,7 @@ use App\Site\Updater\StaticSite as StaticSiteUpdater;
 use Symfony\Component\Dotenv\Dotenv;
 
 const CLOUDPANEL_ROOT = '/home/clp/htdocs/app/files';
-const PANELAVO_BROKER_PROTOCOL_VERSION = 3;
+const PANELAVO_BROKER_PROTOCOL_VERSION = 4;
 const PANELAVO_BROKER_MAX_INPUT_BYTES = 100663296;
 const PANELAVO_ROOTLESS_MIGRATION_ROOT = '/var/lib/panelavo/rootless-migrations';
 const PANELAVO_ROOTLESS_MIGRATION_TTL = 86400;
@@ -4017,6 +4017,66 @@ try {
             $databaseName = brokerString($input, 'databaseName', 2, 50, '/^[A-Za-z][A-Za-z0-9-]+$/');
             if (!in_array($databaseName, siteDatabaseNames($site), true)) respond(['ok' => false, 'code' => 'FORBIDDEN']);
             finishClpctl(runClpctl(['db:delete', '--databaseName=' . $databaseName, '--force']));
+
+        case 'db-signon':
+            // One-time phpMyAdmin sign-on: writes the database user's
+            // credentials into an expiring, unguessable token file owned by
+            // the database-manager site user, where that site's signon.php
+            // consumes it exactly once. The credentials never reach the
+            // browser — only the random token does. The manager domain comes
+            // from the panel's server-side configuration (never the browser)
+            // and must resolve to an existing CloudPanel site; everything
+            // else (site user, home) is derived from that authoritative
+            // record.
+            $domain = brokerDomainValue($input['domain'] ?? null);
+            $site = requireSiteWriter($manager, $user, $domain, ($input['panelAdmin'] ?? false) === true);
+            $databaseName = brokerString($input, 'databaseName', 2, 50, '/^[A-Za-z][A-Za-z0-9-]+$/');
+            $managerDomain = brokerDomainValue($input['managerDomain'] ?? null);
+            $database = null;
+            foreach ($site->getDatabases()->toArray() as $candidate) {
+                if ((string) $candidate->getName() === $databaseName) { $database = $candidate; break; }
+            }
+            if (!$database) respond(['ok' => false, 'code' => 'FORBIDDEN']);
+            $databaseUser = $database->getUsers()->toArray()[0] ?? null;
+            if (!$databaseUser) respond(['ok' => false, 'code' => 'INVALID_REQUEST', 'message' => 'This database has no user to sign in with.']);
+            $databasePassword = $databaseUser->getDecryptedPassword();
+            if (!is_string($databasePassword) || $databasePassword === '') {
+                respond(['ok' => false, 'code' => 'INVALID_REQUEST', 'message' => 'The database user credentials could not be read.']);
+            }
+            $managerSite = $manager->getRepository(Site::class)->findOneBy(['domainName' => $managerDomain]);
+            if (!$managerSite instanceof Site) respond(['ok' => false, 'code' => 'INVALID_REQUEST', 'message' => 'The database manager site was not found.']);
+            $managerUser = (string) $managerSite->getUser();
+            $managerHome = '/home/' . $managerUser;
+            if (!preg_match('/^[a-z_][a-z0-9_-]{0,31}$/', $managerUser) || !is_dir($managerHome)) {
+                respond(['ok' => false, 'code' => 'INVALID_REQUEST', 'message' => 'The database manager site user is invalid.']);
+            }
+            $signonDir = $managerHome . '/.pma-signon';
+            if (is_link($signonDir)) respond(['ok' => false, 'code' => 'BROKER_INTEGRITY_FAILED'], 1);
+            if (!is_dir($signonDir)) {
+                if (!mkdir($signonDir, 0700)) respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED', 'message' => 'The sign-on directory could not be created.']);
+                chown($signonDir, $managerUser);
+                chgrp($signonDir, $managerUser);
+            }
+            foreach (glob($signonDir . '/*.json') ?: [] as $stale) {
+                if (is_link($stale)) continue;
+                $staleData = json_decode((string) @file_get_contents($stale), true);
+                if (!is_array($staleData) || (int) ($staleData['expires'] ?? 0) < time()) @unlink($stale);
+            }
+            $signonToken = bin2hex(random_bytes(32));
+            $tokenFile = $signonDir . '/' . $signonToken . '.json';
+            $tokenPayload = json_encode([
+                'user' => (string) $databaseUser->getUserName(),
+                'password' => $databasePassword,
+                'db' => $databaseName,
+                'expires' => time() + 60,
+            ]);
+            if (@file_put_contents($tokenFile, $tokenPayload) === false) {
+                respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED', 'message' => 'The sign-on token could not be written.']);
+            }
+            chmod($tokenFile, 0600);
+            chown($tokenFile, $managerUser);
+            chgrp($tokenFile, $managerUser);
+            respond(['ok' => true, 'data' => ['token' => $signonToken, 'db' => $databaseName]]);
 
         case 'clpctl-cert-install':
             $domain = brokerDomainValue($input['domain'] ?? null);

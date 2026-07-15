@@ -397,6 +397,27 @@ PMACONF
     fi
     rm -rf "${PMA_TMP}"
   fi
+  # Panelavo -> phpMyAdmin single sign-on (idempotent, also upgrades existing
+  # installs): the root broker drops one-time credential tokens into the
+  # manager site user's private ~/.pma-signon directory; signon.php consumes
+  # them and phpMyAdmin server 2 authenticates from that signon session.
+  if [ -f "${DB_MANAGER_ROOT}/config.inc.php" ]; then
+    install -o "${DB_MANAGER_USER}" -g "${DB_MANAGER_USER}" -m 0644 \
+      "${SRC_DIR}/scripts/pma-signon.php" "${DB_MANAGER_ROOT}/signon.php"
+    install -d -o "${DB_MANAGER_USER}" -g "${DB_MANAGER_USER}" -m 0700 \
+      "/home/${DB_MANAGER_USER}/.pma-signon"
+    if ! grep -q "PanelavoSignon" "${DB_MANAGER_ROOT}/config.inc.php"; then
+      cat >> "${DB_MANAGER_ROOT}/config.inc.php" <<'PMASIGNON'
+$i++;
+$cfg['Servers'][$i]['auth_type'] = 'signon';
+$cfg['Servers'][$i]['host'] = '127.0.0.1';
+$cfg['Servers'][$i]['SignonSession'] = 'PanelavoSignon';
+$cfg['Servers'][$i]['SignonURL'] = 'signon.php';
+$cfg['Servers'][$i]['AllowNoPassword'] = false;
+$cfg['Servers'][$i]['AllowRoot'] = false;
+PMASIGNON
+    fi
+  fi
   [ -f "${DB_MANAGER_ROOT}/config.inc.php" ] && DB_MANAGER_PROVISIONED=true
 fi
 

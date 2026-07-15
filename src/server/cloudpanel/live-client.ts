@@ -13,9 +13,10 @@ import type {
   UpdateProfileInput,
 } from "@/types/cloudpanel";
 import { isPanelAdmin } from "@/server/auth/panel-roles";
+import { getDatabaseManagerUrl } from "@/server/sites/database-manager";
 import { AppError } from "./errors";
 
-export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 3;
+export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 4;
 export const CLOUDPANEL_BROKER_PATH =
   "/usr/local/libexec/panelavo/panelavo-broker";
 
@@ -501,6 +502,29 @@ export class LiveCloudPanelClient implements CloudPanelClient {
       }, 90_000);
       if (!result.ok)
         throw this.privilegedError(result, "CloudPanel could not delete the database.");
+    } else if (section === "databases" && action === "manage-login") {
+      // One-time phpMyAdmin sign-on: the broker writes the database user's
+      // credentials into an expiring token file readable only by the
+      // database-manager site; the browser receives just the random token.
+      const managerUrl = await getDatabaseManagerUrl();
+      if (!managerUrl)
+        throw new AppError("INVALID_REQUEST", "No database manager is configured on this server.", 400);
+      const result = await this.bridge({
+        action: "db-signon",
+        username: this.sessionUser(session),
+        domain,
+        panelAdmin,
+        databaseName: String(input.name ?? ""),
+        managerDomain: new URL(managerUrl).hostname,
+      }, 30_000);
+      if (!result.ok)
+        throw this.privilegedError(result, "The phpMyAdmin sign-in could not be prepared.");
+      const signon = result.data as { token?: string; db?: string };
+      if (!signon?.token)
+        throw new AppError("SITE_UPDATE_FAILED", "The phpMyAdmin sign-in could not be prepared.", 502);
+      return {
+        url: `${managerUrl}/signon.php?token=${encodeURIComponent(signon.token)}`,
+      };
     } else if (section === "certificates" && action === "lets-encrypt") {
       const result = await this.bridge({
         action: "clpctl-cert-install",

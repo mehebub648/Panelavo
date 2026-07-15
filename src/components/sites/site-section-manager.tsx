@@ -115,6 +115,36 @@ export function SiteSectionManager({
       setBusy(false);
     }
   }
+  // Opens phpMyAdmin already signed in as the database's own user. The tab
+  // must be opened synchronously inside the click (popup blockers), then
+  // navigated once the server returns the one-time signon URL.
+  async function openDatabase(name: string) {
+    const tab = window.open("", "_blank");
+    try {
+      const response = await fetch(
+        `/api/sites/${encodeURIComponent(domain)}/sections/${section}`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ action: "manage-login", name }),
+        },
+      );
+      const result = await response.json();
+      const url = result.success ? String(result.data?.url ?? "") : "";
+      if (!url)
+        throw new Error(
+          result.error?.message || "The phpMyAdmin sign-in could not be prepared.",
+        );
+      if (tab) tab.location.href = url;
+      else window.open(url, "_blank", "noopener,noreferrer");
+    } catch (reason) {
+      tab?.close();
+      toast.error(
+        reason instanceof Error ? reason.message : "The phpMyAdmin sign-in failed.",
+      );
+    }
+  }
+
   useEffect(() => {
     void preloadCodeEditor().catch(() => undefined);
     function shortcut(event: KeyboardEvent) {
@@ -196,7 +226,7 @@ export function SiteSectionManager({
       return (
         <div className="grid gap-5">
           <section className={card}>
-            <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-bold">Databases</h2><p className="mt-1 text-sm text-slate-500">Manage databases and open them in phpMyAdmin. Sign in with the database user&apos;s credentials.</p></div><div className="flex gap-2">{databaseManagerUrl && <Button asChild variant="outline" size="sm"><a href={databaseManagerUrl} target="_blank" rel="noopener noreferrer"><ExternalLink className="h-4 w-4" /> Open phpMyAdmin</a></Button>}<Button size="sm" onClick={() => setOpenForm(openForm === "database" ? null : "database")}><Plus className="h-4 w-4" /> Add database</Button></div></div>
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-bold">Databases</h2><p className="mt-1 text-sm text-slate-500">Manage databases and open them in phpMyAdmin — Manage signs you in as the database&apos;s own user automatically.</p></div><div className="flex gap-2">{databaseManagerUrl && <Button asChild variant="outline" size="sm"><a href={databaseManagerUrl} target="_blank" rel="noopener noreferrer"><ExternalLink className="h-4 w-4" /> Open phpMyAdmin</a></Button>}<Button size="sm" onClick={() => setOpenForm(openForm === "database" ? null : "database")}><Plus className="h-4 w-4" /> Add database</Button></div></div>
             <div className="space-y-3">
               {((data.items as DatabaseItem[]) ?? []).map((item) => (
                 <div
@@ -212,7 +242,7 @@ export function SiteSectionManager({
                       </p>
                     </div>
                   </div>
-                  <div className="flex items-center gap-1">{databaseManagerUrl && <Button asChild variant="ghost" size="sm"><a href={`${databaseManagerUrl}/index.php?db=${encodeURIComponent(item.name)}`} target="_blank" rel="noopener noreferrer"><ExternalLink className="h-4 w-4" /> Manage</a></Button>}<Button variant="ghost" size="icon" className="opacity-60 transition-opacity hover:opacity-100" onClick={() => act({ action: "delete", name: item.name })}><Trash2 className="h-4 w-4 text-red-500 hover:text-red-600" /></Button></div>
+                  <div className="flex items-center gap-1">{databaseManagerUrl && <Button variant="ghost" size="sm" onClick={() => void openDatabase(item.name)}><ExternalLink className="h-4 w-4" /> Manage</Button>}<Button variant="ghost" size="icon" className="opacity-60 transition-opacity hover:opacity-100" onClick={() => act({ action: "delete", name: item.name })}><Trash2 className="h-4 w-4 text-red-500 hover:text-red-600" /></Button></div>
                 </div>
               ))}
               {!data.items?.length && (
