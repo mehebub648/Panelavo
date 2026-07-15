@@ -21,6 +21,9 @@
 #   PANEL_DOMAIN=panel.example.com   panel site domain
 #                                    (default panel.<ip>.<base-domain>, which
 #                                    the wildcard record already covers)
+#   DB_MANAGER_DOMAIN=...            database manager (phpMyAdmin) site domain
+#                                    (default database.<ip>.<base-domain>,
+#                                    covered by the same wildcard record)
 #   PANEL_SITE_USER=panelavo         CloudPanel site/system user for panelavo
 #   ADMIN_USER=admin                 Super Admin username
 #   ADMIN_PASSWORD=...               Super Admin password (default random)
@@ -180,8 +183,11 @@ if [ -t 0 ]; then
   fi
 fi
 PANEL_BASE_DOMAIN="${PANEL_BASE_DOMAIN:-$DEFAULT_BASE_DOMAIN}"
-# The panel rides the same wildcard as the sites it manages.
+# The panel rides the same wildcard as the sites it manages, and so does the
+# database manager (a standalone phpMyAdmin with its own trusted certificate,
+# replacing links into CloudPanel's self-signed, firewalled port 8443).
 PANEL_DOMAIN="${PANEL_DOMAIN:-panel.${SERVER_IP}.${PANEL_BASE_DOMAIN}}"
+DB_MANAGER_DOMAIN="${DB_MANAGER_DOMAIN:-database.${SERVER_IP}.${PANEL_BASE_DOMAIN}}"
 
 if [ "${PANEL_BASE_DOMAIN}" = "${DEFAULT_BASE_DOMAIN}" ]; then
   log "Registering IP ${SERVER_IP} with ippointer.mehebub.com ..."
@@ -323,6 +329,78 @@ fi
 id "${SITE_USER}" >/dev/null 2>&1 || die "System user ${SITE_USER} was not created by CloudPanel."
 
 # ---------------------------------------------------------------------------
+# 7b. Database manager: a standalone phpMyAdmin in its own CloudPanel PHP
+#     site on database.<ip>.<base>. The wildcard record already covers the
+#     domain, so it gets a real Let's Encrypt certificate in step 12 and the
+#     panel's database links never touch CloudPanel's self-signed, firewalled
+#     port 8443. Users sign in with their own database credentials, so MySQL
+#     itself enforces per-site scope. Failures only warn: the panel works
+#     without the manager, its database links are simply hidden.
+# ---------------------------------------------------------------------------
+DB_MANAGER_PROVISIONED=false
+DB_MANAGER_USER="${DB_MANAGER_USER:-${SITE_USER:0:28}-db}"
+DB_MANAGER_ROOT="/home/${DB_MANAGER_USER}/htdocs/${DB_MANAGER_DOMAIN}"
+# Prefer the newest PHP no later than 8.4: phpMyAdmin's support for the
+# newest PHP series lags, and a too-new runtime only produces deprecation
+# noise. Fall back to the newest installed version if nothing older exists.
+PHP_SITE_VERSION="$(ls -1 /etc/php 2>/dev/null | grep -E '^[0-9]+\.[0-9]+$' | sort -V | awk -v max=8.4 'BEGIN{split(max,m,".")} {split($0,v,"."); if (v[1]<m[1] || (v[1]==m[1] && v[2]<=m[2])) last=$0} END{print last}' || true)"
+[ -n "${PHP_SITE_VERSION}" ] || PHP_SITE_VERSION="$(ls -1 /etc/php 2>/dev/null | grep -E '^[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)"
+if [ -z "${PHP_SITE_VERSION}" ]; then
+  warn "No CloudPanel PHP runtime found under /etc/php — skipping the phpMyAdmin database manager."
+else
+  if [ -d "${DB_MANAGER_ROOT}" ]; then
+    log "Database manager site ${DB_MANAGER_DOMAIN} already exists — skipping site creation."
+  else
+    log "Creating PHP site ${DB_MANAGER_DOMAIN} for the database manager (PHP ${PHP_SITE_VERSION}) ..."
+    clpctl site:add:php \
+      --domainName="${DB_MANAGER_DOMAIN}" \
+      --phpVersion="${PHP_SITE_VERSION}" \
+      --vhostTemplate='Generic' \
+      --siteUser="${DB_MANAGER_USER}" \
+      --siteUserPassword="$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 16)!Aa1" \
+      || warn "Could not create ${DB_MANAGER_DOMAIN}; the panel's database Manage links will stay hidden."
+  fi
+  if [ -d "${DB_MANAGER_ROOT}" ] && [ ! -f "${DB_MANAGER_ROOT}/config.inc.php" ]; then
+    log "Installing phpMyAdmin into ${DB_MANAGER_ROOT} ..."
+    PMA_TMP="$(mktemp -d)"
+    if curl -fsSL --max-time 300 https://www.phpmyadmin.net/downloads/phpMyAdmin-latest-all-languages.tar.gz -o "${PMA_TMP}/pma.tar.gz" \
+      && tar -xzf "${PMA_TMP}/pma.tar.gz" -C "${PMA_TMP}"; then
+      PMA_DIR="$(find "${PMA_TMP}" -mindepth 1 -maxdepth 1 -type d -name 'phpMyAdmin-*' | head -1)"
+      if [ -n "${PMA_DIR}" ]; then
+        rm -rf "${DB_MANAGER_ROOT:?}"/* 2>/dev/null || true
+        rsync -a "${PMA_DIR}/" "${DB_MANAGER_ROOT}/"
+        mkdir -p "${DB_MANAGER_ROOT}/tmp"
+        PMA_SECRET="$(openssl rand -base64 48 | tr -dc 'a-zA-Z0-9' | head -c 32)"
+        # Cookie auth against local MySQL only; no root logins, no arbitrary
+        # servers. Database users created from the panel sign in directly.
+        cat > "${DB_MANAGER_ROOT}/config.inc.php" <<PMACONF
+<?php
+declare(strict_types=1);
+\$cfg['blowfish_secret'] = '${PMA_SECRET}';
+\$i = 1;
+\$cfg['Servers'][\$i]['auth_type'] = 'cookie';
+\$cfg['Servers'][\$i]['host'] = '127.0.0.1';
+\$cfg['Servers'][\$i]['AllowNoPassword'] = false;
+\$cfg['Servers'][\$i]['AllowRoot'] = false;
+\$cfg['AllowArbitraryServer'] = false;
+\$cfg['TempDir'] = __DIR__ . '/tmp';
+\$cfg['VersionCheck'] = false;
+PMACONF
+        chown -R "${DB_MANAGER_USER}:${DB_MANAGER_USER}" "${DB_MANAGER_ROOT}"
+        chmod 600 "${DB_MANAGER_ROOT}/config.inc.php"
+        log "phpMyAdmin installed for ${DB_MANAGER_DOMAIN}."
+      else
+        warn "The phpMyAdmin archive had an unexpected layout; skipping the database manager."
+      fi
+    else
+      warn "Could not download phpMyAdmin; the panel's database Manage links will stay hidden."
+    fi
+    rm -rf "${PMA_TMP}"
+  fi
+  [ -f "${DB_MANAGER_ROOT}/config.inc.php" ] && DB_MANAGER_PROVISIONED=true
+fi
+
+# ---------------------------------------------------------------------------
 # 8. Root-owned CloudPanel broker and narrow sudo access
 # ---------------------------------------------------------------------------
 BROKER_ROOT="/usr/local/libexec/panelavo"
@@ -385,6 +463,12 @@ CREDENTIALS_ENCRYPTION_KEY=$(openssl rand -base64 48 | tr -d '\n')
 SESSION_MAX_AGE_SECONDS=3600
 ${PANEL_BASE_DOMAIN:+PANEL_BASE_DOMAIN=${PANEL_BASE_DOMAIN}}
 EOF
+fi
+# Record where the database manager actually lives so the panel's links keep
+# working even if the base domain is changed later. Idempotent for reruns and
+# for installs whose .env.local predates the database manager.
+if [ "${DB_MANAGER_PROVISIONED}" = "true" ] && ! grep -q '^DATABASE_MANAGER_URL=' "${SITE_ROOT}/.env.local"; then
+  echo "DATABASE_MANAGER_URL=https://${DB_MANAGER_DOMAIN}" >> "${SITE_ROOT}/.env.local"
 fi
 mkdir -p "${SITE_ROOT}/.data"
 chown -R "${SITE_USER}:${SITE_USER}" "${SITE_ROOT}"
@@ -499,6 +583,15 @@ if [ -n "${PANEL_BASE_DOMAIN}" ]; then
       warn "Retry later with: clpctl lets-encrypt:install:certificate --domainName=${PANEL_DOMAIN}"
       PANEL_URL="https://${PANEL_DOMAIN}"
     fi
+    if [ "${DB_MANAGER_PROVISIONED}" = "true" ]; then
+      log "Issuing a Let's Encrypt certificate for ${DB_MANAGER_DOMAIN} ..."
+      if clpctl lets-encrypt:install:certificate --domainName="${DB_MANAGER_DOMAIN}" >/dev/null 2>&1; then
+        log "Certificate installed — the database manager is served on https://${DB_MANAGER_DOMAIN}"
+      else
+        warn "Let's Encrypt issuance failed for ${DB_MANAGER_DOMAIN}; browsers will warn until one is issued."
+        warn "Retry later with: clpctl lets-encrypt:install:certificate --domainName=${DB_MANAGER_DOMAIN}"
+      fi
+    fi
   else
     warn "The wildcard *.${SERVER_IP}.${PANEL_BASE_DOMAIN} does not resolve here yet."
     warn "The panel will show a setup screen until it does; SSL for ${PANEL_DOMAIN} can then be issued with:"
@@ -548,6 +641,7 @@ cat <<EOF
  panelavo setup complete
 ============================================================
  Panel address:      ${PANEL_URL}
+ Database manager:   $([ "${DB_MANAGER_PROVISIONED}" = "true" ] && echo "https://${DB_MANAGER_DOMAIN}" || echo "(not provisioned)")
  Recovery tunnel:   ssh -L ${APP_PORT}:127.0.0.1:${APP_PORT} root@${SERVER_IP}
  CloudPanel:         https://127.0.0.1:8443 (firewall rule prepared; use an SSH tunnel)
 

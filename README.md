@@ -14,9 +14,9 @@ cd panelavo
 sudo bash setup.sh
 ```
 
-The script detects the OS, installs CloudPanel if it is missing, creates the initial panelavo Super Admin using CloudPanel's `admin` role, installs the latest Node.js and publishes a non-root-readable runtime under `/usr/local/lib/panelavo-node`, installs a shared PM2 into `/usr/local`, installs and verifies the root-owned allow-listed CloudPanel broker under `/usr/local/libexec/panelavo`, creates a CloudPanel Node.js site, deploys and builds panelavo inside it, and hosts it with PM2 with systemd persistence across reboots. Corepack is optional; setup uses the pinned pnpm release through `npx` when Node.js does not bundle Corepack. It updates an already-active UFW firewall, but never activates an inactive firewall during remote setup unless `ENABLE_UFW=true` is explicitly supplied.
+The script detects the OS, installs CloudPanel if it is missing, creates the initial panelavo Super Admin using CloudPanel's `admin` role, installs the latest Node.js and publishes a non-root-readable runtime under `/usr/local/lib/panelavo-node`, installs a shared PM2 into `/usr/local`, installs and verifies the root-owned allow-listed CloudPanel broker under `/usr/local/libexec/panelavo`, creates a CloudPanel Node.js site, deploys and builds panelavo inside it, and hosts it with PM2 with systemd persistence across reboots. It also provisions a standalone phpMyAdmin database manager as its own CloudPanel PHP site on `database.<ip>.<base-domain>` (recorded in `DATABASE_MANAGER_URL`) with a Let's Encrypt certificate, so the panel's database links never touch CloudPanel's self-signed, firewalled port 8443; users sign in there with the database user's own credentials. Corepack is optional; setup uses the pinned pnpm release through `npx` when Node.js does not bundle Corepack. It updates an already-active UFW firewall, but never activates an inactive firewall during remote setup unless `ENABLE_UFW=true` is explicitly supplied.
 
-When it finishes, it prints the HTTPS panel URL and Super Admin credentials. The Next.js process listens only on `127.0.0.1:10443`; public authentication always passes through the CloudPanel/Nginx TLS vhost. For emergency recovery, tunnel the private listener with `ssh -L 10443:127.0.0.1:10443 root@<server-ip>` and browse to `http://127.0.0.1:10443`. By default, the CloudPanel site/system user is `panelavo`. The existing `ADMIN_USER`, `ADMIN_PASSWORD`, and `ADMIN_EMAIL` environment names configure this Super Admin for backward compatibility. Other overrides include `PANEL_DOMAIN`, `PANEL_BASE_DOMAIN`, `PANEL_SITE_USER`, `DB_ENGINE`, and `ENABLE_UFW`. Example:
+When it finishes, it prints the HTTPS panel URL and Super Admin credentials. The Next.js process listens only on `127.0.0.1:10443`; public authentication always passes through the CloudPanel/Nginx TLS vhost. For emergency recovery, tunnel the private listener with `ssh -L 10443:127.0.0.1:10443 root@<server-ip>` and browse to `http://127.0.0.1:10443`. By default, the CloudPanel site/system user is `panelavo`. The existing `ADMIN_USER`, `ADMIN_PASSWORD`, and `ADMIN_EMAIL` environment names configure this Super Admin for backward compatibility. Other overrides include `PANEL_DOMAIN`, `PANEL_BASE_DOMAIN`, `DB_MANAGER_DOMAIN`, `PANEL_SITE_USER`, `DB_ENGINE`, and `ENABLE_UFW`. Example:
 
 ```bash
 sudo PANEL_DOMAIN=panelavo.example.com PANEL_BASE_DOMAIN=example.com bash setup.sh
@@ -222,7 +222,8 @@ PHP versions are discovered from `/etc/php`. CloudPanel 2.5.4 compatibility fall
 4. Test an admin, site manager, restricted user, MFA user, and invalid password.
 5. Confirm the restricted account sees exactly its assigned sites and cannot call `POST /api/sites`.
 6. Create a disposable site of each supported type, confirm it appears, then remove it through the original CloudPanel UI.
-7. Confirm the original CloudPanel interface on port 8443 still works.
+7. Confirm the original CloudPanel interface on port 8443 still works (over an SSH tunnel when the firewall rule is active).
+8. Confirm the database manager at `https://database.<ip>.<base-domain>` serves phpMyAdmin with a trusted certificate and accepts a database user's credentials.
 
 ## Commands
 

@@ -53,10 +53,14 @@ export function SiteSectionManager({
   domain,
   section,
   initialData,
+  databaseManagerUrl,
 }: {
   domain: string;
   section: string;
   initialData: Data;
+  // Dedicated phpMyAdmin site (database.<ip>.<base>) with a trusted
+  // certificate; replaces CloudPanel's self-signed, firewalled :8443/pma.
+  databaseManagerUrl?: string | null;
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
@@ -64,7 +68,6 @@ export function SiteSectionManager({
   const data = initialData;
   const [openForm, setOpenForm] = useState<string | null>(null);
   const [logViewer, setLogViewer] = useState<null | { name: string; content: string; truncated?: boolean }>(null);
-  const [cloudPanelOrigin, setCloudPanelOrigin] = useState("");
   const [editorContent, setEditorContent] = useState(String(initialData.content ?? ""));
   const [savedEditorContent, setSavedEditorContent] = useState(String(initialData.content ?? ""));
 
@@ -113,7 +116,6 @@ export function SiteSectionManager({
     }
   }
   useEffect(() => {
-    setCloudPanelOrigin(`https://${window.location.hostname}:8443`);
     void preloadCodeEditor().catch(() => undefined);
     function shortcut(event: KeyboardEvent) {
       if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
@@ -194,7 +196,7 @@ export function SiteSectionManager({
       return (
         <div className="grid gap-5">
           <section className={card}>
-            <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-bold">Databases</h2><p className="mt-1 text-sm text-slate-500">Manage databases and open them in phpMyAdmin.</p></div><div className="flex gap-2"><Button asChild variant="outline" size="sm" className={!cloudPanelOrigin ? "pointer-events-none opacity-50" : ""}><a href={`${cloudPanelOrigin}/pma`} target="_blank" rel="noopener noreferrer"><ExternalLink className="h-4 w-4" /> Open phpMyAdmin</a></Button><Button size="sm" onClick={() => setOpenForm(openForm === "database" ? null : "database")}><Plus className="h-4 w-4" /> Add database</Button></div></div>
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-bold">Databases</h2><p className="mt-1 text-sm text-slate-500">Manage databases and open them in phpMyAdmin. Sign in with the database user&apos;s credentials.</p></div><div className="flex gap-2">{databaseManagerUrl && <Button asChild variant="outline" size="sm"><a href={databaseManagerUrl} target="_blank" rel="noopener noreferrer"><ExternalLink className="h-4 w-4" /> Open phpMyAdmin</a></Button>}<Button size="sm" onClick={() => setOpenForm(openForm === "database" ? null : "database")}><Plus className="h-4 w-4" /> Add database</Button></div></div>
             <div className="space-y-3">
               {((data.items as DatabaseItem[]) ?? []).map((item) => (
                 <div
@@ -210,7 +212,7 @@ export function SiteSectionManager({
                       </p>
                     </div>
                   </div>
-                  <div className="flex items-center gap-1"><Button asChild variant="ghost" size="sm"><a href={`${cloudPanelOrigin}/pma/${encodeURIComponent(domain)}/${encodeURIComponent(item.users?.[0] ?? "")}`} target="_blank" rel="noopener noreferrer"><ExternalLink className="h-4 w-4" /> Manage</a></Button><Button variant="ghost" size="icon" className="opacity-60 transition-opacity hover:opacity-100" onClick={() => act({ action: "delete", name: item.name })}><Trash2 className="h-4 w-4 text-red-500 hover:text-red-600" /></Button></div>
+                  <div className="flex items-center gap-1">{databaseManagerUrl && <Button asChild variant="ghost" size="sm"><a href={`${databaseManagerUrl}/index.php?db=${encodeURIComponent(item.name)}`} target="_blank" rel="noopener noreferrer"><ExternalLink className="h-4 w-4" /> Manage</a></Button>}<Button variant="ghost" size="icon" className="opacity-60 transition-opacity hover:opacity-100" onClick={() => act({ action: "delete", name: item.name })}><Trash2 className="h-4 w-4 text-red-500 hover:text-red-600" /></Button></div>
                 </div>
               ))}
               {!data.items?.length && (

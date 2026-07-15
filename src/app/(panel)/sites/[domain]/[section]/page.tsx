@@ -12,6 +12,7 @@ import { EnvManager, type EnvSectionData } from "@/components/sites/env-manager"
 import { TerminalManager, type TerminalData } from "@/components/sites/terminal-manager";
 import { BackupsManager, type BackupsData } from "@/components/sites/backups-manager";
 import { getServerPublicIp } from "@/server/network/server-ip";
+import { getDatabaseManagerUrl } from "@/server/sites/database-manager";
 import { getSiteMeta } from "@/server/sites/site-meta";
 import { SERVICE_SECTIONS } from "@/components/sites/site-sections";
 import type { OperationsData } from "@/types/operations";
@@ -246,6 +247,10 @@ export default async function SiteSectionPage({
     domain,
     section,
   );
+  // The database manager (standalone phpMyAdmin on its own certified
+  // subdomain) replaces links into CloudPanel's self-signed port-8443 portal.
+  const databaseManagerUrl =
+    section === "databases" ? await getDatabaseManagerUrl() : null;
   if (section === "git") return <div className="w-full space-y-5"><div><h2 className="text-2xl font-bold tracking-tight text-ink">Git</h2><p className="mt-1 text-sm text-slate-500">{descriptions.git}</p></div><GitManager domain={domain} initialData={data as Parameters<typeof GitManager>[0]["initialData"]} /></div>;
   return (
     <div className="w-full space-y-5">
@@ -259,6 +264,7 @@ export default async function SiteSectionPage({
         domain={domain}
         section={section}
         initialData={(data ?? {}) as Record<string, unknown>}
+        databaseManagerUrl={databaseManagerUrl}
       />
     </div>
   );

@@ -12,16 +12,22 @@ import {
 } from "@/server/sites/site-type-overlay";
 import { removeSiteMeta } from "@/server/sites/site-meta";
 import { isPanelSelfDomain } from "@/server/sites/panel-self";
+import { isDatabaseManagerDomain } from "@/server/sites/database-manager";
 import { normalizeOperationsData } from "@/server/sites/site-operations";
 import type { RawOperationsData } from "@/types/operations";
 import { AppError } from "./errors";
 import { LiveCloudPanelClient } from "./live-client";
 
-// The CloudPanel site hosting this panel is invisible to the panel: it is
-// filtered from listings and every per-site operation on it is rejected, so
-// it cannot be edited, reassigned, or deleted from the UI or the API.
+// The CloudPanel sites hosting this panel and the database manager
+// (phpMyAdmin) are invisible to the panel: they are filtered from listings
+// and every per-site operation on them is rejected, so they cannot be
+// edited, reassigned, or deleted from the UI or the API.
+function isPanelInfrastructureDomain(domain: string) {
+  return isPanelSelfDomain(domain) || isDatabaseManagerDomain(domain);
+}
+
 function assertNotPanelSelf(domain: string) {
-  if (isPanelSelfDomain(domain))
+  if (isPanelInfrastructureDomain(domain))
     throw new AppError("SITE_NOT_FOUND", "The site could not be found.", 404);
 }
 
@@ -97,13 +103,13 @@ function withPanelRoles(inner: CloudPanelClient): CloudPanelClient {
     listSites: async (session) =>
       withSiteTypes(
         (await inner.listSites(session)).filter(
-          (site) => !isPanelSelfDomain(site.domain),
+          (site) => !isPanelInfrastructureDomain(site.domain),
         ),
       ),
     manageUser: inner.manageUser.bind(inner),
     getSiteCreationOptions: inner.getSiteCreationOptions.bind(inner),
     createSite: async (session, input) => {
-      if (isPanelSelfDomain(input.domain))
+      if (isPanelInfrastructureDomain(input.domain))
         throw new AppError(
           "DOMAIN_ALREADY_EXISTS",
           "This domain is already in use.",

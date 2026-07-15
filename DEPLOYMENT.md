@@ -39,6 +39,10 @@ the panel's site user from the application directory
      `X-Forwarded-Host` value.
    - The server's public IP for DNS "pointed" checks is auto-detected
      (`SERVER_PUBLIC_IP` still works as an optional override).
+   - The Databases section links to the standalone phpMyAdmin database
+     manager. `DATABASE_MANAGER_URL` (written by `setup.sh` after it
+     provisions the site) overrides the derived
+     `https://database.<ip>.<base-domain>` address.
    - The session cookie's `Secure` flag follows Nginx's trusted
      `X-Forwarded-Proto`. Public login is HTTPS-only; port 10443 is bound to
      loopback and is available only through an explicit SSH recovery tunnel.
