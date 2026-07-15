@@ -11,6 +11,7 @@ LOCK_DIR="${DATA_DIR}/update.lock"
 TEMP_DIR=""
 LOCK_ACQUIRED=false
 BROKER_PATH="/usr/local/libexec/panelavo/panelavo-broker"
+FAILURE_MESSAGE=""
 
 mkdir -p "${DATA_DIR}"
 exec >>"${LOG_FILE}" 2>&1
@@ -28,31 +29,42 @@ fs.renameSync(process.env.STATE_FILE + '.tmp', process.env.STATE_FILE);
 NODE
 }
 cleanup() { [ -n "${TEMP_DIR}" ] && rm -rf "${TEMP_DIR}"; [ "${LOCK_ACQUIRED}" = true ] && rmdir "${LOCK_DIR}" 2>/dev/null || true; }
-failed() { code=$?; write_state failed "Update failed. Review ${LOG_FILE}." || true; cleanup; exit "$code"; }
+failed() { code=$?; write_state failed "${FAILURE_MESSAGE:-Update failed. Review ${LOG_FILE}.}" || true; cleanup; exit "$code"; }
+abort() { FAILURE_MESSAGE="$1"; echo "$1"; return 1; }
 trap failed ERR
 trap cleanup EXIT
 
-[[ "${REPOSITORY}" =~ ^https://[^[:space:]]+\.git$ ]] || { echo "Invalid repository URL"; false; }
-[[ "${BRANCH}" =~ ^[A-Za-z0-9._/-]+$ ]] || { echo "Invalid branch"; false; }
-[ -d "${APP_ROOT}/.data" ] && [ -f "${APP_ROOT}/package.json" ] || { echo "Invalid application root"; false; }
-mkdir "${LOCK_DIR}" 2>/dev/null || { echo "An update is already running"; false; }
+[[ "${REPOSITORY}" =~ ^https://[^[:space:]]+\.git$ ]] || abort "The configured update repository is invalid."
+[[ "${BRANCH}" =~ ^[A-Za-z0-9._/-]+$ ]] || abort "The configured update branch is invalid."
+[ -d "${APP_ROOT}/.data" ] && [ -f "${APP_ROOT}/package.json" ] || abort "The Panelavo application root is invalid."
+mkdir "${LOCK_DIR}" 2>/dev/null || abort "An update is already running."
 LOCK_ACQUIRED=true
 write_state updating
+UNWRITABLE_DIR="$(find "${APP_ROOT}" -path "${APP_ROOT}/.data" -prune -o -type d ! -writable -print -quit 2>/dev/null)" \
+  || abort "Panelavo could not verify application directory permissions. Run 'sudo bash setup.sh' from a trusted checkout before updating."
+[ -z "${UNWRITABLE_DIR}" ] \
+  || abort "Panelavo application files are not writable by the panel site user. Run 'sudo bash setup.sh' from a trusted checkout before updating."
 TEMP_DIR="$(mktemp -d "${DATA_DIR}/update.XXXXXX")"
 SOURCE="${TEMP_DIR}/source"
 echo "[$(date -Is)] Fetching ${REPOSITORY} (${BRANCH})"
 /usr/bin/git clone --depth 1 --single-branch --branch "${BRANCH}" -- "${REPOSITORY}" "${SOURCE}"
-[ "$(node -p "require('${SOURCE}/package.json').name")" = "panelavo" ] || { echo "Repository is not Panelavo"; false; }
-[ -f "${SOURCE}/ecosystem.config.js" ] && [ -f "${SOURCE}/pnpm-lock.yaml" ] || { echo "Required application files are missing"; false; }
+[ "$(node -p "require('${SOURCE}/package.json').name")" = "panelavo" ] || abort "The configured repository is not a Panelavo release."
+[ -f "${SOURCE}/ecosystem.config.js" ] && [ -f "${SOURCE}/pnpm-lock.yaml" ] || abort "The release is missing required Panelavo application files."
 COMMIT="$(/usr/bin/git -C "${SOURCE}" rev-parse HEAD)"
 
 # Host migrations are root-owned and never run from a configurable update
 # repository. Refuse the release before build/deploy unless its required
 # broker protocol is already installed and healthy.
 EXPECTED_BROKER_PROTOCOL="$(node -p "require('${SOURCE}/package.json').panelavo?.brokerProtocolVersion ?? ''")"
-[[ "${EXPECTED_BROKER_PROTOCOL}" =~ ^[0-9]+$ ]] || { echo "Release does not declare a broker protocol version"; false; }
-[ -x "${BROKER_PATH}" ] || { echo "This update requires the root-owned Panelavo broker. Run 'sudo bash setup.sh' from a trusted checkout before updating."; false; }
-BROKER_HEALTH="$(printf '{\"protocolVersion\":%s,\"action\":\"broker-health\"}' "${EXPECTED_BROKER_PROTOCOL}" | /usr/bin/sudo -n "${BROKER_PATH}")" || { echo "The installed Panelavo broker is unavailable. Run 'sudo bash setup.sh' from a trusted checkout."; false; }
+[[ "${EXPECTED_BROKER_PROTOCOL}" =~ ^[0-9]+$ ]] || abort "The release does not declare a valid broker protocol version."
+[ -x "${BROKER_PATH}" ] || abort "This update requires the root-owned Panelavo broker. Run 'sudo bash setup.sh' from a trusted checkout before updating."
+if ! BROKER_HEALTH="$(printf '{\"protocolVersion\":%s,\"action\":\"broker-health\"}' "${EXPECTED_BROKER_PROTOCOL}" | /usr/bin/sudo -n "${BROKER_PATH}")"; then
+  if [[ "${BROKER_HEALTH}" == *'"code":"BROKER_PROTOCOL_MISMATCH"'* ]]; then
+    abort "The installed Panelavo broker is incompatible with this release. Run 'sudo bash setup.sh' from a trusted checkout."
+  fi
+  abort "The installed Panelavo broker is unavailable. Run 'sudo bash setup.sh' from a trusted checkout."
+fi
+FAILURE_MESSAGE="The installed Panelavo broker is incompatible with this release. Run 'sudo bash setup.sh' from a trusted checkout."
 BROKER_HEALTH="${BROKER_HEALTH}" EXPECTED_BROKER_PROTOCOL="${EXPECTED_BROKER_PROTOCOL}" node <<'NODE'
 const result = JSON.parse(process.env.BROKER_HEALTH || '{}');
 const data = result.data || {};
@@ -61,11 +73,12 @@ if (!result.ok || data.protocolVersion !== Number(process.env.EXPECTED_BROKER_PR
   process.exit(1);
 }
 NODE
+FAILURE_MESSAGE=""
 
 echo "[$(date -Is)] Installing and building ${COMMIT}"
 (cd "${SOURCE}" && npx -y pnpm@10.12.1 install --frozen-lockfile && npx -y pnpm@10.12.1 build)
 echo "[$(date -Is)] Deploying staged build"
-/usr/bin/rsync -a --delete --exclude .git --exclude .data --exclude .env.local "${SOURCE}/" "${APP_ROOT}/"
+/usr/bin/rsync -a --no-owner --no-group --delete --exclude .git --exclude .data --exclude .env.local "${SOURCE}/" "${APP_ROOT}/"
 INSTALLED_COMMIT="${COMMIT}" STATE_FILE="${STATE_FILE}" APP_ROOT="${APP_ROOT}" node <<'NODE'
 const fs = require('node:fs'); const state = JSON.parse(fs.readFileSync(process.env.STATE_FILE, 'utf8'));
 state.installedCommit = process.env.INSTALLED_COMMIT; state.remoteCommit = process.env.INSTALLED_COMMIT;

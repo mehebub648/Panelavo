@@ -22,7 +22,7 @@ When it finishes, it prints the HTTPS panel URL and Super Admin credentials. The
 sudo PANEL_DOMAIN=panelavo.example.com PANEL_BASE_DOMAIN=example.com bash setup.sh
 ```
 
-The script is idempotent: re-running skips resources that already exist.
+The script is idempotent: re-running skips resources that already exist. If the configured Super Admin email already belongs to an active CloudPanel Admin under a different username, setup reuses that account instead of attempting a duplicate user; username or email collisions with non-Admin or inactive accounts stop with an explicit configuration error.
 
 ### SSH lockout protection and recovery
 
@@ -193,7 +193,7 @@ The file manager accepts individual files up to 64 MiB. Because uploads are base
 
 Super Admins can check and install Panelavo updates from Settings. The default source is the public `https://github.com/mehebub648/Panelavo.git` repository on `main`; the public HTTPS repository URL can be changed and is persisted in `.data/panel-settings.json`. Panelavo clones into a private staging directory, validates the release's declared broker protocol against the installed broker, installs the locked dependencies, and requires a successful production build before synchronizing the release. `.data` and `.env.local` are preserved. Only the `panelavo` PM2 process reloads, so managed websites are not restarted.
 
-The updater intentionally runs as the panel site user, not root. While an update is queued or running, Panelavo displays a maintenance screen and rejects normal authenticated API operations; panel pages remain renderable behind that screen so maintenance mode never becomes a server-rendering error. Hosted websites remain online. Before asking PM2 to reload, the worker records a PID-bound `reloading` handoff and cleans its staging lock. The replacement Panelavo process marks the handoff complete and reloads the browser. Host-level migrations are never executed automatically: a missing or incompatible broker blocks before build and deployment and instructs the operator to run trusted `setup.sh`. Update progress and failures persist in `.data/update-state.json` and `.data/update.log`.
+The updater intentionally runs as the panel site user, not root. While an update is queued or running, Panelavo displays a maintenance screen and rejects normal authenticated API operations; panel pages remain renderable behind that screen so maintenance mode never becomes a server-rendering error. Hosted websites remain online. Before cloning and building, the updater verifies that the application directories are writable by the panel site user; trusted `setup.sh` repairs legacy root-ownership drift before deployment. Release synchronization never attempts to preserve staged owner or group metadata. Before asking PM2 to reload, the worker records a PID-bound `reloading` handoff and cleans its staging lock. The replacement Panelavo process marks the handoff complete and reloads the browser. Host-level migrations are never executed automatically: a missing or incompatible broker blocks before build and deployment and displays the trusted `setup.sh` recovery instruction directly in Settings. Expected validation failures are shown there as well; unexpected build or deployment failures continue to point to `.data/update.log`. Update progress and failures persist in `.data/update-state.json`.
 
 The installer grants the panel service user one exact passwordless sudo command:
 

@@ -242,8 +242,38 @@ fi
 # ---------------------------------------------------------------------------
 # 5. Initial Super Admin (backed by CloudPanel's admin role)
 # ---------------------------------------------------------------------------
-if clpctl user:list 2>/dev/null | awk -F'|' 'NR>3 {gsub(/ /,"",$2); print $2}' | grep -qx "${ADMIN_USER}"; then
+CLOUDPANEL_USERS="$(clpctl user:list 2>/dev/null)" || die "Could not list existing CloudPanel users."
+EXISTING_USERNAME_ROLE="$(printf '%s\n' "${CLOUDPANEL_USERS}" | awk -F'|' -v wanted="${ADMIN_USER}" '
+  function trim(value) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", value); return value }
+  /^\|/ { username=trim($2); role=tolower(trim($6)); if (username == wanted) { print role; exit } }
+')"
+EXISTING_USERNAME_STATUS="$(printf '%s\n' "${CLOUDPANEL_USERS}" | awk -F'|' -v wanted="${ADMIN_USER}" '
+  function trim(value) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", value); return value }
+  /^\|/ { username=trim($2); status=tolower(trim($7)); if (username == wanted) { print status; exit } }
+')"
+EXISTING_EMAIL_USER="$(printf '%s\n' "${CLOUDPANEL_USERS}" | awk -F'|' -v wanted="${ADMIN_EMAIL}" '
+  function trim(value) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", value); return value }
+  /^\|/ { username=trim($2); email=trim($5); if (email == wanted) { print username; exit } }
+')"
+EXISTING_EMAIL_ROLE="$(printf '%s\n' "${CLOUDPANEL_USERS}" | awk -F'|' -v wanted="${ADMIN_EMAIL}" '
+  function trim(value) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", value); return value }
+  /^\|/ { email=trim($5); role=tolower(trim($6)); if (email == wanted) { print role; exit } }
+')"
+EXISTING_EMAIL_STATUS="$(printf '%s\n' "${CLOUDPANEL_USERS}" | awk -F'|' -v wanted="${ADMIN_EMAIL}" '
+  function trim(value) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", value); return value }
+  /^\|/ { email=trim($5); status=tolower(trim($7)); if (email == wanted) { print status; exit } }
+')"
+
+if [ -n "${EXISTING_USERNAME_ROLE}" ]; then
+  [ "${EXISTING_USERNAME_ROLE}" = "admin" ] || die "CloudPanel user '${ADMIN_USER}' already exists without the Admin role. Choose a different ADMIN_USER."
+  [ "${EXISTING_USERNAME_STATUS}" = "active" ] || die "CloudPanel Admin '${ADMIN_USER}' is not active. Activate it or choose a different ADMIN_USER."
   log "Super Admin '${ADMIN_USER}' already exists — leaving the account untouched."
+  ADMIN_PASSWORD="(unchanged)"
+elif [ -n "${EXISTING_EMAIL_USER}" ]; then
+  [ "${EXISTING_EMAIL_ROLE}" = "admin" ] || die "CloudPanel email '${ADMIN_EMAIL}' already belongs to a non-Admin user. Choose a different ADMIN_EMAIL."
+  [ "${EXISTING_EMAIL_STATUS}" = "active" ] || die "CloudPanel Admin '${EXISTING_EMAIL_USER}' is not active. Activate it or choose a different ADMIN_EMAIL."
+  log "Super Admin email '${ADMIN_EMAIL}' already belongs to '${EXISTING_EMAIL_USER}' — reusing that account."
+  ADMIN_USER="${EXISTING_EMAIL_USER}"
   ADMIN_PASSWORD="(unchanged)"
 else
   log "Creating Super Admin '${ADMIN_USER}' in CloudPanel ..."
@@ -481,7 +511,11 @@ log "Root-owned CloudPanel broker installed and verified for ${SITE_USER}."
 # ---------------------------------------------------------------------------
 log "Deploying application files to ${SITE_ROOT} ..."
 mkdir -p "${SITE_ROOT}"
-rsync -a --delete \
+# Repair ownership before syncing so rerunning trusted setup can recover an
+# older installation whose application directories drifted to root ownership.
+# Keep the deployed tree site-user-owned even though setup itself runs as root.
+chown -hR "${SITE_USER}:${SITE_USER}" "${SITE_ROOT}"
+rsync -a --delete --chown="${SITE_USER}:${SITE_USER}" \
   --exclude .git \
   --exclude node_modules \
   --exclude .next \
@@ -506,7 +540,7 @@ if [ "${DB_MANAGER_PROVISIONED}" = "true" ] && ! grep -q '^DATABASE_MANAGER_URL=
   echo "DATABASE_MANAGER_URL=https://${DB_MANAGER_DOMAIN}" >> "${SITE_ROOT}/.env.local"
 fi
 mkdir -p "${SITE_ROOT}/.data"
-chown -R "${SITE_USER}:${SITE_USER}" "${SITE_ROOT}"
+chown -hR "${SITE_USER}:${SITE_USER}" "${SITE_ROOT}"
 chmod 700 "${SITE_ROOT}/.data"
 chmod 600 "${SITE_ROOT}/.env.local"
 
