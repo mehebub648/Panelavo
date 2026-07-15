@@ -113,18 +113,27 @@ describe("site validation", () => {
     expect(createLinkedServiceSchema.safeParse(input).success).toBe(false);
   });
 
-  it("keeps updated document roots inside the website htdocs directory", () => {
+  it("keeps project and serving roots inside the website htdocs directory", () => {
     expect(
-      updateSiteSchema.safeParse({ rootDirectory: "public" }).success,
+      updateSiteSchema.safeParse({
+        applicationRootDirectory: "app",
+        servingDirectory: "app/public",
+      }).success,
     ).toBe(true);
     expect(
       updateSiteSchema.safeParse({ rootDirectory: "apps/web/public" }).success,
     ).toBe(true);
     expect(
-      updateSiteSchema.safeParse({ rootDirectory: "../../etc" }).success,
+      updateSiteSchema.safeParse({ applicationRootDirectory: "../../etc" }).success,
     ).toBe(false);
     expect(
-      updateSiteSchema.safeParse({ rootDirectory: "app/../secret" }).success,
+      updateSiteSchema.safeParse({ servingDirectory: "app/../secret" }).success,
+    ).toBe(false);
+    expect(
+      updateSiteSchema.safeParse({
+        servingDirectory: "public",
+        rootDirectory: "legacy-public",
+      }).success,
     ).toBe(false);
   });
 });

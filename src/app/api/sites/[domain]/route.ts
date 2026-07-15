@@ -10,6 +10,11 @@ import {
   getSiteMeta,
   removeSiteMeta,
 } from "@/server/sites/site-meta";
+import {
+  getSiteRootOverride,
+  removeSiteRootOverride,
+  setSiteRootOverride,
+} from "@/server/sites/site-root-overlay";
 import { AppError } from "@/server/cloudpanel/errors";
 import { autoDeleteDns } from "@/server/network/auto-dns";
 import { getServerPublicIp } from "@/server/network/server-ip";
@@ -23,6 +28,12 @@ export async function PATCH(request: NextRequest, context: Context) {
     const { domain } = await context.params;
     const decodedDomain = decodeURIComponent(domain);
     const input = updateSiteSchema.parse(await request.json());
+    const {
+      applicationRootDirectory,
+      servingDirectory,
+      rootDirectory: legacyServingDirectory,
+      ...otherSettings
+    } = input;
     // Sites with a reserved id treat the app port as that id: moving the port
     // moves the reservation (and validates the target range) first.
     const meta = await getSiteMeta(decodedDomain);
@@ -31,9 +42,24 @@ export async function PATCH(request: NextRequest, context: Context) {
     const site = await getCloudPanelClient().updateSite(
       session.record.cloudPanel,
       decodedDomain,
-      input,
+      {
+        ...otherSettings,
+        applicationRootDirectory,
+        rootDirectory: servingDirectory ?? legacyServingDirectory,
+      },
     );
-    return ok({ site, meta: await getSiteMeta(decodedDomain) });
+    if (applicationRootDirectory !== undefined)
+      await setSiteRootOverride(decodedDomain, applicationRootDirectory);
+    return ok({
+      site: {
+        ...site,
+        applicationRootDirectory:
+          applicationRootDirectory ??
+          (await getSiteRootOverride(decodedDomain)) ??
+          site.rootDirectory,
+      },
+      meta: await getSiteMeta(decodedDomain),
+    });
   } catch (error) {
     return fail(error);
   }
@@ -65,6 +91,7 @@ export async function DELETE(request: NextRequest, context: Context) {
     );
     // Free the reserved id/port so it can be reallocated.
     await removeSiteMeta(decodedDomain).catch(() => undefined);
+    await removeSiteRootOverride(decodedDomain).catch(() => undefined);
 
     // Background DNS cleanup
     void (async () => {

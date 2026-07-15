@@ -14,6 +14,7 @@ import { BackupsManager, type BackupsData } from "@/components/sites/backups-man
 import { getServerPublicIp } from "@/server/network/server-ip";
 import { getDatabaseManagerUrl } from "@/server/sites/database-manager";
 import { getSiteMeta } from "@/server/sites/site-meta";
+import { getSiteRootOverride } from "@/server/sites/site-root-overlay";
 import { SERVICE_SECTIONS } from "@/components/sites/site-sections";
 import type { OperationsData } from "@/types/operations";
 
@@ -34,7 +35,7 @@ const titles: Record<string, string> = {
   logs: "Logs",
 };
 const descriptions: Record<string, string> = {
-  settings: "Runtime, document root, and core website configuration.",
+  settings: "Project root, serving directory, runtime, and core website configuration.",
   domains: "System domain, your own domains, DNS, and SSL for this website.",
   actions: "Deployment readiness, lifecycle controls, scheduled jobs, and logs.",
   vhost: "Review and update the NGINX configuration for this website.",
@@ -42,7 +43,7 @@ const descriptions: Record<string, string> = {
   certificates: "Issue, renew, and review TLS certificates.",
   security: "Control blocked traffic, authentication, proxy access, SSH, and FTP.",
   users: "Manage shell and file-transfer access to this website.",
-  "file-manager": "Browse and organize files in the website root.",
+  "file-manager": "Browse and organize files in the project root.",
   git: "Manage repository status, remotes, branches, commits, pulls, and pushes.",
   terminal: "Run commands as the website's system user, in the browser or over SSH.",
   backups: "Snapshot and restore this website's files and databases.",
@@ -70,7 +71,12 @@ export default async function SiteSectionPage({
     const sites = await cloudPanel.listSites(session.record.cloudPanel);
     const site = sites.find((item) => item.domain === domain);
     if (!site) notFound();
-    const mergedSite = siteMeta ? { ...site, meta: siteMeta } : site;
+    const applicationRootDirectory = await getSiteRootOverride(domain);
+    const mergedSite = {
+      ...site,
+      applicationRootDirectory: applicationRootDirectory ?? site.rootDirectory,
+      ...(siteMeta ? { meta: siteMeta } : {}),
+    };
     const isService = Boolean(siteMeta?.parent);
     // Environment values are secrets: they are only loaded and rendered for
     // users who can already manage this website's files. Linked services run

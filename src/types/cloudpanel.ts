@@ -47,6 +47,7 @@ export interface CloudPanelSite {
   runtimeVersion?: string;
   siteUser?: string;
   application?: string;
+  applicationRootDirectory?: string;
   rootDirectory?: string;
   appPort?: number;
   reverseProxyUrl?: string;
@@ -202,6 +203,7 @@ export interface CloudPanelClient {
     session: CloudPanelSession,
     domain: string,
     input: {
+      applicationRootDirectory?: string;
       rootDirectory?: string;
       runtimeVersion?: string;
       appPort?: number;

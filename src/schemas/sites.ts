@@ -158,23 +158,32 @@ export type ValidCreateLinkedServiceInput = z.infer<
   typeof createLinkedServiceSchema
 >;
 
+const siteDirectory = z
+  .string()
+  .trim()
+  .max(200)
+  .regex(/^\/?[a-zA-Z0-9._/-]*$/, "Use a relative directory path.")
+  .refine(
+    (value) => !value.split("/").includes(".."),
+    "The directory must stay inside this website's htdocs folder.",
+  );
+
 export const updateSiteSchema = z
   .object({
-    rootDirectory: z
-      .string()
-      .trim()
-      .max(200)
-      .regex(/^\/?[a-zA-Z0-9._/-]*$/, "Use a relative directory path.")
-      .refine(
-        (value) => !value.split("/").includes(".."),
-        "The directory must stay inside this website's htdocs folder.",
-      )
-      .optional(),
+    applicationRootDirectory: siteDirectory.optional(),
+    servingDirectory: siteDirectory.optional(),
+    // Backward-compatible API name for the CloudPanel document root.
+    rootDirectory: siteDirectory.optional(),
     runtimeVersion: runtime.optional(),
     appPort: z.coerce.number().int().min(1024).max(65535).optional(),
     reverseProxyUrl: proxyUrl.optional(),
   })
   .strict()
+  .refine(
+    (value) =>
+      value.servingDirectory === undefined || value.rootDirectory === undefined,
+    { message: "Provide servingDirectory or rootDirectory, not both." },
+  )
   .refine((value) => Object.values(value).some((item) => item !== undefined), {
     message: "Provide at least one setting to update.",
   });

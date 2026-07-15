@@ -29,7 +29,7 @@ use App\Site\Updater\StaticSite as StaticSiteUpdater;
 use Symfony\Component\Dotenv\Dotenv;
 
 const CLOUDPANEL_ROOT = '/home/clp/htdocs/app/files';
-const PANELAVO_BROKER_PROTOCOL_VERSION = 4;
+const PANELAVO_BROKER_PROTOCOL_VERSION = 5;
 const PANELAVO_BROKER_MAX_INPUT_BYTES = 100663296;
 const PANELAVO_ROOTLESS_MIGRATION_ROOT = '/var/lib/panelavo/rootless-migrations';
 const PANELAVO_ROOTLESS_MIGRATION_TTL = 86400;
@@ -163,7 +163,7 @@ function safeFileManagerPath(string $base, string $relative, bool $mustExist = t
 function fileManagerListing(Site $site, ?string $relative = null): array
 {
     $base = fileManagerBase($site);
-    $relative ??= 'htdocs/' . trim($site->getRootDirectory(), '/');
+    $relative ??= 'htdocs/' . configuredSiteRootDirectory($site);
     $directory = safeFileManagerPath($base, $relative);
     if (!is_dir($directory)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
     $items = [];
@@ -488,7 +488,7 @@ function createBackup(Site $site, array $operation): array
         'id' => $id,
         'createdAt' => gmdate(DATE_ATOM),
         'siteType' => $site->getType(),
-        'root' => 'htdocs/' . trim((string) $site->getRootDirectory(), '/'),
+        'root' => 'htdocs/' . configuredSiteRootDirectory($site),
         'files' => null,
         'databases' => [],
         'bytes' => 0,
@@ -601,6 +601,27 @@ function siteKeyPair(Site $site): array
     ];
 }
 
+function configuredSiteRootDirectory(Site $site): string
+{
+    global $input;
+    $configured = array_key_exists('applicationRootDirectory', $input)
+        && is_string($input['applicationRootDirectory'])
+        ? $input['applicationRootDirectory']
+        : (string) $site->getRootDirectory();
+    $relative = trim(str_replace('\\', '/', $configured), '/');
+    if (strlen($relative) > 200 || str_contains($relative, "\0")) {
+        respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+    }
+    if ($relative !== '') {
+        foreach (explode('/', $relative) as $part) {
+            if ($part === '' || $part === '.' || $part === '..' || !preg_match('/^[A-Za-z0-9._-]+$/', $part)) {
+                respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+            }
+        }
+    }
+    return $relative;
+}
+
 function siteRootPath(Site $site): string
 {
     $user = (string) $site->getUser();
@@ -610,15 +631,7 @@ function siteRootPath(Site $site): string
     $base = realpath('/home/' . $user . '/htdocs');
     if (!$base || !is_dir($base)) respond(['ok' => false, 'code' => 'SITE_NOT_FOUND']);
 
-    $relative = trim(str_replace('\\', '/', (string) $site->getRootDirectory()), '/');
-    if (str_contains($relative, "\0")) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
-    if ($relative !== '') {
-        foreach (explode('/', $relative) as $part) {
-            if ($part === '' || $part === '.' || $part === '..') {
-                respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
-            }
-        }
-    }
+    $relative = configuredSiteRootDirectory($site);
 
     $candidate = $base . ($relative === '' ? '' : '/' . $relative);
     if (!pathIsContained($candidate, $base)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
@@ -3403,7 +3416,7 @@ function serverInfo(): array
 
 function runGit(Site $site, array $args, bool $allowFailure = false): array
 {
-    $cwd = realpath('/home/' . $site->getUser() . '/htdocs/' . $site->getRootDirectory());
+    $cwd = realpath(siteRootPath($site));
     if (!$cwd) respond(['ok' => false, 'code' => 'SITE_NOT_FOUND']);
     $home = '/home/' . $site->getUser();
     $ssh = $home . '/.ssh';
@@ -3658,7 +3671,7 @@ function gitFileDiff(Site $site, array $change): string
 
 function gitSection(Site $site, ?array $selectedChange = null, ?string $notice = null): array
 {
-    $root = '/home/' . $site->getUser() . '/htdocs/' . $site->getRootDirectory();
+    $root = siteRootPath($site);
     $repo = is_dir($root . '/.git');
     if (!$repo) return ['isRepository' => false, 'path' => $root];
     $branch = trim(runGit($site, ['branch', '--show-current'], true)['stdout']);
@@ -4189,7 +4202,7 @@ try {
                     'home' => '/home/' . $site->getUser(),
                     'root' => siteRootPath($site),
                 ],
-                'cron-jobs' => ['sitePath' => '/home/' . $site->getUser() . '/htdocs/' . $site->getRootDirectory(), 'items' => array_map(fn($item) => ['id' => (string) $item->getId(), 'schedule' => $item->getSchedule(), 'command' => $item->getCommand(), 'expression' => $item->getCrontabExpression()], $site->getCronJobs()->toArray())],
+                'cron-jobs' => ['sitePath' => siteRootPath($site), 'items' => array_map(fn($item) => ['id' => (string) $item->getId(), 'schedule' => $item->getSchedule(), 'command' => $item->getCommand(), 'expression' => $item->getCrontabExpression()], $site->getCronJobs()->toArray())],
                 'logs' => (function () use ($site) {
                     $base = '/home/' . $site->getUser() . '/logs';
                     $files = array_merge(glob($base . '/*') ?: [], glob($base . '/*/*') ?: []);
@@ -4218,9 +4231,9 @@ try {
                 if ($ref !== '' && !preg_match('/^[A-Za-z0-9._\/-]{1,200}$/', $ref)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
                 if ($action === 'clone') {
                     $url = trim((string) ($operation['url'] ?? '')); if (!preg_match('#^(https://|git@)[^\s]+$#', $url)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
-                    // Clone into the configured site root (htdocs/<root directory>),
-                    // creating it first if CloudPanel has not materialized it yet,
-                    // so the repository always lands in the folder the vhost serves.
+                    // Clone into Panelavo's configured application root,
+                    // creating it first when it has not been materialized yet.
+                    // The CloudPanel serving root may be a child such as public/.
                     $rootPath = siteRootPath($site);
                     if (!is_dir($rootPath)) {
                         if (!mkdir($rootPath, 0755, true)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
@@ -4730,6 +4743,9 @@ try {
             [$model, $updater] = siteModel($site);
             $settings = $input['settings'] ?? [];
             $runtimeChanged = false;
+            if (array_key_exists('applicationRootDirectory', $input) && !is_dir(siteRootPath($site))) {
+                respond(['ok' => false, 'code' => 'INVALID_REQUEST', 'message' => 'The root directory does not exist.']);
+            }
             if (array_key_exists('rootDirectory', $settings)) {
                 $root = trim((string) $settings['rootDirectory'], '/');
                 $site->setRootDirectory($root);

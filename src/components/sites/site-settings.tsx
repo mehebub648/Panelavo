@@ -77,7 +77,8 @@ export function SiteSettings({
     setSaved(false);
     const data = new FormData(event.currentTarget);
     const body: Record<string, string | number> = {
-      rootDirectory: String(data.get("rootDirectory") ?? ""),
+      applicationRootDirectory: String(data.get("applicationRootDirectory") ?? ""),
+      servingDirectory: String(data.get("servingDirectory") ?? ""),
     };
     if (["php", "nodejs", "python"].includes(site.type ?? ""))
       body.runtimeVersion = String(data.get("runtimeVersion") ?? "");
@@ -197,14 +198,30 @@ export function SiteSettings({
         </div>
         <div className="grid gap-5 p-5 sm:grid-cols-2 sm:p-6">
           <div>
-            <Label htmlFor="rootDirectory" className="font-medium text-slate-700">Root directory</Label>
+            <Label htmlFor="applicationRootDirectory" className="font-medium text-slate-700">Root directory</Label>
             <Input
-              id="rootDirectory"
-              name="rootDirectory"
+              id="applicationRootDirectory"
+              name="applicationRootDirectory"
+              defaultValue={site.applicationRootDirectory ?? site.rootDirectory}
+              disabled={!user.canCreateSites}
+              className="mt-1.5 transition-all focus:ring-2 focus:ring-panel-500/50 bg-white/70"
+            />
+            <p className="mt-1.5 text-xs text-slate-400">
+              Project workspace used by Git, File Manager, Terminal, Operations, Environment, and backups.
+            </p>
+          </div>
+          <div>
+            <Label htmlFor="servingDirectory" className="font-medium text-slate-700">Serving directory</Label>
+            <Input
+              id="servingDirectory"
+              name="servingDirectory"
               defaultValue={site.rootDirectory}
               disabled={!user.canCreateSites}
               className="mt-1.5 transition-all focus:ring-2 focus:ring-panel-500/50 bg-white/70"
             />
+            <p className="mt-1.5 text-xs text-slate-400">
+              Document root served by NGINX, commonly the project&apos;s public folder for PHP or static websites.
+            </p>
           </div>
           {hasRuntime && (
             <div>

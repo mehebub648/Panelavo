@@ -417,6 +417,20 @@ $cfg['Servers'][$i]['AllowNoPassword'] = false;
 $cfg['Servers'][$i]['AllowRoot'] = false;
 PMASIGNON
     fi
+    # Large SQL imports: PHP-FPM reads .user.ini from the docroot, so stock
+    # 2M/8M upload limits and the 300s phpMyAdmin execution cap would reject
+    # or abort dumps that the panel's users legitimately upload.
+    install -o "${DB_MANAGER_USER}" -g "${DB_MANAGER_USER}" -m 0644 /dev/null "${DB_MANAGER_ROOT}/.user.ini"
+    cat > "${DB_MANAGER_ROOT}/.user.ini" <<'PMAINI'
+upload_max_filesize = 512M
+post_max_size = 512M
+memory_limit = 512M
+max_execution_time = 3600
+max_input_time = 3600
+PMAINI
+    if ! grep -q "ExecTimeLimit" "${DB_MANAGER_ROOT}/config.inc.php"; then
+      printf '%s\n' "\$cfg['ExecTimeLimit'] = 3600;" >> "${DB_MANAGER_ROOT}/config.inc.php"
+    fi
   fi
   [ -f "${DB_MANAGER_ROOT}/config.inc.php" ] && DB_MANAGER_PROVISIONED=true
 fi
@@ -644,6 +658,30 @@ if [ -f "${PANEL_VHOST}" ]; then
   fi
 else
   warn "Panel vhost ${PANEL_VHOST} was not found; uploads and long-running requests may retain Nginx defaults."
+fi
+
+# The phpMyAdmin database manager accepts SQL dump uploads, so its vhost needs
+# the same treatment: Nginx's default 1m body limit rejects any real import
+# with a 413 before PHP ever sees it, and long imports must not be cut off.
+DB_MANAGER_VHOST="/etc/nginx/sites-enabled/${DB_MANAGER_DOMAIN}.conf"
+if [ "${DB_MANAGER_PROVISIONED}" = "true" ] && [ -f "${DB_MANAGER_VHOST}" ]; then
+  log "Configuring the database manager upload limits ..."
+  DB_MANAGER_VHOST_BACKUP="$(mktemp)"
+  cp "${DB_MANAGER_VHOST}" "${DB_MANAGER_VHOST_BACKUP}"
+  sed -i '/# panelavo-db-import-limit$/d' "${DB_MANAGER_VHOST}"
+  sed -i '/^[[:space:]]*server[[:space:]]*{/a\    client_max_body_size 512m; # panelavo-db-import-limit' "${DB_MANAGER_VHOST}"
+  sed -i '/^[[:space:]]*server[[:space:]]*{/a\    fastcgi_read_timeout 3600s; # panelavo-db-import-limit' "${DB_MANAGER_VHOST}"
+  sed -i '/^[[:space:]]*server[[:space:]]*{/a\    fastcgi_send_timeout 3600s; # panelavo-db-import-limit' "${DB_MANAGER_VHOST}"
+  if nginx -t >/dev/null 2>&1; then
+    systemctl reload nginx
+    rm -f "${DB_MANAGER_VHOST_BACKUP}"
+  else
+    cp "${DB_MANAGER_VHOST_BACKUP}" "${DB_MANAGER_VHOST}"
+    rm -f "${DB_MANAGER_VHOST_BACKUP}"
+    die "The database manager upload-limit configuration failed nginx validation; the previous vhost was restored."
+  fi
+elif [ "${DB_MANAGER_PROVISIONED}" = "true" ]; then
+  warn "Database manager vhost ${DB_MANAGER_VHOST} was not found; SQL imports may hit Nginx's default body-size limit."
 fi
 
 # ---------------------------------------------------------------------------

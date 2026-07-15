@@ -14,9 +14,10 @@ import type {
 } from "@/types/cloudpanel";
 import { isPanelAdmin } from "@/server/auth/panel-roles";
 import { getDatabaseManagerUrl } from "@/server/sites/database-manager";
+import { getSiteRootOverride } from "@/server/sites/site-root-overlay";
 import { AppError } from "./errors";
 
-export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 4;
+export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 5;
 export const CLOUDPANEL_BROKER_PATH =
   "/usr/local/libexec/panelavo/panelavo-broker";
 
@@ -410,6 +411,7 @@ export class LiveCloudPanelClient implements CloudPanelClient {
     session: CloudPanelSession,
     domain: string,
     input: {
+      applicationRootDirectory?: string;
       rootDirectory?: string;
       runtimeVersion?: string;
       appPort?: number;
@@ -417,11 +419,13 @@ export class LiveCloudPanelClient implements CloudPanelClient {
     },
   ) {
     const { panelAdmin } = await this.requireSiteAccess(session, domain);
+    const { applicationRootDirectory, ...settings } = input;
     const result = await this.bridge({
       action: "update-site",
       username: this.sessionUser(session),
       domain,
-      settings: input,
+      applicationRootDirectory,
+      settings,
       panelAdmin,
     });
     if (!result.ok || !result.site)
@@ -452,11 +456,13 @@ export class LiveCloudPanelClient implements CloudPanelClient {
   }
 
   async getSiteSection(session: CloudPanelSession, domain: string, section: string) {
+    const applicationRootDirectory = await getSiteRootOverride(domain);
     const result = await this.bridge({
       action: "site-section",
       username: this.sessionUser(session),
       domain,
       section,
+      applicationRootDirectory,
     });
     if (!result.ok)
       throw new AppError("SITE_NOT_FOUND", "Website section could not be loaded.", 404);
@@ -470,6 +476,7 @@ export class LiveCloudPanelClient implements CloudPanelClient {
     input: Record<string, unknown>,
   ) {
     const { panelAdmin } = await this.requireSiteAccess(session, domain);
+    const applicationRootDirectory = await getSiteRootOverride(domain);
     const action = String(input.action ?? "");
     if (panelAdmin && section === "databases" && action === "delete") {
       // clpctl db:delete is addressed by database name alone, so confirm the
@@ -547,6 +554,7 @@ export class LiveCloudPanelClient implements CloudPanelClient {
         section,
         operation: input,
         panelAdmin,
+        applicationRootDirectory,
       }, section === "actions" || section === "backups" ? 1_850_000 : section === "file-manager" ? 620_000 : section === "git" ? 300_000 : section === "terminal" ? 200_000 : section === "env" ? 60_000 : undefined);
       if (!result.ok)
         throw siteSectionBridgeError(result);

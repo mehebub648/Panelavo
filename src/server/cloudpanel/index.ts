@@ -11,6 +11,7 @@ import {
   setSiteTypeOverride,
 } from "@/server/sites/site-type-overlay";
 import { removeSiteMeta } from "@/server/sites/site-meta";
+import { removeSiteRootOverride } from "@/server/sites/site-root-overlay";
 import { isPanelSelfDomain } from "@/server/sites/panel-self";
 import { isDatabaseManagerDomain } from "@/server/sites/database-manager";
 import { normalizeOperationsData } from "@/server/sites/site-operations";
@@ -144,6 +145,7 @@ function withPanelRoles(inner: CloudPanelClient): CloudPanelClient {
       // Release the reserved site id and clean up the system-subdomain DNS
       // record (best-effort; the site itself is already gone).
       await removeSiteMeta(domain).catch(() => undefined);
+      await removeSiteRootOverride(domain).catch(() => undefined);
     },
     assignSite: async (session, domain) => {
       assertNotPanelSelf(domain);
