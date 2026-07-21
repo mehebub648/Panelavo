@@ -1589,6 +1589,24 @@ function remapResolvedCompose(array $config, array $routing): array
             unset($config['networks'][$name]['ipam']);
         }
     }
+    // Long-syntax mounts carry option sub-keys (`volume`, `bind`, `tmpfs`,
+    // `cluster`) that Compose emits as empty objects when no options are set —
+    // e.g. a named volume `postgres-data:/data` resolves to
+    // `{type: volume, source, target, volume: {}}`. Associative json_decode()
+    // collapses `{}` to [], and reloading the resolved JSON then fails with
+    // "volumes.N.volume must be a mapping". Drop the synthetic empty sub-keys
+    // (absent means the same defaults) while preserving any real options.
+    foreach ((array) ($config['services'] ?? []) as $name => $service) {
+        if (!is_array($service) || !isset($service['volumes']) || !is_array($service['volumes'])) continue;
+        foreach ($service['volumes'] as $index => $mount) {
+            if (!is_array($mount)) continue;
+            foreach (['volume', 'bind', 'tmpfs', 'cluster'] as $option) {
+                if (array_key_exists($option, $mount) && $mount[$option] === []) {
+                    unset($config['services'][$name]['volumes'][$index][$option]);
+                }
+            }
+        }
+    }
     // Rootful Compose is always forced onto loopback at runtime, including
     // secondary service ports. The source file remains untouched.
     foreach ((array) ($config['services'] ?? []) as $name => $service) {
@@ -3818,6 +3836,12 @@ function runComposePortSelfTest(): never
             'depends_on' => ['backend' => ['condition' => 'service_healthy']],
             'healthcheck' => ['test' => ['CMD', 'wget', '--spider', 'http://127.0.0.1:3000/login']],
         ],
+        'postgres' => [
+            'volumes' => [
+                ['type' => 'volume', 'source' => 'postgres-data', 'target' => '/var/lib/postgresql/data', 'volume' => []],
+                ['type' => 'bind', 'source' => '/srv/app', 'target' => '/app', 'bind' => ['create_host_path' => true]],
+            ],
+        ],
     ], 'networks' => [
         'default' => ['name' => 'example_default', 'ipam' => null],
         'empty' => ['name' => 'example_empty', 'ipam' => []],
@@ -3840,6 +3864,10 @@ function runComposePortSelfTest(): never
     $assert(!array_key_exists('ipam', $runtime['networks']['empty']), 'synthetic empty network IPAM should be removed');
     $assert(($runtime['networks']['private']['ipam']['driver'] ?? '') === 'default', 'configured network IPAM should be preserved');
     $assert(!str_contains((string) json_encode($runtime), '"ipam":[]'), 'runtime JSON must not encode an empty IPAM list');
+    $assert(!array_key_exists('volume', $runtime['services']['postgres']['volumes'][0]), 'synthetic empty volume mount option should be removed');
+    $assert(($runtime['services']['postgres']['volumes'][1]['bind']['create_host_path'] ?? null) === true, 'configured mount options should be preserved');
+    $assert(!str_contains((string) json_encode($runtime), '"volume":[]'), 'runtime JSON must not encode an empty mount option list');
+    $assert(($config['services']['postgres']['volumes'][0]['volume'] ?? null) === [], 'source mount config must not be mutated');
     $assert((int) ($config['services']['frontend']['ports'][0]['published'] ?? 0) === 3000, 'source config must not be mutated');
     $assert(array_key_exists('ipam', $config['networks']['default']), 'source network config must not be mutated');
 
