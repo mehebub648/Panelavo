@@ -1131,6 +1131,47 @@ function runTerminalCommand(Site $site, string $command, ?string $requestedCwd):
     ];
 }
 
+// The four Compose filenames Panelavo recognizes, in priority order.
+const COMPOSE_CANDIDATES = ['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml'];
+
+// Locates the site's Compose file relative to the application root. The root is
+// the canonical location and always wins, but projects commonly keep their
+// Compose file in a dedicated subfolder (docker/, deploy/, .docker/, …), so when
+// no root candidate exists a bounded, breadth-first scan looks for one. The
+// scan is deterministic (alphabetical, shallowest-first) and skips dependency
+// and VCS trees so a Compose file vendored by a dependency is never mistaken for
+// the site's own. The returned path is always relative to $root (e.g.
+// "docker/compose.yaml"), so every `docker compose -f` invocation — which runs
+// with the application root as its working directory — and the host-safety scan
+// keep resolving against the application root.
+function findComposeFile(string $root): ?string
+{
+    foreach (COMPOSE_CANDIDATES as $candidate) {
+        if (is_file($root . '/' . $candidate)) return $candidate;
+    }
+    $ignored = ['node_modules', 'vendor', '.git', '.svn', '.hg', 'backups', 'storage', 'cache', '.cache', 'tmp'];
+    $maxDepth = 3;
+    $queue = [['dir' => $root, 'rel' => '', 'depth' => 0]];
+    while ($queue) {
+        $node = array_shift($queue);
+        if ($node['depth'] >= $maxDepth) continue;
+        $entries = @scandir($node['dir']);
+        if ($entries === false) continue;
+        sort($entries, SORT_STRING);
+        foreach ($entries as $entry) {
+            if ($entry === '.' || $entry === '..') continue;
+            $path = $node['dir'] . '/' . $entry;
+            if (is_link($path) || !is_dir($path) || in_array($entry, $ignored, true)) continue;
+            $rel = ($node['rel'] === '' ? '' : $node['rel'] . '/') . $entry;
+            foreach (COMPOSE_CANDIDATES as $candidate) {
+                if (is_file($path . '/' . $candidate)) return $rel . '/' . $candidate;
+            }
+            $queue[] = ['dir' => $path, 'rel' => $rel, 'depth' => $node['depth'] + 1];
+        }
+    }
+    return null;
+}
+
 function detectFramework(string $root, ?array $package = null): string
 {
     $package ??= is_file($root . '/package.json') ? json_decode((string) file_get_contents($root . '/package.json'), true) : null;
@@ -1162,9 +1203,7 @@ function detectFramework(string $root, ?array $package = null): string
             if (preg_match('/^\s*(?:"|\')?' . $needle . '\b/im', $pythonManifest)) return $label;
         }
     }
-    foreach (['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml'] as $file) {
-        if (is_file($root . '/' . $file)) return 'Docker Compose';
-    }
+    if (findComposeFile($root) !== null) return 'Docker Compose';
     return '';
 }
 
@@ -1687,10 +1726,7 @@ function operationsState(Site $site, User $user): array
     foreach (($package['scripts'] ?? []) as $name => $command) {
         if (is_string($command)) $scripts[] = ['name' => (string) $name, 'command' => $command];
     }
-    $composeFile = null;
-    foreach (['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml'] as $candidate) {
-        if (is_file($root . '/' . $candidate)) { $composeFile = $candidate; break; }
-    }
+    $composeFile = findComposeFile($root);
     $ecosystem = null;
     foreach (['ecosystem.config.js', 'ecosystem.config.cjs', 'ecosystem.config.json'] as $candidate) {
         if (is_file($root . '/' . $candidate)) { $ecosystem = $candidate; break; }
@@ -2582,8 +2618,7 @@ function analyzeRootlessMigration(Site $site, array $model): array
     }
     $sources = [];
     $services = [];
-    $file = null;
-    foreach (['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml'] as $candidate) if (is_file($root . '/' . $candidate)) { $file = $candidate; break; }
+    $file = findComposeFile($root);
     if ($file === null) respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE']);
     foreach ((array) ($model['services'] ?? []) as $name => $service) {
         if (!is_array($service)) continue;
@@ -2679,8 +2714,7 @@ function rootlessServiceImageId(Site $site, string $file, string $service, array
 function prepareRootlessMigration(Site $site, string $service): array
 {
     $root = siteRootPath($site);
-    $file = null;
-    foreach (['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml'] as $candidate) if (is_file($root . '/' . $candidate)) { $file = $candidate; break; }
+    $file = findComposeFile($root);
     if (!$file || !preg_match('/^[A-Za-z0-9._-]{1,100}$/', $service)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
     $rootless = rootlessCapability($site);
     if (empty($rootless['ready'])) respond(['ok' => false, 'code' => 'TOOL_UNAVAILABLE', 'message' => 'Initialize the site user rootless daemon first.']);
@@ -3145,11 +3179,8 @@ function bindComposePortsToLoopback(Site $site, array &$results): void
 {
     $fix = 'bind-ports-loopback';
     $root = siteRootPath($site);
-    $compose = null;
-    foreach (['compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml'] as $candidate) {
-        if (is_file($root . '/' . $candidate)) { $compose = $candidate; break; }
-    }
-    if (!$compose) { syntheticFixStep($results, $fix, 'Locate Compose file', 'find compose file', false, 'No Compose file was found in the site root.'); return; }
+    $compose = findComposeFile($root);
+    if (!$compose) { syntheticFixStep($results, $fix, 'Locate Compose file', 'find compose file', false, 'No Compose file was found in the site root or a subfolder.'); return; }
     $path = $root . '/' . $compose;
     $original = (string) @file_get_contents($path);
     if ($original === '') { syntheticFixStep($results, $fix, 'Read Compose file', 'read ' . $compose, false, 'The Compose file could not be read.'); return; }

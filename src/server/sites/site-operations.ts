@@ -317,8 +317,8 @@ function preflightChecks(raw: RawOperationsData, type: string) {
         "Compose configuration",
         Boolean(raw.hasCompose && raw.compose?.file),
         raw.compose?.file ?? "Compose configuration found",
-        "No supported Compose file exists in the application root.",
-        "Add compose.yaml, compose.yml, docker-compose.yaml, or docker-compose.yml.",
+        "No supported Compose file exists in the application root or a subfolder.",
+        "Add compose.yaml, compose.yml, docker-compose.yaml, or docker-compose.yml to the application root or a subfolder such as docker/.",
       ),
       check(
         "docker-cli",
