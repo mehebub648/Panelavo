@@ -232,6 +232,20 @@ const FIXES: Record<
       confirmText: "Initialize rootless Docker",
     },
   },
+  "initialize-rootless-runtime": {
+    id: "initialize-rootless-runtime",
+    label: "Initialize rootless runtime",
+    description:
+      "Start this site user's own private rootless Docker daemon. No host software changes.",
+    risk: "disruptive",
+    scope: "site",
+    confirmation: {
+      title: "Start this site user's rootless runtime?",
+      message:
+        "Panelavo will enable lingering for this site user and start their private rootless Docker daemon using the host's already-installed rootless support. It changes nothing outside this site user's own runtime.",
+      confirmText: "Start rootless runtime",
+    },
+  },
   "install-docker": {
     id: "install-docker",
     label: "Install Docker Engine",
@@ -311,6 +325,13 @@ function preflightChecks(raw: RawOperationsData, type: string) {
   ];
 
   if (type === "docker") {
+    // Once the host provides the rootless prerequisites (setup.sh or a Super
+    // Admin host fix), bringing up the site user's own daemon is a site-write
+    // self-service action. When the host itself is unprovisioned, only the
+    // Super Admin host fix can resolve it.
+    const rootlessRuntimeFix = raw.compose?.rootless?.hostRootlessReady
+      ? makeFix(raw, FIXES["initialize-rootless-runtime"])
+      : makeFix(raw, FIXES["initialize-rootless-docker"]);
     checks.push(
       check(
         "compose-file",
@@ -354,17 +375,10 @@ function preflightChecks(raw: RawOperationsData, type: string) {
       check(
         "rootless-prerequisites",
         "Rootless prerequisites",
-        Boolean(
-          raw.compose?.rootless?.uidmapAvailable &&
-          raw.compose.rootless.rootlessExtrasAvailable &&
-          raw.compose.rootless.buildxAvailable &&
-          raw.compose.rootless.networkHelperAvailable &&
-          raw.compose.rootless.subuidReady &&
-          raw.compose.rootless.subgidReady,
-        ),
-        "UID/GID mapping, Docker rootless extras, and userspace networking are ready.",
-        "The site user is missing one or more rootless Docker prerequisites.",
-        "A Super Admin can initialize the verified rootless runtime for this site user.",
+        Boolean(raw.compose?.rootless?.hostRootlessReady),
+        "UID/GID mapping, Docker rootless extras, Buildx, and userspace networking are installed on the host.",
+        "The host is missing one or more rootless Docker prerequisites.",
+        "A Super Admin must install the rootless host packages and subordinate ID ranges for this server.",
         {
           fix: makeFix(raw, FIXES["initialize-rootless-docker"]),
         },
@@ -379,8 +393,10 @@ function preflightChecks(raw: RawOperationsData, type: string) {
         ),
         "The lingering systemd user manager and private D-Bus are ready.",
         "The site user's persistent systemd manager is not ready.",
-        "Initialize rootless Docker to enable lingering and start the verified user manager.",
-        { fix: makeFix(raw, FIXES["initialize-rootless-docker"]) },
+        raw.compose?.rootless?.hostRootlessReady
+          ? "Start this site user's rootless runtime to enable lingering and their user manager."
+          : "A Super Admin must provision the host, then this site user's runtime can start.",
+        { fix: rootlessRuntimeFix },
       ),
       check(
         "docker-daemon",
@@ -393,8 +409,10 @@ function preflightChecks(raw: RawOperationsData, type: string) {
         ),
         `The site user's rootless daemon is reachable${raw.compose?.rootless?.storageDriver ? ` using ${raw.compose.rootless.storageDriver}` : ""} with cgroup v2 support.`,
         "The private rootless Docker daemon is stopped, unreachable, not actually rootless, or lacks supported storage/cgroup v2.",
-        "Initialize or repair the site user's rootless daemon. Panelavo will not fall back to the root socket.",
-        { fix: makeFix(raw, FIXES["initialize-rootless-docker"]) },
+        raw.compose?.rootless?.hostRootlessReady
+          ? "Start this site user's rootless runtime. Panelavo will not fall back to the root socket."
+          : "A Super Admin must provision the host, then start this site user's rootless runtime. Panelavo will not fall back to the root socket.",
+        { fix: rootlessRuntimeFix },
       ),
       check(
         "compose-config",

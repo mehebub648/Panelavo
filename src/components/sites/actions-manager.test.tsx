@@ -56,6 +56,8 @@ function dockerData(ready: boolean): OperationsData {
         uidmapAvailable: ready,
         rootlessExtrasAvailable: ready,
         buildxAvailable: ready,
+        buildxHostReady: ready,
+        hostRootlessReady: ready,
         networkHelperAvailable: ready,
         subuidReady: ready,
         subgidReady: ready,

@@ -113,6 +113,7 @@ const deployOperationSchema = z
 
 export const operationFixCommands = [
   "initialize-rootless-docker",
+  "initialize-rootless-runtime",
   "install-docker",
   "install-compose-plugin",
   "start-docker",

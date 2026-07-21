@@ -962,6 +962,48 @@ function rootlessMigrationPath(Site $site, string $suffix = 'manifest.json'): st
     return PANELAVO_ROOTLESS_MIGRATION_ROOT . '/' . hash('sha256', strtolower((string) $site->getDomainName())) . '-' . $suffix;
 }
 
+// The Buildx CLI plugin ships as a file, so its presence can be verified
+// without a running daemon (unlike `docker buildx version`, which needs the
+// rootless socket). Used to decide host provisioning before the site user's
+// daemon exists.
+function dockerBuildxPluginInstalled(Site $site): bool
+{
+    $home = '/home/' . $site->getUser();
+    foreach ([
+        '/usr/libexec/docker/cli-plugins/docker-buildx',
+        '/usr/local/lib/docker/cli-plugins/docker-buildx',
+        '/usr/lib/docker/cli-plugins/docker-buildx',
+        $home . '/.docker/cli-plugins/docker-buildx',
+    ] as $candidate) {
+        if (is_executable($candidate)) return true;
+    }
+    return false;
+}
+
+// Host-level rootless readiness: the shared packages, kernel/init features, and
+// subordinate ID ranges that only root (setup.sh or a Super Admin host fix) can
+// provide. Deliberately independent of the site user's own daemon, so the panel
+// can tell "the host is ready, this user just needs to bring up their runtime"
+// (a site-write self-service action) apart from "the host itself is missing
+// prerequisites" (a Super Admin host action). Never mutates anything.
+function rootlessHostProvisioned(Site $site): array
+{
+    $identity = siteIdentity($site);
+    $missing = [];
+    $systemdHost = trim((string) @file_get_contents('/proc/1/comm')) === 'systemd';
+    $cgroupV2Host = is_file('/sys/fs/cgroup/cgroup.controllers');
+    if (!$systemdHost || !$cgroupV2Host) $missing[] = 'systemd with cgroup v2';
+    if (!is_executable('/usr/bin/docker') && !is_executable('/usr/local/bin/docker')) $missing[] = 'the Docker CLI';
+    if (!(uidmapHelperReady('/usr/bin/newuidmap') && uidmapHelperReady('/usr/bin/newgidmap'))) $missing[] = 'uidmap (newuidmap/newgidmap)';
+    if (!is_executable('/usr/bin/dockerd-rootless-setuptool.sh')) $missing[] = 'Docker rootless extras';
+    if (!is_executable('/usr/bin/slirp4netns') && !is_executable('/usr/bin/pasta')) $missing[] = 'a userspace network helper (slirp4netns or pasta)';
+    if (!dockerBuildxPluginInstalled($site)) $missing[] = 'the Docker Buildx plugin';
+    if (subordinateRange('/etc/subuid', $identity['user']) === null || subordinateRange('/etc/subgid', $identity['user']) === null) {
+        $missing[] = 'a subordinate UID/GID range for the site user';
+    }
+    return ['ready' => $missing === [], 'missing' => $missing];
+}
+
 function rootlessCapability(Site $site): array
 {
     $identity = siteIdentity($site);
@@ -1027,6 +1069,8 @@ function rootlessCapability(Site $site): array
     }
     $space = @disk_free_space($identity['home']);
     $capability['availableBytes'] = $space === false ? null : (int) $space;
+    $capability['buildxHostReady'] = dockerBuildxPluginInstalled($site);
+    $capability['hostRootlessReady'] = rootlessHostProvisioned($site)['ready'];
     $capability['ready'] = $capability['uidmapAvailable']
         && $capability['rootlessExtrasAvailable']
         && $capability['buildxAvailable']
@@ -2336,6 +2380,20 @@ function initializeRootlessDocker(Site $site, string $fix, array &$results): voi
         if (!syntheticFixStep($results, $fix, 'Verify subordinate IDs', 'inspect /etc/subuid and /etc/subgid', $subuid !== null && $subgid !== null,
             $subuid && $subgid ? 'Non-overlapping subordinate UID/GID ranges are ready.' : 'A safe subordinate UID/GID range could not be allocated.')) return;
     }
+    bringUpRootlessUserDaemon($site, $fix, $results, true);
+}
+
+// Per-user rootless bring-up: enable the site user's linger, start their user
+// manager, install and start their private daemon, then verify readiness. Every
+// command touches only the requesting site user's own runtime and login
+// persistence, so this is safe for a site-write user, not just a Super Admin.
+// $allowHostStorageFallback gates the single host-level step (installing
+// fuse-overlayfs): the Super Admin host path allows it; the self-service path
+// never installs packages and instead reports that a Super Admin must supply a
+// storage driver.
+function bringUpRootlessUserDaemon(Site $site, string $fix, array &$results, bool $allowHostStorageFallback): void
+{
+    $identity = siteIdentity($site);
     if (!runFixStep($site, $results, $fix, 'Enable user service persistence', ['loginctl', 'enable-linger', $identity['user']], 60)) return;
     if (!runFixStep($site, $results, $fix, 'Start the user manager', ['systemctl', 'start', 'user@' . $identity['uid'] . '.service'], 60)) return;
     $runtime = '/run/user/' . $identity['uid'];
@@ -2383,6 +2441,11 @@ function initializeRootlessDocker(Site $site, string $fix, array &$results): voi
     for ($attempt = 0; $attempt < 100 && !pathIsSocket($runtime . '/docker.sock'); $attempt++) usleep(100000);
     $capability = rootlessCapability($site);
     if (!empty($capability['daemonAvailable']) && empty($capability['storageReady'])) {
+        if (!$allowHostStorageFallback) {
+            syntheticFixStep($results, $fix, 'Verify rootless storage', 'inspect the daemon storage driver', false,
+                'The rootless daemon started but no supported storage driver is available. Ask a Super Admin to install fuse-overlayfs on the host.');
+            return;
+        }
         if (!runFixStep($site, $results, $fix, 'Install rootless storage fallback', ['apt-get', 'install', '-y', 'fuse-overlayfs'], 600)) return;
         $restart = runRootlessSystemdCommand($site, ['systemctl', '--user', 'restart', 'docker.service'], 120);
         $results[] = migrationStep($fix, 'Restart the site user daemon', 'systemctl --user restart docker.service', $restart);
@@ -2393,6 +2456,22 @@ function initializeRootlessDocker(Site $site, string $fix, array &$results): voi
         !empty($capability['ready'])
             ? 'Rootless Docker is ready with ' . ($capability['storageDriver'] ?? 'an available storage driver') . '.'
             : 'The daemon started but did not pass the complete rootless readiness check.');
+}
+
+// Site-write self-service rootless bring-up. Requires the host to already be
+// provisioned (by setup.sh or a Super Admin host fix) and refuses — without
+// mutating anything — when it is not. It never installs host packages or
+// allocates subordinate ranges; it only starts the requesting site user's own
+// daemon, which is why it is authorized for site-write users rather than a
+// Super Admin.
+function initializeRootlessRuntime(Site $site, string $fix, array &$results): void
+{
+    $provisioned = rootlessHostProvisioned($site);
+    if (!syntheticFixStep($results, $fix, 'Verify host rootless support', 'inspect installed rootless packages and subordinate ranges', $provisioned['ready'],
+        $provisioned['ready']
+            ? 'The host already provides the rootless Docker prerequisites.'
+            : 'The host is missing rootless prerequisites (' . implode(', ', $provisioned['missing']) . '). A Super Admin must provision the host before this runtime can start.')) return;
+    bringUpRootlessUserDaemon($site, $fix, $results, false);
 }
 
 function rootfulComposeModel(Site $site, string $file): array
@@ -3028,6 +3107,11 @@ function recoverRootlessMigration(Site $site): array
 function executeFix(Site $site, string $fix, array &$results): void
 {
     switch ($fix) {
+        case 'initialize-rootless-runtime':
+            // Site-write self-service: per-user daemon bring-up only. No host
+            // package installs or subordinate-range changes ever run here.
+            initializeRootlessRuntime($site, $fix, $results);
+            return;
         case 'initialize-rootless-docker':
             if (!runFixStep($site, $results, $fix, 'Install rootless prerequisites', ['apt-get', 'install', '-y', 'uidmap', 'dbus-user-session', 'slirp4netns'], 900)) return;
             if (!is_executable('/usr/bin/docker') || !is_executable('/usr/bin/dockerd-rootless-setuptool.sh')) {
@@ -4461,11 +4545,18 @@ try {
                 if ($action === 'fix') {
                     $fix = (string) ($operation['fix'] ?? '');
                     $results = [];
-                    // Host-software repairs are a Super Admin boundary and are
-                    // serialized host-wide because they change shared APT and
-                    // systemd state.
-                    if (($input['panelAdmin'] ?? false) !== true) respond(['ok' => false, 'code' => 'FORBIDDEN']);
-                    $lockPath = '/var/lock/panelavo-host-fix.lock';
+                    // The per-user rootless runtime self-init only starts the
+                    // requesting site user's own daemon (never apt/usermod), so a
+                    // site-write user may run it — the manage-section gate above
+                    // already proved site-write access — and it is serialized per
+                    // site like any other operation. Every other fix changes
+                    // shared APT/systemd host state and stays Super Admin-only,
+                    // serialized host-wide.
+                    $selfService = $fix === 'initialize-rootless-runtime';
+                    if (!$selfService && ($input['panelAdmin'] ?? false) !== true) respond(['ok' => false, 'code' => 'FORBIDDEN']);
+                    $lockPath = $selfService
+                        ? '/var/lock/panelavo-operations-' . $site->getUser() . '.lock'
+                        : '/var/lock/panelavo-host-fix.lock';
                     $runner = static function () use ($site, $fix, &$results): void { executeFix($site, $fix, $results); };
                     $lock = @fopen($lockPath, 'c');
                     if (!$lock || !flock($lock, LOCK_EX | LOCK_NB)) respond(['ok' => false, 'code' => 'OPERATION_BUSY']);

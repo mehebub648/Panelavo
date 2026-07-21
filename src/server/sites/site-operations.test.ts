@@ -24,6 +24,8 @@ const rootlessReady = {
   uidmapAvailable: true,
   rootlessExtrasAvailable: true,
   buildxAvailable: true,
+  buildxHostReady: true,
+  hostRootlessReady: true,
   networkHelperAvailable: true,
   subuidReady: true,
   subgidReady: true,
@@ -497,6 +499,55 @@ describe("normalizeOperationsData", () => {
       status: "unauthorized",
     });
     expect(daemon?.fix?.blockedBy[0]).toContain("Super Admin");
+  });
+
+  it("lets a site-write user self-init the runtime once the host is provisioned", () => {
+    const data = normalizeOperationsData(
+      {
+        ...base,
+        type: "reverse-proxy",
+        // Site-write, but NOT a Super Admin (no panelAdmin, no docker).
+        permissions: { manage: true, docker: false },
+        hasCompose: true,
+        compose: {
+          file: "compose.yaml",
+          cliAvailable: true,
+          pluginAvailable: true,
+          daemonAvailable: false,
+          rootless: {
+            mode: "rootless",
+            hostRootlessReady: true,
+            uidmapAvailable: true,
+            rootlessExtrasAvailable: true,
+            buildxHostReady: true,
+            networkHelperAvailable: true,
+            subuidReady: true,
+            subgidReady: true,
+            lingerEnabled: false,
+            runtimeDirectoryReady: false,
+            userBusReady: false,
+            daemonAvailable: false,
+          },
+        },
+      },
+      { typeOverride: "docker" },
+    );
+
+    // Host prerequisites are provisioned, so that check is green.
+    expect(
+      data.preflight.checks.find((item) => item.id === "rootless-prerequisites"),
+    ).toMatchObject({ status: "ready" });
+    // The per-user daemon is down, and a site-write user can start it
+    // themselves — the fix is the site-scoped runtime self-init, authorized.
+    const daemon = data.preflight.checks.find(
+      (item) => item.id === "docker-daemon",
+    );
+    expect(daemon?.fix).toMatchObject({
+      id: "initialize-rootless-runtime",
+      scope: "site",
+      status: "ready",
+    });
+    expect(daemon?.fix?.blockedBy).toEqual([]);
   });
 
   it("attaches a Composer installer fix on PHP sites missing Composer", () => {

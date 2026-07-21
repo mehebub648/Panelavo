@@ -100,6 +100,8 @@ export type RootlessDockerCapability = {
   uidmapAvailable?: boolean;
   rootlessExtrasAvailable?: boolean;
   buildxAvailable?: boolean;
+  buildxHostReady?: boolean;
+  hostRootlessReady?: boolean;
   networkHelperAvailable?: boolean;
   subuidReady?: boolean;
   subgidReady?: boolean;
@@ -220,6 +222,7 @@ export type ArchitectureDetection = {
 
 export type OperationFixId =
   | "initialize-rootless-docker"
+  | "initialize-rootless-runtime"
   | "install-docker"
   | "install-compose-plugin"
   | "start-docker"

@@ -144,6 +144,29 @@ apt-get update -y
 apt-get install -y curl wget sudo ca-certificates rsync openssl git acl uidmap dbus-user-session slirp4netns
 
 # ---------------------------------------------------------------------------
+# 2b. Rootless Docker host provisioning
+#     Installs Docker Engine + rootless extras from Docker's official APT
+#     repository so every CloudPanel site user can start their OWN private
+#     rootless daemon with no further root action. Host package installs remain
+#     a root boundary; pre-installing them here is what lets a site-write user
+#     self-initialize their per-user runtime from the panel without a Super
+#     Admin. Panelavo only ever uses each site user's rootless socket, never the
+#     rootful daemon. uidmap/dbus-user-session/slirp4netns are installed above.
+# ---------------------------------------------------------------------------
+log "Provisioning rootless Docker runtime ..."
+if ! command -v docker >/dev/null 2>&1; then
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL "https://download.docker.com/linux/${OS_ID}/gpg" -o /etc/apt/keyrings/docker.asc
+  chmod 0644 /etc/apt/keyrings/docker.asc
+  DOCKER_CODENAME="$(. /etc/os-release && echo "${VERSION_CODENAME:-}")"
+  [ -n "${DOCKER_CODENAME}" ] || die "Could not determine the APT distribution codename for Docker's repository."
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/${OS_ID} ${DOCKER_CODENAME} stable" > /etc/apt/sources.list.d/docker.list
+  apt-get update -y
+fi
+apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin docker-ce-rootless-extras fuse-overlayfs
+log "Rootless Docker runtime provisioned."
+
+# ---------------------------------------------------------------------------
 # 3. Public IP
 # ---------------------------------------------------------------------------
 SERVER_IP="$(curl -4 -fsS --max-time 10 https://api.ipify.org 2>/dev/null || true)"
