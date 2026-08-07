@@ -10,7 +10,7 @@ export function PanelSettingsForm({
   baseDomain,
   serverIp,
   wildcardDomain,
-  isDefault,
+  canAutoRegister,
   pointed,
   categories,
   update,
@@ -18,7 +18,7 @@ export function PanelSettingsForm({
   baseDomain: string;
   serverIp: string;
   wildcardDomain: string;
-  isDefault: boolean;
+  canAutoRegister: boolean;
   pointed: boolean;
   categories: Category[];
   update: UpdateState;
@@ -28,7 +28,9 @@ export function PanelSettingsForm({
   return (
     <div className="mx-auto w-full max-w-4xl space-y-5">
       <div>
-        <h2 className="text-2xl font-bold tracking-tight text-ink">Panel settings</h2>
+        <h2 className="text-2xl font-bold tracking-tight text-ink">
+          Panel settings
+        </h2>
         <p className="mt-1 text-sm text-slate-500">
           Base domain and site id ranges used when creating websites.
         </p>
@@ -54,33 +56,41 @@ export function PanelSettingsForm({
             <span className="text-xl font-semibold text-ink">{baseDomain}</span>
             <span
               className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ${
-                isDefault
+                canAutoRegister
                   ? "bg-panel-50 text-panel-700"
                   : "bg-slate-100 text-slate-600"
               }`}
             >
-              {isDefault ? "Default domain" : "Custom domain"}
+              {canAutoRegister
+                ? "Auto-registration enabled"
+                : "DNS managed manually"}
             </span>
           </div>
 
           {pointed ? (
             <span className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-sm font-medium text-emerald-700">
-              <CheckCircle2 className="h-4 w-4" /> Configured — wildcard resolves to this server
+              <CheckCircle2 className="h-4 w-4" /> Configured — wildcard
+              resolves to this server
             </span>
           ) : (
             <span className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-sm font-medium text-amber-700">
-              <TriangleAlert className="h-4 w-4" /> Wildcard {wildcardDomain} is not resolving here
+              <TriangleAlert className="h-4 w-4" /> Wildcard {wildcardDomain} is
+              not resolving here
             </span>
           )}
 
           <dl className="grid gap-3 rounded-xl bg-slate-50 px-4 py-3 text-sm sm:grid-cols-2">
             <div>
               <dt className="text-slate-500">Panel address</dt>
-              <dd className="mt-0.5 break-all font-mono text-slate-700">{panelAddress}</dd>
+              <dd className="mt-0.5 break-all font-mono text-slate-700">
+                {panelAddress}
+              </dd>
             </div>
             <div>
               <dt className="text-slate-500">Wildcard DNS</dt>
-              <dd className="mt-0.5 break-all font-mono text-slate-700">{wildcardDomain}</dd>
+              <dd className="mt-0.5 break-all font-mono text-slate-700">
+                {wildcardDomain}
+              </dd>
             </div>
           </dl>
         </div>
@@ -98,8 +108,13 @@ export function PanelSettingsForm({
         </div>
         <div className="divide-y divide-slate-100 text-sm">
           {categories.map((category) => (
-            <div key={category.id} className="flex items-center justify-between px-5 py-3 sm:px-6">
-              <span className="font-medium text-slate-700">{category.label}</span>
+            <div
+              key={category.id}
+              className="flex items-center justify-between px-5 py-3 sm:px-6"
+            >
+              <span className="font-medium text-slate-700">
+                {category.label}
+              </span>
               <span className="font-mono text-slate-500">
                 {category.start}–{category.end}
               </span>

@@ -7,11 +7,21 @@ import { AppError } from "@/server/cloudpanel/errors";
 import { getPanelSettings } from "@/server/settings/store";
 
 export const UPDATE_BRANCH = "main";
-const dataDir = () => process.env.PANEL_DATA_DIR || join(process.cwd(), ".data");
+const dataDir = () =>
+  process.env.PANEL_DATA_DIR || join(process.cwd(), ".data");
 const stateFile = () => join(dataDir(), "update-state.json");
 
 export type UpdateState = {
-  status: "idle" | "checking" | "available" | "current" | "queued" | "updating" | "reloading" | "failed" | "complete";
+  status:
+    | "idle"
+    | "checking"
+    | "available"
+    | "current"
+    | "queued"
+    | "updating"
+    | "reloading"
+    | "failed"
+    | "complete";
   currentVersion: string;
   repository: string;
   branch: string;
@@ -24,12 +34,22 @@ export type UpdateState = {
   logFile: string;
 };
 
-export function isUpdateCurrent(state: Pick<UpdateState, "installedCommit" | "remoteCommit">) {
-  return Boolean(state.installedCommit && state.remoteCommit && state.installedCommit === state.remoteCommit);
+export function isUpdateCurrent(
+  state: Pick<UpdateState, "installedCommit" | "remoteCommit">,
+) {
+  return Boolean(
+    state.installedCommit &&
+    state.remoteCommit &&
+    state.installedCommit === state.remoteCommit,
+  );
 }
 
-export function shouldCompleteUpdateHandoff(state: Partial<UpdateState>, currentPid = process.pid) {
-  if (state.status === "reloading") return Boolean(state.previousPid && state.previousPid !== currentPid);
+export function shouldCompleteUpdateHandoff(
+  state: Partial<UpdateState>,
+  currentPid = process.pid,
+) {
+  if (state.status === "reloading")
+    return Boolean(state.previousPid && state.previousPid !== currentPid);
   // Recovery for releases before 0.1.17, whose worker was killed by PM2
   // after recording the installed commit but before recording completion.
   return state.status === "updating" && isUpdateCurrent(state);
@@ -38,33 +58,77 @@ export function shouldCompleteUpdateHandoff(state: Partial<UpdateState>, current
 async function effectiveState() {
   const state = await loadState();
   if (!shouldCompleteUpdateHandoff(state)) return state;
-  const complete = { ...state, status: "complete", completedAt: new Date().toISOString(), previousPid: undefined } as Partial<UpdateState>;
+  const complete = {
+    ...state,
+    status: "complete",
+    completedAt: new Date().toISOString(),
+    previousPid: undefined,
+  } as Partial<UpdateState>;
   await saveStoredState(complete);
-  await rm(join(dataDir(), "update.lock"), { recursive: true, force: true }).catch(() => undefined);
+  await rm(join(dataDir(), "update.lock"), {
+    recursive: true,
+    force: true,
+  }).catch(() => undefined);
   return complete;
 }
 
 export async function isPanelUpdateRunning() {
   const state = await effectiveState();
-  return state.status === "queued" || state.status === "updating" || state.status === "reloading";
+  return (
+    state.status === "queued" ||
+    state.status === "updating" ||
+    state.status === "reloading"
+  );
 }
 
 export function validateUpdateRepository(value: string) {
   const repository = value.trim();
   let parsed: URL;
-  try { parsed = new URL(repository); } catch { throw new AppError("INVALID_REQUEST", "Enter a public HTTPS Git repository ending in .git.", 400); }
-  if (repository.length > 500 || /\s/.test(repository) || parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.search || parsed.hash || !parsed.pathname.endsWith(".git") || !parsed.hostname.includes(".") || isIP(parsed.hostname) !== 0 || parsed.hostname.endsWith(".local"))
-    throw new AppError("INVALID_REQUEST", "Enter a public HTTPS Git repository ending in .git.", 400);
+  try {
+    parsed = new URL(repository);
+  } catch {
+    throw new AppError(
+      "INVALID_REQUEST",
+      "Enter a public HTTPS Git repository ending in .git.",
+      400,
+    );
+  }
+  if (
+    repository.length > 500 ||
+    /\s/.test(repository) ||
+    parsed.protocol !== "https:" ||
+    parsed.username ||
+    parsed.password ||
+    parsed.search ||
+    parsed.hash ||
+    !parsed.pathname.endsWith(".git") ||
+    !parsed.hostname.includes(".") ||
+    isIP(parsed.hostname) !== 0 ||
+    parsed.hostname.endsWith(".local")
+  )
+    throw new AppError(
+      "INVALID_REQUEST",
+      "Enter a public HTTPS Git repository ending in .git.",
+      400,
+    );
   return repository;
 }
 
 async function currentVersion() {
-  const pkg = JSON.parse(await readFile(join(process.cwd(), "package.json"), "utf8")) as { version?: string };
+  const pkg = JSON.parse(
+    await readFile(join(process.cwd(), "package.json"), "utf8"),
+  ) as { version?: string };
   return pkg.version || "unknown";
 }
 
 async function loadState(): Promise<Partial<UpdateState>> {
-  try { return JSON.parse(await readFile(stateFile(), "utf8")) as Partial<UpdateState>; } catch { return {}; }
+  try {
+    return JSON.parse(
+      await readFile(stateFile(), "utf8"),
+    ) as Partial<UpdateState>;
+  } catch {
+    return {};
+  }
 }
 
 async function saveStoredState(state: Partial<UpdateState>) {
@@ -74,44 +138,95 @@ async function saveStoredState(state: Partial<UpdateState>) {
   await rename(temporary, stateFile());
 }
 
-async function saveState(state: UpdateState) { await saveStoredState(state); }
+async function saveState(state: UpdateState) {
+  await saveStoredState(state);
+}
 
 function gitRemoteCommit(repository: string) {
   return new Promise<string>((resolve, reject) => {
-    const child = spawn("/usr/bin/git", ["ls-remote", repository, `refs/heads/${UPDATE_BRANCH}`], { shell: false });
-    let stdout = ""; let stderr = "";
-    child.stdout.on("data", (chunk: Buffer) => { if (stdout.length < 10000) stdout += chunk.toString(); });
-    child.stderr.on("data", (chunk: Buffer) => { if (stderr.length < 10000) stderr += chunk.toString(); });
+    const child = spawn(
+      "/usr/bin/git",
+      ["ls-remote", repository, `refs/heads/${UPDATE_BRANCH}`],
+      { shell: false },
+    );
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (stdout.length < 10000) stdout += chunk.toString();
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      if (stderr.length < 10000) stderr += chunk.toString();
+    });
     const timer = setTimeout(() => child.kill("SIGKILL"), 20_000);
     child.on("error", reject);
     child.on("close", (code) => {
       clearTimeout(timer);
       const commit = stdout.trim().split(/\s+/)[0];
       if (code === 0 && /^[a-f0-9]{40}$/.test(commit)) resolve(commit);
-      else reject(new Error(stderr.trim() || "The update repository could not be read."));
+      else
+        reject(
+          new Error(
+            stderr.trim() || "The update repository could not be read.",
+          ),
+        );
     });
   });
 }
 
-export async function getUpdateState(checkRemote = false): Promise<UpdateState> {
+export async function getUpdateState(
+  checkRemote = false,
+): Promise<UpdateState> {
   const settings = await getPanelSettings();
-  const repository = validateUpdateRepository(settings.updateRepository);
   const stored = await effectiveState();
+  const configuredRepository =
+    settings.updateRepository || stored.repository || "";
+  const repository = configuredRepository
+    ? validateUpdateRepository(configuredRepository)
+    : "";
   const base: UpdateState = {
-    status: stored.status || "idle", currentVersion: await currentVersion(), repository,
-    branch: UPDATE_BRANCH, installedCommit: stored.installedCommit,
-    remoteCommit: stored.remoteCommit, startedAt: stored.startedAt,
-    completedAt: stored.completedAt, error: stored.error,
+    status: stored.status || "idle",
+    currentVersion: await currentVersion(),
+    repository,
+    branch: UPDATE_BRANCH,
+    installedCommit: stored.installedCommit,
+    remoteCommit: stored.remoteCommit,
+    startedAt: stored.startedAt,
+    completedAt: stored.completedAt,
+    error: stored.error,
     previousPid: stored.previousPid,
     logFile: join(dataDir(), "update.log"),
   };
-  if (!checkRemote || ["queued", "updating", "reloading"].includes(base.status)) return base;
+  if (!repository) {
+    if (checkRemote)
+      throw new AppError(
+        "INVALID_REQUEST",
+        "Configure a public update repository before checking for updates.",
+        409,
+      );
+    return {
+      ...base,
+      status: "idle",
+      error: "Configure a public HTTPS Git repository to enable updates.",
+    };
+  }
+  if (!checkRemote || ["queued", "updating", "reloading"].includes(base.status))
+    return base;
   try {
     const remoteCommit = await gitRemoteCommit(repository);
-    const state = { ...base, remoteCommit, status: base.installedCommit === remoteCommit ? "current" : "available", error: undefined } as UpdateState;
-    await saveState(state); return state;
+    const state = {
+      ...base,
+      remoteCommit,
+      status: base.installedCommit === remoteCommit ? "current" : "available",
+      error: undefined,
+    } as UpdateState;
+    await saveState(state);
+    return state;
   } catch {
-    throw new AppError("CLOUDPANEL_UNAVAILABLE", "The update repository could not be reached.", 502);
+    throw new AppError(
+      "CLOUDPANEL_UNAVAILABLE",
+      "The update repository could not be reached.",
+      502,
+    );
   }
 }
 
@@ -120,12 +235,35 @@ export async function queueUpdate() {
   if (["queued", "updating", "reloading"].includes(state.status))
     throw new AppError("INVALID_REQUEST", "An update is already running.", 409);
   if (isUpdateCurrent(state))
-    throw new AppError("INVALID_REQUEST", "Panelavo is already up to date.", 409);
-  const queued: UpdateState = { ...state, status: "queued", startedAt: new Date().toISOString(), completedAt: undefined, error: undefined, previousPid: process.pid };
+    throw new AppError(
+      "INVALID_REQUEST",
+      "Panelavo is already up to date.",
+      409,
+    );
+  const queued: UpdateState = {
+    ...state,
+    status: "queued",
+    startedAt: new Date().toISOString(),
+    completedAt: undefined,
+    error: undefined,
+    previousPid: process.pid,
+  };
   await saveState(queued);
-  const child = spawn("/usr/bin/bash", [join(process.cwd(), "scripts", "self-update.sh"), state.repository, UPDATE_BRANCH, process.cwd()], {
-    cwd: process.cwd(), detached: true, stdio: "ignore", shell: false,
-  });
+  const child = spawn(
+    "/usr/bin/bash",
+    [
+      join(process.cwd(), "scripts", "self-update.sh"),
+      state.repository,
+      UPDATE_BRANCH,
+      process.cwd(),
+    ],
+    {
+      cwd: process.cwd(),
+      detached: true,
+      stdio: "ignore",
+      shell: false,
+    },
+  );
   child.on("error", () => undefined);
   child.unref();
   return queued;

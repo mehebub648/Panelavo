@@ -4,8 +4,7 @@ vi.mock("@/server/network/server-ip", () => ({
   getServerPublicIp: vi.fn(),
 }));
 vi.mock("@/server/settings/store", () => ({
-  getBaseDomain: vi.fn(),
-  DEFAULT_BASE_DOMAIN: "mehebub.com",
+  getPanelSettings: vi.fn(),
 }));
 vi.mock("@/server/network/dns", () => ({
   resolveDnsStatus: vi.fn(),
@@ -14,21 +13,24 @@ vi.mock("@/server/network/dns", () => ({
 }));
 
 import { getServerPublicIp } from "@/server/network/server-ip";
-import { getBaseDomain } from "@/server/settings/store";
+import { getPanelSettings } from "@/server/settings/store";
 import { resolveDnsStatus } from "@/server/network/dns";
 import { getSystemStatus, invalidateSystemStatus } from "./system-status";
 import { parseIppointerResponse } from "./ippointer";
 
 const setEnv = (baseDomain: string, ip: string) => {
-  vi.mocked(getBaseDomain).mockResolvedValue(baseDomain);
+  vi.mocked(getPanelSettings).mockResolvedValue({
+    baseDomain,
+    updateRepository: "",
+    wildcardRegistrationEndpoint: "https://wildcard.example.test/",
+    wildcardRegistrationBaseDomain: "managed.test",
+  });
   vi.mocked(getServerPublicIp).mockResolvedValue(ip);
 };
 const dnsReturns = (pointed: boolean, ips: string[]) =>
   vi
     .mocked(resolveDnsStatus)
-    .mockResolvedValue([
-      { name: "probe", ip: ips[0] ?? null, ips, pointed },
-    ]);
+    .mockResolvedValue([{ name: "probe", ip: ips[0] ?? null, ips, pointed }]);
 
 describe("getSystemStatus", () => {
   beforeEach(() => {
@@ -37,22 +39,22 @@ describe("getSystemStatus", () => {
   });
 
   it("is ready when the wildcard resolves to this server", async () => {
-    setEnv("mehebub.com", "1.2.3.4");
+    setEnv("managed.test", "1.2.3.4");
     dnsReturns(true, ["1.2.3.4"]);
     const status = await getSystemStatus({ refresh: true });
     expect(status.ready).toBe(true);
     expect(status.pointed).toBe(true);
     expect(status.canAutoRegister).toBe(true);
-    expect(status.wildcardDomain).toBe("*.1.2.3.4.mehebub.com");
+    expect(status.wildcardDomain).toBe("*.1.2.3.4.managed.test");
     expect(status.reason).toBe("");
   });
 
   it("is not ready when the wildcard points elsewhere", async () => {
-    setEnv("mehebub.com", "1.2.3.4");
+    setEnv("managed.test", "1.2.3.4");
     dnsReturns(false, ["9.9.9.9"]);
     const status = await getSystemStatus({ refresh: true });
     expect(status.ready).toBe(false);
-    expect(status.reason).toContain("*.1.2.3.4.mehebub.com");
+    expect(status.reason).toContain("*.1.2.3.4.managed.test");
   });
 
   it("is not ready and cannot auto-register without a base domain", async () => {
@@ -64,7 +66,7 @@ describe("getSystemStatus", () => {
     expect(status.reason).toContain("base domain");
   });
 
-  it("only auto-registers the mehebub.com base domain", async () => {
+  it("only auto-registers the configured managed base domain", async () => {
     setEnv("example.com", "1.2.3.4");
     dnsReturns(true, ["1.2.3.4"]);
     const status = await getSystemStatus({ refresh: true });
@@ -73,18 +75,18 @@ describe("getSystemStatus", () => {
   });
 
   it("uses a fresh random probe label each check (defeats negative cache)", async () => {
-    setEnv("mehebub.com", "1.2.3.4");
+    setEnv("managed.test", "1.2.3.4");
     dnsReturns(true, ["1.2.3.4"]);
     const first = await getSystemStatus({ refresh: true });
     const second = await getSystemStatus({ refresh: true });
     expect(first.probeName).not.toBe(second.probeName);
     for (const name of [first.probeName, second.probeName]) {
-      expect(name).toMatch(/^probe-[0-9a-f]+\.1\.2\.3\.4\.mehebub\.com$/);
+      expect(name).toMatch(/^probe-[0-9a-f]+\.1\.2\.3\.4\.managed\.test$/);
     }
   });
 
   it("caches the result until refreshed", async () => {
-    setEnv("mehebub.com", "1.2.3.4");
+    setEnv("managed.test", "1.2.3.4");
     dnsReturns(true, ["1.2.3.4"]);
     await getSystemStatus({ refresh: true });
     await getSystemStatus();
@@ -99,13 +101,13 @@ describe("parseIppointerResponse", () => {
     const result = parseIppointerResponse(200, {
       success: true,
       action: "created",
-      record: "*.1.2.3.4.mehebub.com",
+      record: "*.1.2.3.4.managed.test",
       points_to: "1.2.3.4",
     });
     expect(result).toEqual({
       ok: true,
       action: "created",
-      record: "*.1.2.3.4.mehebub.com",
+      record: "*.1.2.3.4.managed.test",
       pointsTo: "1.2.3.4",
     });
   });

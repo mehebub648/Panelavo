@@ -26,10 +26,14 @@ the panel's site user from the application directory
 2. **Environment.** Copy `.env.example` to `.env.local` and fill it in
    (setup.sh generates one automatically). For production make sure:
 
-   | Variable                     | Notes                                                               |
-   | ---------------------------- | ------------------------------------------------------------------- |
-   | `SESSION_SECRET`             | **≥ 32 chars.** Required in production or the app refuses to start. |
-   | `CREDENTIALS_ENCRYPTION_KEY` | Separate ≥ 32-char secret for encrypting Cloudflare tokens.         |
+   | Variable                                  | Notes                                                                                            |
+   | ----------------------------------------- | ------------------------------------------------------------------------------------------------ |
+   | `SESSION_SECRET`                          | **≥ 32 chars.** Required in production or the app refuses to start.                              |
+   | `CREDENTIALS_ENCRYPTION_KEY`              | Separate ≥ 32-char secret for encrypting Cloudflare tokens.                                      |
+   | `PANEL_BASE_DOMAIN`                       | Required base domain for panel-managed system subdomains.                                        |
+   | `PANEL_UPDATE_REPOSITORY`                 | Optional public HTTPS `.git` updater source; setup can infer a compatible checkout origin.       |
+   | `PANEL_WILDCARD_REGISTRATION_ENDPOINT`    | Optional trusted HTTPS wildcard-registration service; requires the matching base-domain setting. |
+   | `PANEL_WILDCARD_REGISTRATION_BASE_DOMAIN` | Base domain managed by the optional registration endpoint.                                       |
 
    All host-specific values are detected dynamically — you do **not** need to
    set `APP_BASE_URL` or `SERVER_PUBLIC_IP`:

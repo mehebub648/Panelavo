@@ -25,7 +25,7 @@ export default async function SettingsPage() {
       baseDomain={status.baseDomain}
       serverIp={status.serverIp}
       wildcardDomain={status.wildcardDomain}
-      isDefault={status.canAutoRegister}
+      canAutoRegister={status.canAutoRegister}
       pointed={status.pointed}
       categories={SITE_CATEGORIES}
       update={update}

@@ -18,6 +18,13 @@
 #   PANEL_BASE_DOMAIN=example.com    base domain for site subdomains
 #                                    (site-<id>.<ip>.<base>); reconfigurable
 #                                    later from the panel
+#   PANEL_UPDATE_REPOSITORY=https://git.example/panelavo.git
+#                                    public updater source; otherwise an HTTPS
+#                                    .git origin is used when available
+#   PANEL_WILDCARD_REGISTRATION_ENDPOINT=https://dns.example/register
+#   PANEL_WILDCARD_REGISTRATION_BASE_DOMAIN=example.com
+#                                    optional matching wildcard registration
+#                                    service and the base domain it manages
 #   PANEL_DOMAIN=panel.example.com   panel site domain
 #                                    (default panel.<ip>.<base-domain>, which
 #                                    the wildcard record already covers)
@@ -180,15 +187,16 @@ log "Server IP: ${SERVER_IP}"
 #
 #     One base domain drives everything: websites live on
 #     site-<id>.<ip>.<base> and the panel itself on panel.<ip>.<base>, all
-#     covered by the single wildcard record *.<ip>.<base>. The default base
-#     domain's wildcard can be self-registered (ippointer), so an operator
-#     without a domain of their own gets a working install with zero DNS work.
+#     covered by the single wildcard record *.<ip>.<base>. An optional,
+#     explicitly configured registration endpoint can create that wildcard.
 # ---------------------------------------------------------------------------
-DEFAULT_BASE_DOMAIN="mehebub.com"
 if [ -t 0 ]; then
   if [ -z "${PANEL_BASE_DOMAIN:-}" ]; then
-    read -r -p "${LOG_PREFIX} Base domain for the panel and its sites [${DEFAULT_BASE_DOMAIN}]: " PANEL_BASE_DOMAIN_INPUT
-    PANEL_BASE_DOMAIN="${PANEL_BASE_DOMAIN_INPUT:-$DEFAULT_BASE_DOMAIN}"
+    while [ -z "${PANEL_BASE_DOMAIN:-}" ]; do
+      read -r -p "${LOG_PREFIX} Base domain for the panel and its sites (example: example.com): " PANEL_BASE_DOMAIN_INPUT
+      PANEL_BASE_DOMAIN="${PANEL_BASE_DOMAIN_INPUT:-}"
+      [ -n "${PANEL_BASE_DOMAIN}" ] || warn "A base domain is required."
+    done
   fi
   if [ -z "${ADMIN_USER:-}" ]; then
     read -r -p "${LOG_PREFIX} Super Admin username [admin]: " ADMIN_USER_INPUT
@@ -205,16 +213,34 @@ if [ -t 0 ]; then
     done
   fi
 fi
-PANEL_BASE_DOMAIN="${PANEL_BASE_DOMAIN:-$DEFAULT_BASE_DOMAIN}"
+[ -n "${PANEL_BASE_DOMAIN:-}" ] || die "Set PANEL_BASE_DOMAIN for a non-interactive install."
+
+SOURCE_UPDATE_REPOSITORY="$(git -C "${SRC_DIR}" remote get-url origin 2>/dev/null || true)"
+case "${SOURCE_UPDATE_REPOSITORY}" in
+  https://*.git) ;;
+  *) SOURCE_UPDATE_REPOSITORY="" ;;
+esac
+PANEL_UPDATE_REPOSITORY="${PANEL_UPDATE_REPOSITORY:-$SOURCE_UPDATE_REPOSITORY}"
+
+if [ -n "${PANEL_WILDCARD_REGISTRATION_ENDPOINT:-}" ] || [ -n "${PANEL_WILDCARD_REGISTRATION_BASE_DOMAIN:-}" ]; then
+  [ -n "${PANEL_WILDCARD_REGISTRATION_ENDPOINT:-}" ] && [ -n "${PANEL_WILDCARD_REGISTRATION_BASE_DOMAIN:-}" ] ||
+    die "Set both PANEL_WILDCARD_REGISTRATION_ENDPOINT and PANEL_WILDCARD_REGISTRATION_BASE_DOMAIN."
+  case "${PANEL_WILDCARD_REGISTRATION_ENDPOINT}" in
+    https://*) ;;
+    *) die "PANEL_WILDCARD_REGISTRATION_ENDPOINT must use HTTPS." ;;
+  esac
+fi
 # The panel rides the same wildcard as the sites it manages, and so does the
 # database manager (a standalone phpMyAdmin with its own trusted certificate,
 # replacing links into CloudPanel's self-signed, firewalled port 8443).
 PANEL_DOMAIN="${PANEL_DOMAIN:-panel.${SERVER_IP}.${PANEL_BASE_DOMAIN}}"
 DB_MANAGER_DOMAIN="${DB_MANAGER_DOMAIN:-database.${SERVER_IP}.${PANEL_BASE_DOMAIN}}"
 
-if [ "${PANEL_BASE_DOMAIN}" = "${DEFAULT_BASE_DOMAIN}" ]; then
-  log "Registering IP ${SERVER_IP} with ippointer.mehebub.com ..."
-  curl -sS -X POST https://ippointer.mehebub.com -H "Content-Type: application/json" -d "{\"ip\":\"${SERVER_IP}\"}" || warn "Failed to register IP on ippointer."
+if [ -n "${PANEL_WILDCARD_REGISTRATION_ENDPOINT:-}" ] &&
+   [ "${PANEL_BASE_DOMAIN}" = "${PANEL_WILDCARD_REGISTRATION_BASE_DOMAIN}" ]; then
+  log "Registering IP ${SERVER_IP} with the configured wildcard service ..."
+  curl -sS -X POST "${PANEL_WILDCARD_REGISTRATION_ENDPOINT}" -H "Content-Type: application/json" -d "{\"ip\":\"${SERVER_IP}\"}" ||
+    warn "Failed to register the wildcard through the configured service."
 fi
 
 if [ -n "${PANEL_BASE_DOMAIN}" ]; then
@@ -554,7 +580,21 @@ SESSION_SECRET=$(openssl rand -base64 48 | tr -d '\n')
 CREDENTIALS_ENCRYPTION_KEY=$(openssl rand -base64 48 | tr -d '\n')
 SESSION_MAX_AGE_SECONDS=3600
 ${PANEL_BASE_DOMAIN:+PANEL_BASE_DOMAIN=${PANEL_BASE_DOMAIN}}
+${PANEL_UPDATE_REPOSITORY:+PANEL_UPDATE_REPOSITORY=${PANEL_UPDATE_REPOSITORY}}
+${PANEL_WILDCARD_REGISTRATION_ENDPOINT:+PANEL_WILDCARD_REGISTRATION_ENDPOINT=${PANEL_WILDCARD_REGISTRATION_ENDPOINT}}
+${PANEL_WILDCARD_REGISTRATION_BASE_DOMAIN:+PANEL_WILDCARD_REGISTRATION_BASE_DOMAIN=${PANEL_WILDCARD_REGISTRATION_BASE_DOMAIN}}
 EOF
+fi
+# Seed newly introduced optional settings on trusted reruns without replacing
+# an operator's existing values.
+if [ -n "${PANEL_UPDATE_REPOSITORY}" ] && ! grep -q '^PANEL_UPDATE_REPOSITORY=' "${SITE_ROOT}/.env.local"; then
+  echo "PANEL_UPDATE_REPOSITORY=${PANEL_UPDATE_REPOSITORY}" >> "${SITE_ROOT}/.env.local"
+fi
+if [ -n "${PANEL_WILDCARD_REGISTRATION_ENDPOINT:-}" ] && ! grep -q '^PANEL_WILDCARD_REGISTRATION_ENDPOINT=' "${SITE_ROOT}/.env.local"; then
+  echo "PANEL_WILDCARD_REGISTRATION_ENDPOINT=${PANEL_WILDCARD_REGISTRATION_ENDPOINT}" >> "${SITE_ROOT}/.env.local"
+fi
+if [ -n "${PANEL_WILDCARD_REGISTRATION_BASE_DOMAIN:-}" ] && ! grep -q '^PANEL_WILDCARD_REGISTRATION_BASE_DOMAIN=' "${SITE_ROOT}/.env.local"; then
+  echo "PANEL_WILDCARD_REGISTRATION_BASE_DOMAIN=${PANEL_WILDCARD_REGISTRATION_BASE_DOMAIN}" >> "${SITE_ROOT}/.env.local"
 fi
 # Record where the database manager actually lives so the panel's links keep
 # working even if the base domain is changed later. Idempotent for reruns and
@@ -593,7 +633,7 @@ const installedCommit = process.env.SOURCE_COMMIT || existing.installedCommit;
 const state = {
   status: installedCommit ? 'current' : 'idle',
   currentVersion: process.env.SOURCE_VERSION,
-  repository: process.env.PANEL_UPDATE_REPOSITORY || existing.repository || 'https://github.com/mehebub648/Panelavo.git',
+  repository: process.env.PANEL_UPDATE_REPOSITORY || existing.repository || '',
   branch: existing.branch || 'main',
   installedCommit,
   remoteCommit: installedCommit,

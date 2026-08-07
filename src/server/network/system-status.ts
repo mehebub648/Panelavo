@@ -1,8 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { resolveDnsStatus, systemWildcardDomain } from "@/server/network/dns";
 import { getServerPublicIp } from "@/server/network/server-ip";
-import { DEFAULT_BASE_DOMAIN, getBaseDomain } from "@/server/settings/store";
-import { IPPOINTER_MANAGED_BASE } from "@/server/network/ippointer";
+import { getPanelSettings } from "@/server/settings/store";
 
 // Whether the panel is usable: a base domain is configured AND the wildcard
 // *.<serverIp>.<baseDomain> resolves to this server. The whole site scheme
@@ -18,7 +17,6 @@ export type SystemStatus = {
   pointed: boolean; // wildcard resolves to serverIp
   resolvedIps: string[];
   canAutoRegister: boolean; // base domain is the ippointer-managed zone
-  defaultBaseDomain: string; // vendor-provided fallback base domain
   reason: string; // human explanation when not ready ("" when ready)
 };
 
@@ -46,7 +44,8 @@ export async function getSystemStatus(
     if (Date.now() - cached.at < ttl) return cached.status;
   }
 
-  const baseDomain = await getBaseDomain();
+  const settings = await getPanelSettings();
+  const baseDomain = settings.baseDomain;
   const serverIp = await getServerPublicIp();
   const wildcardDomain =
     baseDomain && serverIp ? systemWildcardDomain(serverIp, baseDomain) : "";
@@ -78,8 +77,11 @@ export async function getSystemStatus(
     ready,
     pointed,
     resolvedIps,
-    canAutoRegister: baseDomain === IPPOINTER_MANAGED_BASE,
-    defaultBaseDomain: DEFAULT_BASE_DOMAIN,
+    canAutoRegister: Boolean(
+      settings.wildcardRegistrationEndpoint &&
+      settings.wildcardRegistrationBaseDomain &&
+      baseDomain === settings.wildcardRegistrationBaseDomain,
+    ),
     reason,
   };
   cached = { status, at: Date.now() };

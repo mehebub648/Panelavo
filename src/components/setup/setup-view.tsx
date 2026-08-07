@@ -31,7 +31,9 @@ export function SetupView({
   const router = useRouter();
   const [status, setStatus] = useState<SystemStatus>(initialStatus);
   const [baseDomain, setBaseDomain] = useState(initialStatus.baseDomain);
-  const [busy, setBusy] = useState<null | "save" | "register" | "recheck">(null);
+  const [busy, setBusy] = useState<null | "save" | "register" | "recheck">(
+    null,
+  );
 
   // Apply a fresh status; if the wildcard is now live, leave the setup screen.
   // When reconfiguring an already-set-up panel, return to Settings instead of
@@ -180,7 +182,7 @@ export function SetupView({
                       onChange={(event) =>
                         setBaseDomain(event.target.value.toLowerCase())
                       }
-                      placeholder={status.defaultBaseDomain}
+                      placeholder="example.com"
                     />
                     <Button
                       type="button"
@@ -223,35 +225,9 @@ export function SetupView({
                         </Button>
                       </div>
                     ) : (
-                      <div className="mt-4 space-y-3">
-                        <p className="text-xs text-slate-500">
-                          Create this A record in your DNS provider, then recheck.
-                        </p>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          disabled={busy !== null}
-                          onClick={() => {
-                            setBaseDomain(status.defaultBaseDomain);
-                            call(
-                              "save",
-                              () =>
-                                fetch("/api/setup", {
-                                  method: "POST",
-                                  headers: { "content-type": "application/json" },
-                                  body: JSON.stringify({
-                                    action: "set-base-domain",
-                                    baseDomain: status.defaultBaseDomain,
-                                  }),
-                                }),
-                              (data) => apply(data.status),
-                            );
-                          }}
-                        >
-                          Use default {status.defaultBaseDomain} domain
-                        </Button>
-                      </div>
+                      <p className="mt-4 text-xs text-slate-500">
+                        Create this A record in your DNS provider, then recheck.
+                      </p>
                     )}
                   </div>
                 )}

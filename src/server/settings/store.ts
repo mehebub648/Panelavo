@@ -1,27 +1,20 @@
 import { jsonStore } from "@/server/storage/json-store";
 
-// Panel-wide settings: the base domain that system subdomains
-// (site-<id>.<ip>.<baseDomain>) are created under. The DNS requirement is a
-// single wildcard record: *.<server-ip>.<baseDomain> -> this server.
-// Seeded from PANEL_BASE_DOMAIN at first run and editable on the Settings page.
-// When the operator has no domain of their own we fall back to mehebub.com,
-// whose wildcard can be self-registered automatically via ippointer.
-
-// Default base domain used when nothing is configured. Its wildcard zone is
-// managed by ippointer (see server/network/ippointer.ts), so a fresh install
-// can register *.<ip>.mehebub.com without the operator owning a domain.
-export const DEFAULT_BASE_DOMAIN = "mehebub.com";
-export const DEFAULT_UPDATE_REPOSITORY =
-  "https://github.com/mehebub648/Panelavo.git";
+// Panel-wide settings. Environment values seed fresh/manual deployments;
+// persisted values remain authoritative after an operator changes them.
 
 type StoredSettings = {
   baseDomain?: string;
   updateRepository?: string;
+  wildcardRegistrationEndpoint?: string;
+  wildcardRegistrationBaseDomain?: string;
 };
 
 export type PanelSettings = {
   baseDomain: string;
   updateRepository: string;
+  wildcardRegistrationEndpoint: string;
+  wildcardRegistrationBaseDomain: string;
 };
 
 const store = jsonStore<StoredSettings>(
@@ -37,11 +30,19 @@ export async function getPanelSettings(): Promise<PanelSettings> {
     baseDomain:
       stored.baseDomain ||
       process.env.PANEL_BASE_DOMAIN?.trim().toLowerCase() ||
-      DEFAULT_BASE_DOMAIN,
+      "",
     updateRepository:
       stored.updateRepository ||
       process.env.PANEL_UPDATE_REPOSITORY?.trim() ||
-      DEFAULT_UPDATE_REPOSITORY,
+      "",
+    wildcardRegistrationEndpoint:
+      stored.wildcardRegistrationEndpoint ||
+      process.env.PANEL_WILDCARD_REGISTRATION_ENDPOINT?.trim() ||
+      "",
+    wildcardRegistrationBaseDomain:
+      stored.wildcardRegistrationBaseDomain ||
+      process.env.PANEL_WILDCARD_REGISTRATION_BASE_DOMAIN?.trim().toLowerCase() ||
+      "",
   };
 }
 

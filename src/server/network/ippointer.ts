@@ -1,19 +1,9 @@
-// Client for the ippointer wildcard-DNS registration service. ippointer owns
-// the mehebub.com Cloudflare zone and, when POSTed { ip }, creates the record
-// *.<ip>.mehebub.com -> <ip>. It only honours a request whose source IP matches
-// the submitted IP, so a server can register its OWN wildcard but not another's.
-// This is why auto-registration is possible only for the mehebub.com base
-// domain; any other base domain must be pointed by its own owner.
-
-export const IPPOINTER_ENDPOINT = "https://ippointer.mehebub.com/";
-
-// The single base domain whose wildcard ippointer can register on our behalf.
-export const IPPOINTER_MANAGED_BASE = "mehebub.com";
+import { getPanelSettings } from "@/server/settings/store";
 
 export type IppointerResult = {
   ok: boolean;
   action?: string; // "created" | "exists" | ...
-  record?: string; // "*.<ip>.mehebub.com"
+  record?: string; // "*.<ip>.<configured-base-domain>"
   pointsTo?: string;
   error?: string;
 };
@@ -40,12 +30,23 @@ export function parseIppointerResponse(
   };
 }
 
-// Register (or confirm) the wildcard *.<ip>.mehebub.com for this server. The
-// request must originate from `ip` itself; the caller passes the server's own
-// public IP.
+// Ask the explicitly configured service to register this server's wildcard.
+// The caller passes the server's own public IP.
 export async function registerWildcard(ip: string): Promise<IppointerResult> {
   try {
-    const response = await fetch(IPPOINTER_ENDPOINT, {
+    const { wildcardRegistrationEndpoint } = await getPanelSettings();
+    if (!wildcardRegistrationEndpoint)
+      return {
+        ok: false,
+        error: "No wildcard registration service is configured.",
+      };
+    const endpoint = new URL(wildcardRegistrationEndpoint);
+    if (endpoint.protocol !== "https:")
+      return {
+        ok: false,
+        error: "The wildcard registration endpoint must use HTTPS.",
+      };
+    const response = await fetch(endpoint, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ ip }),
