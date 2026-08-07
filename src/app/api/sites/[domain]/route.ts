@@ -17,7 +17,7 @@ import {
 } from "@/server/sites/site-root-overlay";
 import { AppError } from "@/server/cloudpanel/errors";
 import { autoDeleteDns } from "@/server/network/auto-dns";
-import { getServerPublicIp } from "@/server/network/server-ip";
+import { getRequestServerPublicIp } from "@/server/network/server-ip";
 
 type Context = { params: Promise<{ domain: string }> };
 
@@ -96,9 +96,8 @@ export async function DELETE(request: NextRequest, context: Context) {
     // Background DNS cleanup
     void (async () => {
       try {
-        const forwarded = request.headers.get("x-forwarded-host")?.split(":")[0];
-        const serverIp = await getServerPublicIp(forwarded || request.nextUrl.hostname);
-        
+        const serverIp = await getRequestServerPublicIp(request);
+
         await autoDeleteDns(session.user.id, decodedDomain, serverIp);
         if (meta?.aliases) {
           for (const alias of meta.aliases) {

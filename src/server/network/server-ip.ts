@@ -21,7 +21,8 @@ let cache: { ip: string; at: number } | null = null;
 function fromInterfaces(): string | null {
   for (const addresses of Object.values(networkInterfaces())) {
     for (const address of addresses ?? []) {
-      if (address.family === "IPv4" && !address.internal) return address.address;
+      if (address.family === "IPv4" && !address.internal)
+        return address.address;
     }
   }
   return null;
@@ -57,4 +58,28 @@ export async function getServerPublicIp(fallback?: string): Promise<string> {
     return detected;
   }
   return fallback?.trim() || "";
+}
+
+type RequestHostSource = {
+  headers: { get(name: string): string | null };
+  nextUrl: { hostname: string };
+};
+
+export function requestHostFallback(request: RequestHostSource) {
+  const forwarded = request.headers
+    .get("x-forwarded-host")
+    ?.split(",")[0]
+    .trim();
+  if (!forwarded) return request.nextUrl.hostname;
+  if (forwarded.startsWith("[")) {
+    const closingBracket = forwarded.indexOf("]");
+    return closingBracket === -1
+      ? forwarded
+      : forwarded.slice(1, closingBracket);
+  }
+  return forwarded.replace(/:\d+$/, "");
+}
+
+export function getRequestServerPublicIp(request: RequestHostSource) {
+  return getServerPublicIp(requestHostFallback(request));
 }

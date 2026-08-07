@@ -7,7 +7,7 @@ import { createLinkedServiceSchema } from "@/schemas/sites";
 import { fail, ok } from "@/server/http";
 import { audit } from "@/server/security/log";
 import { assertWriteRequest, rateLimit } from "@/server/security/request";
-import { getServerPublicIp } from "@/server/network/server-ip";
+import { getRequestServerPublicIp } from "@/server/network/server-ip";
 import { getBaseDomain } from "@/server/settings/store";
 import {
   allocateSiteId,
@@ -90,10 +90,7 @@ export async function POST(request: NextRequest, context: Context) {
         "No base domain is configured. Set one on the panel Settings page first.",
         409,
       );
-    const forwarded = request.headers.get("x-forwarded-host")?.split(":")[0];
-    const serverIp = await getServerPublicIp(
-      forwarded || request.nextUrl.hostname,
-    );
+    const serverIp = await getRequestServerPublicIp(request);
     if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(serverIp))
       throw new AppError(
         "INVALID_REQUEST",
