@@ -1,6 +1,4 @@
-import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { jsonStore } from "@/server/storage/json-store";
 
 // Panel-wide settings: the base domain that system subdomains
 // (site-<id>.<ip>.<baseDomain>) are created under. The DNS requirement is a
@@ -13,7 +11,8 @@ import { join } from "node:path";
 // managed by ippointer (see server/network/ippointer.ts), so a fresh install
 // can register *.<ip>.mehebub.com without the operator owning a domain.
 export const DEFAULT_BASE_DOMAIN = "mehebub.com";
-export const DEFAULT_UPDATE_REPOSITORY = "https://github.com/mehebub648/Panelavo.git";
+export const DEFAULT_UPDATE_REPOSITORY =
+  "https://github.com/mehebub648/Panelavo.git";
 
 type StoredSettings = {
   baseDomain?: string;
@@ -25,26 +24,15 @@ export type PanelSettings = {
   updateRepository: string;
 };
 
-const dataDir = () => process.env.PANEL_DATA_DIR || join(process.cwd(), ".data");
-const storeFile = () => join(dataDir(), "panel-settings.json");
-
-async function load(): Promise<StoredSettings> {
-  try {
-    return JSON.parse(await readFile(storeFile(), "utf8")) as StoredSettings;
-  } catch {
-    return {};
-  }
-}
-
-async function save(settings: StoredSettings) {
-  await mkdir(dataDir(), { recursive: true, mode: 0o700 });
-  const tmp = `${storeFile()}.${randomUUID()}.tmp`;
-  await writeFile(tmp, JSON.stringify(settings), { mode: 0o600 });
-  await rename(tmp, storeFile());
-}
+const store = jsonStore<StoredSettings>(
+  "panel-settings.json",
+  () => ({}),
+  (value) =>
+    value && typeof value === "object" ? (value as StoredSettings) : {},
+);
 
 export async function getPanelSettings(): Promise<PanelSettings> {
-  const stored = await load();
+  const stored = await store.load();
   return {
     baseDomain:
       stored.baseDomain ||
@@ -62,13 +50,13 @@ export async function getBaseDomain(): Promise<string> {
 }
 
 export async function setBaseDomain(baseDomain: string) {
-  const stored = await load();
+  const stored = await store.load();
   stored.baseDomain = baseDomain.trim().toLowerCase();
-  await save(stored);
+  await store.save(stored);
 }
 
 export async function setUpdateRepository(updateRepository: string) {
-  const stored = await load();
+  const stored = await store.load();
   stored.updateRepository = updateRepository.trim();
-  await save(stored);
+  await store.save(stored);
 }

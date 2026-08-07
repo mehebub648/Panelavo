@@ -248,5 +248,6 @@ src/server/auth         opaque application sessions
 src/server/cloudpanel   version-isolated live CloudPanel adapter
 src/server/sites        site metadata, type overlay, and Operations policy
 src/server/security     origin checks, limits, and redacted logs
+src/server/storage      private atomic JSON persistence
 src/types               CloudPanel adapter contracts
 ```

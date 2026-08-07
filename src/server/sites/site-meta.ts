@@ -1,7 +1,5 @@
-import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import { AppError } from "@/server/cloudpanel/errors";
+import { jsonStore } from "@/server/storage/json-store";
 
 // Panel-managed site metadata that CloudPanel has no concept of: the reserved
 // site id (which doubles as the application port), the project category the id
@@ -20,7 +18,12 @@ export const SITE_CATEGORIES: SiteCategory[] = [
   { id: "client", label: "Client projects", start: 20000, end: 20999 },
   { id: "personal", label: "Personal projects", start: 21000, end: 21999 },
   { id: "business", label: "Business/SaaS projects", start: 22000, end: 22999 },
-  { id: "friends", label: "Relatives/Friends projects", start: 23000, end: 23999 },
+  {
+    id: "friends",
+    label: "Relatives/Friends projects",
+    start: 23000,
+    end: 23999,
+  },
   { id: "demo", label: "Demo/Preview projects", start: 24000, end: 24999 },
   { id: "internal", label: "Internal tools", start: 25000, end: 25999 },
   { id: "reserved", label: "Reserved/Future", start: 26000, end: 29999 },
@@ -43,24 +46,17 @@ export type SiteMeta = {
 
 type Store = { sites: Record<string, SiteMeta> };
 
-const dataDir = () => process.env.PANEL_DATA_DIR || join(process.cwd(), ".data");
-const storeFile = () => join(dataDir(), "site-meta.json");
-
-async function load(): Promise<Store> {
-  try {
-    const parsed = JSON.parse(await readFile(storeFile(), "utf8")) as Partial<Store>;
-    return { sites: parsed.sites && typeof parsed.sites === "object" ? parsed.sites : {} };
-  } catch {
-    return { sites: {} };
-  }
-}
-
-async function save(store: Store) {
-  await mkdir(dataDir(), { recursive: true, mode: 0o700 });
-  const tmp = `${storeFile()}.${randomUUID()}.tmp`;
-  await writeFile(tmp, JSON.stringify(store), { mode: 0o600 });
-  await rename(tmp, storeFile());
-}
+const store = jsonStore<Store>(
+  "site-meta.json",
+  () => ({ sites: {} }),
+  (value) => {
+    const parsed = value as Partial<Store>;
+    return {
+      sites:
+        parsed?.sites && typeof parsed.sites === "object" ? parsed.sites : {},
+    };
+  },
+);
 
 export function categoryById(id: string) {
   return SITE_CATEGORIES.find((category) => category.id === id);
@@ -70,16 +66,20 @@ export function siteUserForId(id: number) {
   return `site-${id}`;
 }
 
-export function systemDomainFor(id: number, serverIp: string, baseDomain: string) {
+export function systemDomainFor(
+  id: number,
+  serverIp: string,
+  baseDomain: string,
+) {
   return `site-${id}.${serverIp}.${baseDomain}`.toLowerCase();
 }
 
 export async function getAllSiteMeta() {
-  return (await load()).sites;
+  return (await store.load()).sites;
 }
 
 export async function getSiteMeta(domain: string): Promise<SiteMeta | null> {
-  return (await load()).sites[domain.toLowerCase()] ?? null;
+  return (await store.load()).sites[domain.toLowerCase()] ?? null;
 }
 
 /** Linked services of a parent site, keyed by their lowercase system domain. */
@@ -88,23 +88,23 @@ export async function getLinkedServiceMeta(
 ): Promise<Record<string, SiteMeta>> {
   const parent = parentDomain.toLowerCase();
   return Object.fromEntries(
-    Object.entries((await load()).sites).filter(
+    Object.entries((await store.load()).sites).filter(
       ([, meta]) => meta.parent === parent,
     ),
   );
 }
 
 export async function setSiteMeta(domain: string, meta: SiteMeta) {
-  const store = await load();
-  store.sites[domain.toLowerCase()] = meta;
-  await save(store);
+  const value = await store.load();
+  value.sites[domain.toLowerCase()] = meta;
+  await store.save(value);
 }
 
 export async function removeSiteMeta(domain: string) {
-  const store = await load();
-  if (!(domain.toLowerCase() in store.sites)) return;
-  delete store.sites[domain.toLowerCase()];
-  await save(store);
+  const value = await store.load();
+  if (!(domain.toLowerCase() in value.sites)) return;
+  delete value.sites[domain.toLowerCase()];
+  await store.save(value);
 }
 
 /**
@@ -134,9 +134,9 @@ export async function allocateSiteId(
   const category = categoryById(categoryId);
   if (!category)
     throw new AppError("INVALID_REQUEST", "Unknown project category.", 400);
-  const store = await load();
+  const value = await store.load();
   const reserved = [
-    ...Object.values(store.sites).map((meta) => meta.id),
+    ...Object.values(value.sites).map((meta) => meta.id),
     ...externallyUsedPorts,
   ];
   const id = nextFreeId(category, reserved);
@@ -158,10 +158,15 @@ export async function changeSiteId(
   newId: number,
   externallyUsedPorts: number[] = [],
 ) {
-  const store = await load();
+  const value = await store.load();
   const key = domain.toLowerCase();
-  const meta = store.sites[key];
-  if (!meta) throw new AppError("SITE_NOT_FOUND", "This website has no reserved id.", 404);
+  const meta = value.sites[key];
+  if (!meta)
+    throw new AppError(
+      "SITE_NOT_FOUND",
+      "This website has no reserved id.",
+      404,
+    );
   if (meta.id === newId) return meta;
   const category = SITE_CATEGORIES.find(
     (item) => newId >= item.start && newId <= item.end,
@@ -173,15 +178,19 @@ export async function changeSiteId(
       400,
     );
   const taken = new Set([
-    ...Object.entries(store.sites)
+    ...Object.entries(value.sites)
       .filter(([other]) => other !== key)
       .map(([, value]) => value.id),
     ...externallyUsedPorts,
   ]);
   if (taken.has(newId))
-    throw new AppError("INVALID_REQUEST", `Port ${newId} is already reserved by another website.`, 409);
+    throw new AppError(
+      "INVALID_REQUEST",
+      `Port ${newId} is already reserved by another website.`,
+      409,
+    );
   meta.id = newId;
   meta.category = category.id;
-  await save(store);
+  await store.save(value);
   return meta;
 }
