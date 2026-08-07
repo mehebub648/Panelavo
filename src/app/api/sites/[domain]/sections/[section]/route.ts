@@ -10,6 +10,7 @@ import {
   operationsRequestSchema,
   terminalRequestSchema,
 } from "@/schemas/operations";
+import { getDeployHooks } from "@/server/deploy/hooks";
 
 export async function POST(
   request: NextRequest,
@@ -24,19 +25,26 @@ export async function POST(
       section === "git"
         ? gitRequestSchema.parse(submitted)
         : section === "actions"
-        ? operationsRequestSchema.parse(submitted)
-        : section === "env"
-          ? envRequestSchema.parse(submitted)
-          : section === "terminal"
-            ? terminalRequestSchema.parse(submitted)
-            : section === "backups"
-              ? backupRequestSchema.parse(submitted)
-              : submitted;
+          ? operationsRequestSchema.parse(submitted)
+          : section === "env"
+            ? envRequestSchema.parse(submitted)
+            : section === "terminal"
+              ? terminalRequestSchema.parse(submitted)
+              : section === "backups"
+                ? backupRequestSchema.parse(submitted)
+                : submitted;
+    const operation =
+      section === "git" && input.action === "pull"
+        ? {
+            ...input,
+            deployOperations: await getDeployHooks(decodeURIComponent(domain)),
+          }
+        : input;
     const data = await getCloudPanelClient().manageSiteSection(
       session.record.cloudPanel,
       decodeURIComponent(domain),
       section,
-      input,
+      operation,
     );
     return ok(data);
   } catch (error) {

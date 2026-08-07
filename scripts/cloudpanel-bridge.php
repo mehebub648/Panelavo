@@ -29,7 +29,7 @@ use App\Site\Updater\StaticSite as StaticSiteUpdater;
 use Symfony\Component\Dotenv\Dotenv;
 
 const CLOUDPANEL_ROOT = '/home/clp/htdocs/app/files';
-const PANELAVO_BROKER_PROTOCOL_VERSION = 8;
+const PANELAVO_BROKER_PROTOCOL_VERSION = 9;
 const PANELAVO_BROKER_MAX_INPUT_BYTES = 100663296;
 const PANELAVO_ROOTLESS_MIGRATION_ROOT = '/var/lib/panelavo/rootless-migrations';
 const PANELAVO_ROOTLESS_MIGRATION_TTL = 86400;
@@ -2384,6 +2384,56 @@ function resolveDeploymentPlan(Site $site, array $state, string $plan): array
     respond(['ok' => false, 'code' => 'INVALID_ACTION']);
 }
 
+function executeOperationSteps(Site $site, array $steps): array
+{
+    $results = [];
+    foreach ($steps as $stepDefinition) {
+        $args = $stepDefinition['args'];
+        $displayArgs = $args;
+        $temporaryCompose = null;
+        if (isset($stepDefinition['composeConfig'])) {
+            $encoded = json_encode($stepDefinition['composeConfig'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+            if (!is_string($encoded)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+            $identity = siteIdentity($site);
+            $runtimeDirectory = '/run/user/' . $identity['uid'];
+            $composeDirectory = $runtimeDirectory . '/panelavo-compose';
+            if (!is_dir($runtimeDirectory) || (int) (@fileowner($runtimeDirectory) ?: -1) !== $identity['uid']) {
+                respond(['ok' => false, 'code' => 'TOOL_UNAVAILABLE', 'message' => 'The rootless Docker user runtime directory is unavailable.']);
+            }
+            if (!is_dir($composeDirectory) && !@mkdir($composeDirectory, 0700)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+            if (is_link($composeDirectory) || !@chown($composeDirectory, $identity['uid']) || !@chgrp($composeDirectory, $identity['gid']) || !@chmod($composeDirectory, 0700)) {
+                respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+            }
+            $temporaryCompose = $composeDirectory . '/' . hash('sha256', (string) $site->getDomainName()) . '-' . bin2hex(random_bytes(6)) . '.json';
+            $previousUmask = umask(0077);
+            try {
+                if (@file_put_contents($temporaryCompose, $encoded, LOCK_EX) === false) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+            } finally {
+                umask($previousUmask);
+            }
+            if (!@chown($temporaryCompose, $identity['uid']) || !@chgrp($temporaryCompose, $identity['gid']) || !@chmod($temporaryCompose, 0600)) {
+                @unlink($temporaryCompose);
+                respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+            }
+            $args = array_map(static fn(string $arg): string => $arg === '@PANELAVO_COMPOSE_CONFIG@' ? $temporaryCompose : $arg, $args);
+            $displayArgs = array_map(static fn(string $arg): string => $arg === '@PANELAVO_COMPOSE_CONFIG@' ? '[ephemeral port-mapped config]' : $arg, $displayArgs);
+        }
+        try {
+            $result = runSiteCommand($site, $args, $stepDefinition['timeout'], !empty($stepDefinition['asRoot']), (array) ($stepDefinition['env'] ?? []));
+        } finally {
+            if ($temporaryCompose !== null) @unlink($temporaryCompose);
+        }
+        $results[] = [
+            'command' => $stepDefinition['command'], 'label' => $stepDefinition['label'],
+            'display' => implode(' ', $displayArgs), 'exitCode' => $result['code'],
+            'timedOut' => $result['timedOut'],
+            'output' => trim($result['stdout'] . ($result['stderr'] !== '' ? "\n" . $result['stderr'] : '')),
+        ];
+        if ($result['code'] !== 0) break;
+    }
+    return $results;
+}
+
 // --- Host software fixes -----------------------------------------------------
 // One-click remediations for failed preflight checks. Super Admin-only, exact
 // argument arrays, and installs always come from the official upstream source
@@ -4543,6 +4593,33 @@ try {
                     runGit($site, ['remote', 'remove', 'origin'], true); runGit($site, ['remote', 'add', 'origin', $url]);
                 } elseif ($action === 'fetch') runGit($site, ['fetch', '--prune', 'origin']);
                 elseif ($action === 'pull') {
+                    $hookOperations = $operation['deployOperations'] ?? [];
+                    if (!is_array($hookOperations) || count($hookOperations) > 10) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                    $allowedHooks = [
+                        'node-install', 'node-run', 'npm-install', 'npm-ci', 'npm-run',
+                        'composer-install', 'composer-install-production', 'composer-validate',
+                        'python-create-venv', 'python-install', 'pip-install',
+                        'artisan-optimize', 'artisan-optimize-clear', 'artisan-migrate', 'artisan-storage-link', 'artisan-queue-restart',
+                        'symfony-cache-clear', 'wp-cache-flush', 'wp-cron-run', 'django-check-deploy', 'django-migrate', 'django-collectstatic',
+                        'compose-validate', 'compose-pull', 'compose-deploy', 'compose-up', 'compose-restart', 'compose-ps',
+                        'pm2-start', 'pm2-restart', 'pm2-restart-one', 'pm2-save', 'upstream-check',
+                    ];
+                    $hookSteps = [];
+                    $state = operationsState($site, $user);
+                    foreach ($hookOperations as $hookOperation) {
+                        if (!is_array($hookOperation) || array_diff(array_keys($hookOperation), ['command', 'script', 'name'])) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                        $command = (string) ($hookOperation['command'] ?? '');
+                        if (!in_array($command, $allowedHooks, true)) respond(['ok' => false, 'code' => 'INVALID_ACTION']);
+                        $hookSteps[] = resolveOperationStep($state, $command, $hookOperation);
+                        if (!empty($state['expectedPort']) && in_array($command, ['compose-up', 'compose-deploy', 'compose-restart'], true)) {
+                            $hookSteps[] = resolveOperationStep($state, 'compose-port-verify', []);
+                        } elseif (!empty($state['expectedPort']) && in_array($command, ['pm2-start', 'pm2-restart', 'pm2-restart-one'], true)) {
+                            $hookSteps[] = resolveOperationStep($state, 'runtime-port-verify', []);
+                        }
+                    }
+                    foreach ($hookSteps as $stepDefinition) if (!empty($stepDefinition['asRoot'])) respond(['ok' => false, 'code' => 'FORBIDDEN']);
+                    $lock = @fopen('/var/lock/panelavo-operations-' . $site->getUser() . '.lock', 'c');
+                    if (!$lock || !flock($lock, LOCK_EX | LOCK_NB)) respond(['ok' => false, 'code' => 'OPERATION_BUSY']);
                     $dirty = gitChanges($site) !== [];
                     if ($dirty) runGit($site, ['stash', 'push', '--include-untracked', '-m', 'panelavo-auto-stash-before-pull']);
                     $pull = runGit($site, $ref ? ['pull', '--ff-only', 'origin', $ref] : ['pull', '--ff-only'], true);
@@ -4556,6 +4633,18 @@ try {
                             ? 'Pulled remote changes and restored your local changes.'
                             : 'Pulled remote changes, but some local changes conflicted. Resolve the marked files; the safety stash was kept.';
                     }
+                    if ($hookSteps && (!$dirty || $restore['code'] === 0)) {
+                        $startedAt = gmdate(DATE_ATOM);
+                        $hookResults = executeOperationSteps($site, $hookSteps);
+                        $lastHook = end($hookResults);
+                        $deployment = [
+                            'exitCode' => $lastHook['exitCode'], 'timedOut' => $lastHook['timedOut'],
+                            'startedAt' => $startedAt, 'finishedAt' => gmdate(DATE_ATOM),
+                            'steps' => $hookResults,
+                        ];
+                        if ($lastHook['exitCode'] !== 0) $notice = 'Remote changes were pulled, but the post-pull deployment stopped on a failed operation.';
+                    }
+                    flock($lock, LOCK_UN); fclose($lock);
                 }
                 elseif ($action === 'push') runGit($site, $ref ? ['push', '-u', 'origin', $ref] : ['push']);
                 elseif ($action === 'checkout') runGit($site, ['checkout', $ref]);
@@ -4580,7 +4669,9 @@ try {
                     runGit($site, ['clean', '-fd']);
                 }
                 else respond(['ok' => false, 'code' => 'INVALID_ACTION']);
-                respond(['ok' => true, 'data' => gitSection($site, null, $notice ?? null)]);
+                $gitData = gitSection($site, null, $notice ?? null);
+                if (isset($deployment)) $gitData['deployment'] = $deployment;
+                respond(['ok' => true, 'data' => $gitData]);
             } elseif ($section === 'users' && $action === 'generate-keypair') {
                 $home = '/home/' . $site->getUser();
                 $ssh = $home . '/.ssh';
@@ -4799,59 +4890,7 @@ try {
                 $lock = @fopen('/var/lock/panelavo-operations-' . $site->getUser() . '.lock', 'c');
                 if (!$lock || !flock($lock, LOCK_EX | LOCK_NB)) respond(['ok' => false, 'code' => 'OPERATION_BUSY']);
                 $startedAt = gmdate(DATE_ATOM);
-                $results = [];
-                foreach ($steps as $stepDefinition) {
-                    $args = $stepDefinition['args'];
-                    $displayArgs = $args;
-                    $temporaryCompose = null;
-                    if (isset($stepDefinition['composeConfig'])) {
-                        $encoded = json_encode($stepDefinition['composeConfig'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-                        if (!is_string($encoded)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
-                        $identity = siteIdentity($site);
-                        $runtimeDirectory = '/run/user/' . $identity['uid'];
-                        $composeDirectory = $runtimeDirectory . '/panelavo-compose';
-                        if (!is_dir($runtimeDirectory) || (int) (@fileowner($runtimeDirectory) ?: -1) !== $identity['uid']) {
-                            respond(['ok' => false, 'code' => 'TOOL_UNAVAILABLE', 'message' => 'The rootless Docker user runtime directory is unavailable.']);
-                        }
-                        if (!is_dir($composeDirectory) && !@mkdir($composeDirectory, 0700)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
-                        if (is_link($composeDirectory) || !@chown($composeDirectory, $identity['uid']) || !@chgrp($composeDirectory, $identity['gid']) || !@chmod($composeDirectory, 0700)) {
-                            respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
-                        }
-                        $temporaryCompose = $composeDirectory . '/' . hash('sha256', (string) $site->getDomainName()) . '-' . bin2hex(random_bytes(6)) . '.json';
-                        $previousUmask = umask(0077);
-                        try {
-                            if (@file_put_contents($temporaryCompose, $encoded, LOCK_EX) === false) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
-                        } finally {
-                            umask($previousUmask);
-                        }
-                        if (!@chown($temporaryCompose, $identity['uid']) || !@chgrp($temporaryCompose, $identity['gid']) || !@chmod($temporaryCompose, 0600)) {
-                            @unlink($temporaryCompose);
-                            respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
-                        }
-                        $args = array_map(static fn(string $arg): string => $arg === '@PANELAVO_COMPOSE_CONFIG@' ? $temporaryCompose : $arg, $args);
-                        $displayArgs = array_map(static fn(string $arg): string => $arg === '@PANELAVO_COMPOSE_CONFIG@' ? '[ephemeral port-mapped config]' : $arg, $displayArgs);
-                    }
-                    try {
-                        $result = runSiteCommand(
-                            $site,
-                            $args,
-                            $stepDefinition['timeout'],
-                            !empty($stepDefinition['asRoot']),
-                            (array) ($stepDefinition['env'] ?? []),
-                        );
-                    } finally {
-                        if ($temporaryCompose !== null) @unlink($temporaryCompose);
-                    }
-                    $results[] = [
-                        'command' => $stepDefinition['command'],
-                        'label' => $stepDefinition['label'],
-                        'display' => implode(' ', $displayArgs),
-                        'exitCode' => $result['code'],
-                        'timedOut' => $result['timedOut'],
-                        'output' => trim($result['stdout'] . ($result['stderr'] !== '' ? "\n" . $result['stderr'] : '')),
-                    ];
-                    if ($result['code'] !== 0) break;
-                }
+                $results = executeOperationSteps($site, $steps);
                 flock($lock, LOCK_UN);
                 fclose($lock);
                 $last = end($results);

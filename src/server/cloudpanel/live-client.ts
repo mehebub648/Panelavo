@@ -17,7 +17,7 @@ import { getDatabaseManagerUrl } from "@/server/sites/database-manager";
 import { getSiteRootOverride } from "@/server/sites/site-root-overlay";
 import { AppError } from "./errors";
 
-export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 8;
+export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 9;
 export const CLOUDPANEL_BROKER_PATH =
   "/usr/local/libexec/panelavo/panelavo-broker";
 
@@ -883,7 +883,11 @@ export class LiveCloudPanelClient implements CloudPanelClient {
           panelAdmin,
           applicationRootDirectory,
         },
-        siteSectionTimeout(section),
+        section === "git" &&
+          Array.isArray(input.deployOperations) &&
+          input.deployOperations.length > 0
+          ? SITE_SECTION_TIMEOUTS.actions
+          : siteSectionTimeout(section),
       );
       if (!result.ok) throw siteSectionBridgeError(result);
       if (result.data !== undefined) return result.data;

@@ -11,6 +11,7 @@ import {
   gitRequestSchema,
   operationsRequestSchema,
 } from "@/schemas/operations";
+import { getDeployHooks } from "@/server/deploy/hooks";
 
 export async function GET(
   request: NextRequest,
@@ -67,11 +68,15 @@ export async function POST(
               ? backupRequestSchema.parse(submitted)
               : submitted;
     const decoded = decodeURIComponent(domain);
+    const operation =
+      section === "git" && input.action === "pull"
+        ? { ...input, deployOperations: await getDeployHooks(decoded) }
+        : input;
     const data = await getCloudPanelClient().manageSiteSection(
       actor.cloudPanel,
       decoded,
       section,
-      input,
+      operation,
     );
     await audit("api.site_section.mutated", "success", {
       actor: actor.user,
