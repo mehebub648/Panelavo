@@ -12,6 +12,7 @@ import {
   Info,
   LogOut,
   Menu,
+  ScrollText,
   Settings,
   UserRound,
   Users,
@@ -40,19 +41,21 @@ export function AppShell({
         ? "Panel settings"
         : pathname === "/users"
           ? "User management"
-          : pathname === "/resources"
-            ? "Server resources"
-            : pathname === "/about"
-              ? "About panelavo"
-              : pathname === "/information"
-                ? "Server information"
-                : pathname === "/profile"
-                  ? "My profile"
-                  : pathname === "/sites/new"
-                    ? "Add website"
-                    : pathname.split("/").length > 3
-                      ? "Website workspace"
-                      : "Websites";
+          : pathname === "/audit"
+            ? "Audit trail"
+            : pathname === "/resources"
+              ? "Server resources"
+              : pathname === "/about"
+                ? "About panelavo"
+                : pathname === "/information"
+                  ? "Server information"
+                  : pathname === "/profile"
+                    ? "My profile"
+                    : pathname === "/sites/new"
+                      ? "Add website"
+                      : pathname.split("/").length > 3
+                        ? "Website workspace"
+                        : "Websites";
   const elevated = ["super-admin", "manager"].includes(user.panelRole ?? "");
   const nav = [
     { href: "/sites", label: "Websites", icon: Globe2 },
@@ -66,6 +69,9 @@ export function AppShell({
     { href: "/about", label: "About", icon: BadgeInfo },
     ...(user.panelRole === "super-admin"
       ? [{ href: "/users", label: "Users", icon: Users }]
+      : []),
+    ...(user.panelRole === "super-admin"
+      ? [{ href: "/audit", label: "Audit", icon: ScrollText }]
       : []),
     ...(user.panelRole === "super-admin"
       ? [{ href: "/settings", label: "Settings", icon: Settings }]

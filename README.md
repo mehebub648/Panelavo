@@ -90,6 +90,8 @@ Copy `.env.example` to `.env.local`. Panelavo sends validated JSON to the fixed 
 
 The application cookie is opaque, `HttpOnly`, `SameSite=Strict`, scoped to `/`, and `Secure` on the public HTTPS route. Sessions expire after `SESSION_MAX_AGE_SECONDS` and are mirrored to the protected `.data` directory so normal process reloads do not sign users out. Login and mutation throttling is also persisted there, so a restart does not clear abuse counters. Production still runs one Next.js process because session and mutation serialization are single-process concerns.
 
+Super Admins can inspect the retained audit trail at `/audit`. The page and `/api/audit` expose bounded filters for user, site/target, action, outcome, and date range, paginate newest-first, and verify the ledger's content hashes, links, and persisted head before showing the integrity badge. The existing redaction policy applies before events reach the ledger.
+
 ## Tested CloudPanel CLI integration
 
 The live adapter was validated against CloudPanel frontend asset version **2.5.4** and CLI version **6.0.8**. All CloudPanel access is local (CLI + bridge); no CloudPanel URL needs to be configured.

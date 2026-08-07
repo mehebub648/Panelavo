@@ -185,7 +185,10 @@ pm2 describe panelavo | grep -E "log path|out log|error log"
 
 Application audit events (logins, mutations) are emitted as JSON on stdout, so
 they land in the PM2 out log. Sensitive fields (passwords, tokens, cookies) are
-redacted before logging.
+redacted before logging. The same redacted events are retained in the bounded,
+hash-chained `.data/audit` ledger and are available to Super Admins from the
+Audit page. Its integrity badge verifies retained hashes, links, and the ledger
+head; a failed badge should be investigated before trusting the displayed trail.
 
 **Log rotation** (recommended so logs don't grow unbounded):
 
