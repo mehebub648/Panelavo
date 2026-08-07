@@ -185,6 +185,10 @@ An optional per-site S3-compatible destination streams a complete snapshot bundl
 
 Restore remains deliberately honest: it overwrites files in place rather than reproducing an exact point-in-time state (files created after the backup are not removed, and a database deleted since the backup is skipped because it cannot be recreated without its credentials). The archive contains only the configured application root under `htdocs`; it does not include the per-user rootless image store under `~/.local/share/docker`.
 
+### Notifications
+
+Super Admins can configure panel-wide SMTP email and a generic HTTPS webhook from Settings. Webhook payloads include generic fields plus Slack-compatible `text` and Discord-compatible `content`. SMTP passwords and webhook URLs are stored in the AES-256-GCM encrypted `.data/notification-settings.enc` store; saved passwords are never returned to the browser. The Settings card can send a live test before monitoring rules are enabled.
+
 ### Site terminal
 
 Each website has a Terminal tab that executes one command line at a time strictly as the site's Unix user through a non-interactive login shell — the same privilege boundary as that user's own SSH access, never root. Commands run in a validated working directory inside the site home with a bounded timeout and bounded output, and `cd` persists between commands. The tab also documents how to connect an external SSH/SFTP client as the same site user. Long-lived processes belong in PM2 or Compose, not the terminal.

@@ -3,6 +3,7 @@ import { CheckCircle2, Globe2, Pencil, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { UpdateManager } from "@/components/settings/update-manager";
 import type { UpdateState } from "@/server/updates/panel-updater";
+import { NotificationManager, type PublicNotificationSettings } from "@/components/settings/notification-manager";
 
 type Category = { id: string; label: string; start: number; end: number };
 
@@ -14,6 +15,7 @@ export function PanelSettingsForm({
   pointed,
   categories,
   update,
+  notifications,
 }: {
   baseDomain: string;
   serverIp: string;
@@ -22,6 +24,7 @@ export function PanelSettingsForm({
   pointed: boolean;
   categories: Category[];
   update: UpdateState;
+  notifications: PublicNotificationSettings;
 }) {
   const panelAddress = `panel.${serverIp}.${baseDomain}`;
 
@@ -97,6 +100,8 @@ export function PanelSettingsForm({
       </section>
 
       <UpdateManager initialState={update} />
+
+      <NotificationManager initialSettings={notifications} />
 
       <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-card">
         <div className="border-b border-slate-100 bg-slate-50/60 px-5 py-4 sm:px-6">

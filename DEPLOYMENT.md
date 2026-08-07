@@ -99,6 +99,8 @@ The Operations tab manages applications hosted by CloudPanel; it is separate fro
 
 S3-compatible backup destinations require an HTTPS endpoint and `CREDENTIALS_ENCRYPTION_KEY` (or the existing 32-character-or-longer `SESSION_SECRET`). The configured bucket credentials need list, read, write, and delete access only under the chosen site prefix. No bucket credentials are installed into the root broker.
 
+SMTP and webhook notification settings use the same credential-encryption key. Permit outbound TCP to the configured SMTP host/port and outbound HTTPS to the webhook receiver; Panelavo does not require an inbound notification port.
+
 The root contracts currently cover npm, pnpm, Yarn, and Bun projects; Composer, Laravel, and WordPress; uv, Poetry, Pipenv, pip virtual environments, and Django; direct static roots; reverse-proxy checks; PM2; and Docker Compose. A workspace needs usable root scripts or explicit root-level configuration. For a generated static site, configure CloudPanel to serve a verified build directory yourself: Panelavo does not infer `dist`, `build`, `out`, or another output and does not change the document root.
 
 Every Operations request sends a validated action, plan, or fix identifier to the server. The server chooses the executable and arguments, fixes the working directory, runs without a shell, bounds runtime and output, and holds a per-site lock. Recommended plans execute synchronously, stop after the first failed step, and expose each step's result. A missing executable, ambiguous dependency manager, invalid configuration, insufficient role, or failed safety rule remains a visible blocker; Operations never installs a missing tool silently or as a fallback.

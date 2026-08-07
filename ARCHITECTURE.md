@@ -24,6 +24,8 @@ The Super Admin update API reads a configurable public HTTPS Git repository from
 
 Application-owned metadata, persistent request-throttling counters, and encrypted credentials live under `.data` in the deployed site. Plain JSON overlays use the shared `src/server/storage/json-store.ts` fallback and serialized atomic-write policy while remaining separate compatibility files. The base domain, public update repository, and optional matched wildcard-registration endpoint/base-domain pair come from explicit `.data/panel-settings.json` values or `.env.local` seeds; none has a vendor-owned runtime fallback. Host configuration comes from `.env.local`; secrets must not reach client components. A single process is required by the current session and mutation-serialization design.
 
+Panel-wide notification channels live in the AES-256-GCM encrypted `.data/notification-settings.enc` store. `src/server/notifications` sends bounded SMTP email through Nodemailer and generic HTTPS webhook JSON with channel-specific compatibility fields. Only Super Admins can read the redacted configuration, save it, or trigger a delivery test; stored SMTP passwords are never returned to client code.
+
 Audit events are redacted before they are serialized into the bounded, rotated, hash-chained `.data/audit` ledger. The Super Admin-only `/audit` page and `GET /api/audit` call the same pagination/filter path, which verifies retained event hashes, inter-event links, and the persisted head before returning results; reads never bypass the ledger lock.
 
 ## Managed website Operations

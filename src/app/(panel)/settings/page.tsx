@@ -5,6 +5,7 @@ import { SITE_CATEGORIES } from "@/server/sites/site-meta";
 import { getSystemStatus } from "@/server/network/system-status";
 import { PanelSettingsForm } from "@/components/settings/panel-settings-form";
 import { getUpdateState } from "@/server/updates/panel-updater";
+import { getPublicNotificationSettings } from "@/server/notifications/store";
 
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Settings" };
@@ -18,7 +19,10 @@ export default async function SettingsPage() {
   // The card below is therefore a read-only status view; reconfiguring the base
   // domain happens on the dedicated /setup screen.
   const status = await getSystemStatus();
-  const update = await getUpdateState();
+  const [update, notifications] = await Promise.all([
+    getUpdateState(),
+    getPublicNotificationSettings(),
+  ]);
 
   return (
     <PanelSettingsForm
@@ -29,6 +33,7 @@ export default async function SettingsPage() {
       pointed={status.pointed}
       categories={SITE_CATEGORIES}
       update={update}
+      notifications={notifications}
     />
   );
 }

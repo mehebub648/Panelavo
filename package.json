@@ -1,6 +1,6 @@
 {
   "name": "panelavo",
-  "version": "0.1.70",
+  "version": "0.1.71",
   "private": true,
   "scripts": {
     "dev": "next dev -p 10443",
@@ -22,6 +22,7 @@
     "lucide-react": "^0.525.0",
     "monaco-editor": "^0.55.1",
     "next": "15.5.20",
+    "nodemailer": "7.0.5",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "sonner": "^2.0.5",
@@ -32,6 +33,7 @@
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.3.0",
     "@types/node": "^22.15.32",
+    "@types/nodemailer": "7.0.1",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "autoprefixer": "^10.4.21",
