@@ -180,6 +180,9 @@ function withPanelRoles(inner: CloudPanelClient): CloudPanelClient {
     getServerInfo: inner.getServerInfo.bind(inner),
     updateProfile: async (session, input) =>
       decorateUser(await inner.updateProfile(session, input)),
+    verifyPassword: inner.verifyPassword.bind(inner),
+    manageMfa: async (session, input) =>
+      decorateUser(await inner.manageMfa(session, input)),
     logout: inner.logout.bind(inner),
   };
 }

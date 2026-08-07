@@ -100,7 +100,7 @@ The root-owned broker uses fixed CloudPanel CLI argument arrays for supported mu
 
 ### Authentication and authorization
 
-After the CLI bridge accepts credentials and MFA when enabled, the browser receives only a random application-session identifier. Every protected route revalidates the account and current role through the bridge. Restricted site lists are selected from the user's CloudPanel assignments before they reach the browser.
+After the CLI bridge accepts credentials and MFA when enabled, the browser receives only a random application-session identifier. Every protected route revalidates the account and current role through the bridge. Restricted site lists are selected from the user's CloudPanel assignments before they reach the browser. Profile includes self-service authenticator enrollment and disable controls: unconfirmed secrets are encrypted in `.data`, expire after ten minutes, and are written to CloudPanel only after its own MFA verifier accepts the first code.
 
 Create permission is derived from CloudPanel's Admin and Site Manager roles. Unknown roles do not receive elevated access.
 

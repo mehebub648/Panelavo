@@ -17,7 +17,7 @@ import { getDatabaseManagerUrl } from "@/server/sites/database-manager";
 import { getSiteRootOverride } from "@/server/sites/site-root-overlay";
 import { AppError } from "./errors";
 
-export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 7;
+export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 8;
 export const CLOUDPANEL_BROKER_PATH =
   "/usr/local/libexec/panelavo/panelavo-broker";
 
@@ -131,8 +131,7 @@ export async function runScheduledBackup(input: {
     1_850_000,
   );
   if (result.code === "OPERATION_BUSY") return { skipped: true };
-  if (!result.ok)
-    throw siteSectionBridgeError(result);
+  if (!result.ok) throw siteSectionBridgeError(result);
   return {
     skipped: false,
     backupId: (result.data as { backupId?: string } | undefined)?.backupId,
@@ -145,7 +144,11 @@ export async function prepareBackupStaging(): Promise<{ directory: string }> {
   if (!result.ok) throw siteSectionBridgeError(result);
   const data = result.data as { directory?: string } | undefined;
   if (!data?.directory?.match(/^\/run\/user\/\d+\/panelavo-backup-staging$/))
-    throw new AppError("CLOUDPANEL_UNAVAILABLE", "The backup staging path was invalid.", 503);
+    throw new AppError(
+      "CLOUDPANEL_UNAVAILABLE",
+      "The backup staging path was invalid.",
+      503,
+    );
   return { directory: data.directory };
 }
 
@@ -155,11 +158,22 @@ export async function stageBackupBundle(input: {
   applicationRootDirectory?: string;
 }): Promise<{ path: string; bytes: number }> {
   await checkCloudPanelBroker();
-  const result = await invokeBroker({ action: "stage-backup", ...input }, 920_000);
+  const result = await invokeBroker(
+    { action: "stage-backup", ...input },
+    920_000,
+  );
   if (!result.ok) throw siteSectionBridgeError(result);
   const data = result.data as { path?: string; bytes?: number } | undefined;
-  if (!data?.path?.match(/^\/run\/user\/\d+\/panelavo-backup-staging\/[a-f0-9]{32}\.tar\.gz$/))
-    throw new AppError("CLOUDPANEL_UNAVAILABLE", "The staged backup path was invalid.", 503);
+  if (
+    !data?.path?.match(
+      /^\/run\/user\/\d+\/panelavo-backup-staging\/[a-f0-9]{32}\.tar\.gz$/,
+    )
+  )
+    throw new AppError(
+      "CLOUDPANEL_UNAVAILABLE",
+      "The staged backup path was invalid.",
+      503,
+    );
   return { path: data.path, bytes: Number(data.bytes ?? 0) };
 }
 
@@ -950,6 +964,42 @@ export class LiveCloudPanelClient implements CloudPanelClient {
         "INVALID_REQUEST",
         "Your profile could not be updated.",
         400,
+      );
+    return result.user;
+  }
+
+  async verifyPassword(session: CloudPanelSession, password: string) {
+    const result = await this.bridge({
+      action: "login",
+      username: this.sessionUser(session),
+      password,
+    });
+    if (!result.ok)
+      throw new AppError(
+        "INVALID_CREDENTIALS",
+        "Your current password is incorrect.",
+        401,
+      );
+  }
+
+  async manageMfa(
+    session: CloudPanelSession,
+    input: { action: "enable" | "disable"; secret?: string; code: string },
+  ) {
+    const result = await this.bridge({
+      action: "manage-mfa",
+      username: this.sessionUser(session),
+      operation: input,
+    });
+    if (!result.ok || !result.user)
+      throw new AppError(
+        result.code === "INVALID_TWO_FACTOR_CODE"
+          ? "INVALID_TWO_FACTOR_CODE"
+          : "INVALID_REQUEST",
+        result.code === "INVALID_TWO_FACTOR_CODE"
+          ? "That verification code is not valid."
+          : result.message || "Two-factor authentication could not be changed.",
+        result.code === "INVALID_TWO_FACTOR_CODE" ? 401 : 400,
       );
     return result.user;
   }

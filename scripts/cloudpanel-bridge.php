@@ -29,7 +29,7 @@ use App\Site\Updater\StaticSite as StaticSiteUpdater;
 use Symfony\Component\Dotenv\Dotenv;
 
 const CLOUDPANEL_ROOT = '/home/clp/htdocs/app/files';
-const PANELAVO_BROKER_PROTOCOL_VERSION = 7;
+const PANELAVO_BROKER_PROTOCOL_VERSION = 8;
 const PANELAVO_BROKER_MAX_INPUT_BYTES = 100663296;
 const PANELAVO_ROOTLESS_MIGRATION_ROOT = '/var/lib/panelavo/rootless-migrations';
 const PANELAVO_ROOTLESS_MIGRATION_TTL = 86400;
@@ -4116,6 +4116,33 @@ try {
                     (string) ($input['code'] ?? '')
                 );
             respond(['ok' => $valid, 'code' => $valid ? null : 'INVALID_TWO_FACTOR_CODE', 'user' => publicUser($user)]);
+
+        case 'manage-mfa':
+            if (!method_exists($user, 'setMfaSecret')) {
+                respond(['ok' => false, 'code' => 'INVALID_REQUEST', 'message' => 'This CloudPanel release does not support MFA changes.']);
+            }
+            $operation = $input['operation'] ?? [];
+            $mfaAction = (string) ($operation['action'] ?? '');
+            $code = preg_replace('/\s+/', '', (string) ($operation['code'] ?? ''));
+            if (preg_match('/^[0-9]{6}$/', $code) !== 1) respond(['ok' => false, 'code' => 'INVALID_TWO_FACTOR_CODE']);
+            $authenticator = new MfaAuthenticator();
+            if ($mfaAction === 'enable') {
+                if ($user->hasMfaEnabled()) respond(['ok' => false, 'code' => 'INVALID_REQUEST', 'message' => 'Two-factor authentication is already enabled.']);
+                $secret = strtoupper((string) ($operation['secret'] ?? ''));
+                if (preg_match('/^[A-Z2-7]{32}$/', $secret) !== 1 || !$authenticator->verifyCode($secret, $code)) {
+                    respond(['ok' => false, 'code' => 'INVALID_TWO_FACTOR_CODE']);
+                }
+                $user->setMfaSecret($secret);
+            } elseif ($mfaAction === 'disable') {
+                if (!$user->hasMfaEnabled() || !$authenticator->verifyCode($user->getMfaSecret(), $code)) {
+                    respond(['ok' => false, 'code' => 'INVALID_TWO_FACTOR_CODE']);
+                }
+                $user->setMfaSecret(null);
+            } else {
+                respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+            }
+            $manager->flush();
+            respond(['ok' => true, 'user' => publicUser($user)]);
 
         case 'user':
             respond(['ok' => true, 'user' => publicUser($user)]);

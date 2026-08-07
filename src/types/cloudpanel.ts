@@ -1,10 +1,5 @@
 export type SiteType =
-  | "php"
-  | "nodejs"
-  | "static"
-  | "python"
-  | "reverse-proxy"
-  | "docker";
+  "php" | "nodejs" | "static" | "python" | "reverse-proxy" | "docker";
 
 // Panel-level role model. CloudPanel natively stores admin / site-manager /
 // user; the panel "admin" tier is a CloudPanel "user" elevated by a local
@@ -27,6 +22,7 @@ export interface CloudPanelUser {
   email?: string;
   timezone?: string | null;
   status?: boolean;
+  mfa?: boolean;
   sites?: string[];
 }
 
@@ -133,10 +129,27 @@ export interface ServerResourceUser {
 export interface ServerResources {
   generatedAt: string;
   uptimeSeconds: number;
-  cpu: { cores: number; load1: number; load5: number; load15: number; usedPercent: number };
-  memory: { totalBytes: number; usedBytes: number; availableBytes: number; usedPercent: number };
+  cpu: {
+    cores: number;
+    load1: number;
+    load5: number;
+    load15: number;
+    usedPercent: number;
+  };
+  memory: {
+    totalBytes: number;
+    usedBytes: number;
+    availableBytes: number;
+    usedPercent: number;
+  };
   swap: { totalBytes: number; usedBytes: number };
-  disk: { totalBytes: number; usedBytes: number; availableBytes: number; usedPercent: number; mount: string };
+  disk: {
+    totalBytes: number;
+    usedBytes: number;
+    availableBytes: number;
+    usedPercent: number;
+    mount: string;
+  };
   users: ServerResourceUser[];
 }
 
@@ -191,7 +204,10 @@ export interface CloudPanelClient {
   getCurrentUser(session: CloudPanelSession): Promise<CloudPanelUser>;
   listSites(session: CloudPanelSession): Promise<CloudPanelSite[]>;
   listUsers(session: CloudPanelSession): Promise<CloudPanelUser[]>;
-  manageUser(session: CloudPanelSession, input: Record<string, unknown>): Promise<void>;
+  manageUser(
+    session: CloudPanelSession,
+    input: Record<string, unknown>,
+  ): Promise<void>;
   getSiteCreationOptions(
     session: CloudPanelSession,
   ): Promise<SiteCreationOptions>;
@@ -228,6 +244,11 @@ export interface CloudPanelClient {
   updateProfile(
     session: CloudPanelSession,
     input: UpdateProfileInput,
+  ): Promise<CloudPanelUser>;
+  verifyPassword(session: CloudPanelSession, password: string): Promise<void>;
+  manageMfa(
+    session: CloudPanelSession,
+    input: { action: "enable" | "disable"; secret?: string; code: string },
   ): Promise<CloudPanelUser>;
   logout(session: CloudPanelSession): Promise<void>;
 }
