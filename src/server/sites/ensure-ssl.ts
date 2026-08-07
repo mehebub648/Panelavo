@@ -53,7 +53,8 @@ export async function planSiteSsl(options: {
       if (alias === systemDomain) continue;
       // Best effort: only succeeds when a connected Cloudflare token covers
       // the alias's zone. autoPointDns also creates the www companion record.
-      createdRecords = (await autoPointDns(userId, alias, serverIp)) || createdRecords;
+      const result = await autoPointDns(userId, alias, serverIp);
+      createdRecords = result.changed || createdRecords;
     }
   }
 
@@ -64,8 +65,12 @@ export async function planSiteSsl(options: {
     statuses = await resolveDnsStatus(names, serverIp);
   }
 
-  const san = statuses.filter((status) => status.pointed).map((status) => status.name);
-  const unpointed = statuses.filter((status) => !status.pointed).map((status) => status.name);
+  const san = statuses
+    .filter((status) => status.pointed)
+    .map((status) => status.name);
+  const unpointed = statuses
+    .filter((status) => !status.pointed)
+    .map((status) => status.name);
   const warnings = unpointed.map(
     (name) =>
       `${name} does not point to this server (${serverIp}) yet, so it was left out of the SSL certificate. Point it here, then use "Recheck DNS & secure" to include it.`,
@@ -88,7 +93,13 @@ export async function certificateAlreadyCovers(
       session,
       systemDomain,
       "certificates",
-    )) as { items?: { type?: string; domains?: string[]; expiresAt?: string | null }[] };
+    )) as {
+      items?: {
+        type?: string;
+        domains?: string[];
+        expiresAt?: string | null;
+      }[];
+    };
     const want = new Set(desired.map((name) => name.toLowerCase()));
     return (data.items ?? []).some((cert) => {
       // Only a Let's Encrypt certificate counts as SSL coverage — CloudPanel's
@@ -96,7 +107,10 @@ export async function certificateAlreadyCovers(
       // suppress a real issuance.
       if (!isLetsEncrypt(cert.type)) return false;
       if (!Array.isArray(cert.domains)) return false;
-      if (cert.expiresAt && new Date(cert.expiresAt).getTime() < Date.now() + 7 * 86_400_000)
+      if (
+        cert.expiresAt &&
+        new Date(cert.expiresAt).getTime() < Date.now() + 7 * 86_400_000
+      )
         return false; // expiring soon — let a re-issue happen
       const have = new Set(cert.domains.map((name) => name.toLowerCase()));
       return Array.from(want).every((name) => have.has(name));
@@ -145,7 +159,8 @@ export async function issueSiteSsl(
       .filter((cert) => isLetsEncrypt(cert.type) && cert.id)
       .sort(
         (a, b) =>
-          new Date(b.expiresAt ?? 0).getTime() - new Date(a.expiresAt ?? 0).getTime(),
+          new Date(b.expiresAt ?? 0).getTime() -
+          new Date(a.expiresAt ?? 0).getTime(),
       )[0];
     if (freshest && !freshest.default)
       await client.manageSiteSection(session, systemDomain, "certificates", {
@@ -155,6 +170,9 @@ export async function issueSiteSsl(
   } catch (error) {
     // The certificate is installed either way; default promotion is cosmetic
     // consistency between CloudPanel's records and what nginx serves.
-    console.error(`Could not promote the new certificate for ${systemDomain}:`, error);
+    console.error(
+      `Could not promote the new certificate for ${systemDomain}:`,
+      error,
+    );
   }
 }

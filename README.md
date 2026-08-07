@@ -122,7 +122,7 @@ panelavo chooses each website's primary system domain. On creation the user pick
 
 A site with id `23223` is created as `site-23223.<server-ip>.<base domain>` with site user `site-23223` listening on port `23223`. The base domain is set at install time with `PANEL_BASE_DOMAIN`, prompted by `setup.sh`, and reconfigurable later from the panel (Settings → Change). Changes apply to future sites. The panel itself is served on `panel.<server-ip>.<base domain>`, covered by the same wildcard record, and its own CloudPanel site is hidden from the panel's website list. Reservations live in `.data/site-meta.json`; the port is movable from the site's Settings tab.
 
-Customer-entered domains are aliases: the Domains tab and create form add them to the vhost `server_name`, point DNS through the panel-wide Cloudflare token when it manages the zone, and issue Let's Encrypt certificates covering selected domains. The system subdomain can be blocked with 403 or redirected to an alias; ACME challenge paths stay reachable so renewals keep working.
+Customer-entered domains are aliases: the Domains tab and create form add them to the vhost `server_name`, point DNS through the user's connected Cloudflare token when it manages the zone, and issue Let's Encrypt certificates covering selected domains. Site creation, SSL preparation, and the explicit DNS action share one A-record policy for the primary name and applicable `www` companion. The system subdomain can be blocked with 403 or redirected to an alias; ACME challenge paths stay reachable so renewals keep working.
 
 ### Site creation
 
