@@ -26,6 +26,8 @@ Application-owned metadata, persistent request-throttling counters, and encrypte
 
 Panel-wide notification channels live in the AES-256-GCM encrypted `.data/notification-settings.enc` store. `src/server/notifications` sends bounded SMTP email through Nodemailer and generic HTTPS webhook JSON with channel-specific compatibility fields. Only Super Admins can read the redacted configuration, save it, or trigger a delivery test; stored SMTP passwords are never returned to client code.
 
+Monitoring reuses the single-process runtime. The existing one-minute resource sampler feeds a persisted threshold state machine that requires N consecutive breach samples before alerting and N healthy samples before recovery. A companion minute timer claims due per-site HTTPS checks from `.data/monitoring.json`; each primary domain has its own 1–60 minute interval and persisted up/down/failure state. Checks do not follow redirects, consider HTTP 2xx/3xx healthy, and use bounded timeouts. Enabled sites receive a direct TLS expiry check at most every six hours. The same timer checks the configured update repository every six hours, while scheduled-backup failures publish directly. Notification delivery failures never take down sampling or hosted websites.
+
 Audit events are redacted before they are serialized into the bounded, rotated, hash-chained `.data/audit` ledger. The Super Admin-only `/audit` page and `GET /api/audit` call the same pagination/filter path, which verifies retained event hashes, inter-event links, and the persisted head before returning results; reads never bypass the ledger lock.
 
 ## Managed website Operations

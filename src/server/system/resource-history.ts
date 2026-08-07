@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, statfs, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ResourceHistoryPoint } from "@/types/cloudpanel";
+import { evaluateResourceAlerts } from "@/server/monitoring/resource-alerts";
 
 // In-process resource sampler: one point per minute (CPU / memory / disk
 // percentages), kept for 24 hours and mirrored to disk so history survives
@@ -92,6 +93,7 @@ async function sample() {
       if (total > 0) point.disk = Math.round(((total - free) / total) * 1000) / 10;
     } catch {}
     state.points.push(point);
+    void evaluateResourceAlerts(point).catch(() => undefined);
     if (state.points.length > MAX_POINTS) state.points.splice(0, state.points.length - MAX_POINTS);
     if (++state.sinceLastPersist >= PERSIST_EVERY) {
       state.sinceLastPersist = 0;

@@ -20,19 +20,25 @@ import {
 import { issueSiteSsl, planSiteSsl } from "@/server/sites/ensure-ssl";
 import type { CreateSiteInput } from "@/types/cloudpanel";
 import { localSiteProxyUrl } from "@/lib/site-url";
+import { getAllUptimeStates } from "@/server/monitoring/store";
 
 export async function GET() {
   const requestId = randomUUID();
   try {
     const session = await requireUser();
-    const [sites, meta] = await Promise.all([
+    const [sites, meta, uptime] = await Promise.all([
       getCloudPanelClient().listSites(session.record.cloudPanel),
       getAllSiteMeta(),
+      getAllUptimeStates(),
     ]);
     return ok({
       sites: sites.map((site) => {
         const siteMeta = meta[site.domain.toLowerCase()];
-        return siteMeta ? { ...site, meta: siteMeta } : site;
+        return {
+          ...site,
+          ...(siteMeta ? { meta: siteMeta } : {}),
+          uptime: uptime[site.domain.toLowerCase()],
+        };
       }),
     });
   } catch (error) {

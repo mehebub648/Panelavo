@@ -6,6 +6,7 @@ import {
   recordBackupScheduleOutcome,
 } from "./schedule";
 import { getOffsiteDestination, uploadOffsiteBackup } from "./offsite";
+import { sendNotification } from "@/server/notifications/send";
 
 const INTERVAL_MS = 60_000;
 type SchedulerState = { timer?: NodeJS.Timeout; running: boolean };
@@ -48,6 +49,7 @@ export async function runBackupScheduler(now = new Date()) {
           lastMessage: message.slice(0, 300),
         });
         void audit("backups.scheduled", "failure", { site: domain });
+        void sendNotification({ title: `Backup failed for ${domain}`, message, severity: "critical", event: "backups.failed", site: domain });
       }
     }
   } finally {

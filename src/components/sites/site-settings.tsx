@@ -11,14 +11,18 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { UptimeSettings } from "@/components/sites/uptime-settings";
+import type { UptimeConfig, UptimeState } from "@/server/monitoring/store";
 
 
 export function SiteSettings({
   initialSite,
   user,
+  uptime,
 }: {
   initialSite: CloudPanelSite;
   user: CloudPanelUser;
+  uptime: { config: UptimeConfig; state: UptimeState };
 }) {
   const router = useRouter();
   const [site, setSite] = useState(initialSite);
@@ -312,6 +316,11 @@ export function SiteSettings({
           </div>
         )}
       </form>
+      <UptimeSettings
+        domain={site.domain}
+        initial={uptime}
+        canWrite={user.canCreateSites}
+      />
       {user.canCreateSites && (
         <section className="flex flex-col gap-4 rounded-2xl border border-red-200/60 bg-gradient-to-br from-red-50/50 to-white/50 backdrop-blur-sm p-5 sm:flex-row sm:items-center sm:justify-between sm:p-6 shadow-sm">
           <div>

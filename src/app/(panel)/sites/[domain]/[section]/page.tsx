@@ -17,6 +17,7 @@ import { getSiteMeta } from "@/server/sites/site-meta";
 import { getSiteRootOverride } from "@/server/sites/site-root-overlay";
 import { getBackupSchedule } from "@/server/backups/schedule";
 import { getOffsiteDestination, listOffsiteBackups } from "@/server/backups/offsite";
+import { getUptime } from "@/server/monitoring/store";
 import { SERVICE_SECTIONS } from "@/components/sites/site-sections";
 import type { OperationsData } from "@/types/operations";
 
@@ -70,7 +71,10 @@ export default async function SiteSectionPage({
   const canWrite =
     session.user.canCreateSites || session.user.panelRole === "admin";
   if (section === "settings") {
-    const sites = await cloudPanel.listSites(session.record.cloudPanel);
+    const [sites, uptime] = await Promise.all([
+      cloudPanel.listSites(session.record.cloudPanel),
+      getUptime(domain),
+    ]);
     const site = sites.find((item) => item.domain === domain);
     if (!site) notFound();
     const applicationRootDirectory = await getSiteRootOverride(domain);
@@ -90,7 +94,7 @@ export default async function SiteSectionPage({
       : null;
     return (
       <div className="w-full space-y-5">
-        <SiteSettings initialSite={mergedSite} user={session.user} />
+        <SiteSettings initialSite={mergedSite} user={session.user} uptime={uptime} />
         {siteMeta && !isService ? (
           <LinkedServices parentDomain={domain} canWrite={canWrite} />
         ) : null}

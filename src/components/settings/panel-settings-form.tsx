@@ -4,6 +4,8 @@ import { Button } from "@/components/ui/button";
 import { UpdateManager } from "@/components/settings/update-manager";
 import type { UpdateState } from "@/server/updates/panel-updater";
 import { NotificationManager, type PublicNotificationSettings } from "@/components/settings/notification-manager";
+import { MonitoringManager } from "@/components/settings/monitoring-manager";
+import type { MonitoringSettings } from "@/server/monitoring/store";
 
 type Category = { id: string; label: string; start: number; end: number };
 
@@ -16,6 +18,7 @@ export function PanelSettingsForm({
   categories,
   update,
   notifications,
+  monitoring,
 }: {
   baseDomain: string;
   serverIp: string;
@@ -25,6 +28,7 @@ export function PanelSettingsForm({
   categories: Category[];
   update: UpdateState;
   notifications: PublicNotificationSettings;
+  monitoring: MonitoringSettings;
 }) {
   const panelAddress = `panel.${serverIp}.${baseDomain}`;
 
@@ -102,6 +106,8 @@ export function PanelSettingsForm({
       <UpdateManager initialState={update} />
 
       <NotificationManager initialSettings={notifications} />
+
+      <MonitoringManager initialSettings={monitoring} />
 
       <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-card">
         <div className="border-b border-slate-100 bg-slate-50/60 px-5 py-4 sm:px-6">

@@ -31,6 +31,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { formatDate } from "@/lib/utils";
+import type { UptimeState } from "@/server/monitoring/store";
+
+type ListedSite = CloudPanelSite & { uptime?: UptimeState };
 
 const typeLabels: Record<SiteType, string> = {
   php: "PHP",
@@ -64,13 +67,18 @@ function TypeBadge({ type }: { type?: SiteType }) {
     </span>
   );
 }
-function Status({ status }: { status?: string }) {
+function Status({ status, uptime }: { status?: string; uptime?: UptimeState }) {
+  const monitored = uptime?.status;
   return (
     <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700">
       <span
-        className={`h-1.5 w-1.5 rounded-full ${status === "inactive" ? "bg-slate-400" : "bg-emerald-500"}`}
+        className={`h-1.5 w-1.5 rounded-full ${monitored === "down" ? "bg-red-500" : status === "inactive" ? "bg-slate-400" : "bg-emerald-500"}`}
       />
-      {status === "inactive"
+      {monitored === "down"
+        ? "Down"
+        : monitored === "up"
+          ? "Up"
+          : status === "inactive"
         ? "Inactive"
         : status === "unknown"
           ? "Unknown"
@@ -82,7 +90,7 @@ function Status({ status }: { status?: string }) {
 export function SiteList({ user }: { user: CloudPanelUser }) {
   const router = useRouter();
   const params = useSearchParams();
-  const [sites, setSites] = useState<CloudPanelSite[]>([]);
+  const [sites, setSites] = useState<ListedSite[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
@@ -152,8 +160,8 @@ export function SiteList({ user }: { user: CloudPanelUser }) {
     // Linked services render right under their parent; a service whose parent
     // is filtered out (or not visible) stays as a top-level row.
     const visible = new Set(matches.map((site) => site.domain.toLowerCase()));
-    const children = new Map<string, CloudPanelSite[]>();
-    const roots: CloudPanelSite[] = [];
+    const children = new Map<string, ListedSite[]>();
+    const roots: ListedSite[] = [];
     for (const site of matches) {
       const parent =
         typeof site.meta?.parent === "string" ? site.meta.parent : "";
@@ -344,7 +352,7 @@ export function SiteList({ user }: { user: CloudPanelUser }) {
                         {site.siteUser || "—"}
                       </td>
                       <td className="px-4 py-4">
-                        <Status status={site.status} />
+                        <Status status={site.status} uptime={site.uptime} />
                       </td>
                       <td className="px-4 py-4 text-sm text-slate-500">
                         {formatDate(site.createdAt)}
@@ -435,7 +443,7 @@ export function SiteList({ user }: { user: CloudPanelUser }) {
                         )}
                       </p>
                     </div>
-                    <Status status={site.status} />
+                    <Status status={site.status} uptime={site.uptime} />
                   </div>
                   <div className="grid grid-cols-2 divide-x divide-slate-100 border-t border-slate-100 bg-slate-50/40">
                     <Link
