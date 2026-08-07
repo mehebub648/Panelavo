@@ -21,6 +21,19 @@ export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 5;
 export const CLOUDPANEL_BROKER_PATH =
   "/usr/local/libexec/panelavo/panelavo-broker";
 
+const SITE_SECTION_TIMEOUTS: Readonly<Record<string, number>> = {
+  actions: 1_850_000,
+  backups: 1_850_000,
+  "file-manager": 620_000,
+  git: 300_000,
+  terminal: 200_000,
+  env: 60_000,
+};
+
+export function siteSectionTimeout(section: string) {
+  return SITE_SECTION_TIMEOUTS[section];
+}
+
 type BridgeResult = {
   ok: boolean;
   code?: string | null;
@@ -31,9 +44,7 @@ type BridgeResult = {
   data?: unknown;
 };
 
-let brokerHealth:
-  | { checkedAt: number; promise: Promise<void> }
-  | undefined;
+let brokerHealth: { checkedAt: number; promise: Promise<void> } | undefined;
 
 function parseBrokerOutput(output: string): BridgeResult {
   try {
@@ -57,14 +68,10 @@ function invokeBroker(
   timeout = 15_000,
 ): Promise<BridgeResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn(
-      "/usr/bin/sudo",
-      ["-n", CLOUDPANEL_BROKER_PATH],
-      {
-        shell: false,
-        stdio: ["pipe", "pipe", "pipe"],
-      },
-    );
+    const child = spawn("/usr/bin/sudo", ["-n", CLOUDPANEL_BROKER_PATH], {
+      shell: false,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk: Buffer) => {
@@ -149,37 +156,76 @@ export async function checkCloudPanelBroker() {
 
 export function siteSectionBridgeError(result: BridgeResult) {
   if (result.code === "UPLOAD_TOO_LARGE")
-    return new AppError("INVALID_REQUEST", "The upload is too large. Files must be 64 MiB or smaller.", 413);
+    return new AppError(
+      "INVALID_REQUEST",
+      "The upload is too large. Files must be 64 MiB or smaller.",
+      413,
+    );
   if (result.code === "DIRECTORY_NOT_EMPTY")
-    return new AppError("INVALID_REQUEST", "The website root is not empty. Initialize Git there or remove the existing files before cloning.", 409);
+    return new AppError(
+      "INVALID_REQUEST",
+      "The website root is not empty. Initialize Git there or remove the existing files before cloning.",
+      409,
+    );
   if (result.code === "GIT_FAILED") {
     const detail = result.message ?? "";
-    const message = /permission denied|publickey|authentication failed|could not read username/i.test(detail)
-      ? "Repository authentication failed. Add this website's public deployment key to the repository and try again."
-      : /repository not found|not found|does not exist/i.test(detail)
-        ? "The repository or branch was not found. Check the URL, access, and branch name."
-        : /host key verification failed/i.test(detail)
-          ? "The Git host identity could not be verified. Try the connection again."
-          : "Git could not access the repository. Check the URL, deployment key, and branch name.";
+    const message =
+      /permission denied|publickey|authentication failed|could not read username/i.test(
+        detail,
+      )
+        ? "Repository authentication failed. Add this website's public deployment key to the repository and try again."
+        : /repository not found|not found|does not exist/i.test(detail)
+          ? "The repository or branch was not found. Check the URL, access, and branch name."
+          : /host key verification failed/i.test(detail)
+            ? "The Git host identity could not be verified. Try the connection again."
+            : "Git could not access the repository. Check the URL, deployment key, and branch name.";
     return new AppError("SITE_UPDATE_FAILED", message, 422);
   }
   if (result.code === "OPERATION_BUSY")
-    return new AppError("SITE_UPDATE_FAILED", "Another operation is already running for this website. Wait for it to finish, then run the preflight again.", 409);
+    return new AppError(
+      "SITE_UPDATE_FAILED",
+      "Another operation is already running for this website. Wait for it to finish, then run the preflight again.",
+      409,
+    );
   if (result.code === "TOOL_UNAVAILABLE")
-    return new AppError("SITE_UPDATE_FAILED", "A required runtime tool is unavailable. Review the failed preflight check before trying again.", 409);
+    return new AppError(
+      "SITE_UPDATE_FAILED",
+      "A required runtime tool is unavailable. Review the failed preflight check before trying again.",
+      409,
+    );
   if (result.code === "UNSAFE_COMPOSE")
-    return new AppError("INVALID_REQUEST", "The Compose configuration does not satisfy Panelavo's host safety policy. Review the preflight blocker and update the project configuration.", 422);
+    return new AppError(
+      "INVALID_REQUEST",
+      "The Compose configuration does not satisfy Panelavo's host safety policy. Review the preflight blocker and update the project configuration.",
+      422,
+    );
   if (result.code === "ACTION_UNAVAILABLE")
-    return new AppError("INVALID_REQUEST", "That action is no longer available for the detected website architecture. Run the preflight again.", 409);
+    return new AppError(
+      "INVALID_REQUEST",
+      "That action is no longer available for the detected website architecture. Run the preflight again.",
+      409,
+    );
   if (result.code === "FORBIDDEN")
-    return new AppError("FORBIDDEN", "This operation requires a Super Admin.", 403);
+    return new AppError(
+      "FORBIDDEN",
+      "This operation requires a Super Admin.",
+      403,
+    );
   if (result.code === "INVALID_REQUEST" || result.code === "INVALID_ACTION")
-    return new AppError("INVALID_REQUEST", "The website operation is not valid.", 400);
+    return new AppError(
+      "INVALID_REQUEST",
+      "The website operation is not valid.",
+      400,
+    );
   // The bridge often computes a precise, operator-facing reason (e.g. a failed
   // tar/db export, a missing app root) and returns it as SITE_UPDATE_FAILED.
   // Surface that detail instead of collapsing every failure to a generic 502.
   const detail = result.message?.trim();
-  return new AppError("SITE_UPDATE_FAILED", detail || "CloudPanel could not apply the change.", 502);
+  return new AppError(
+    "SITE_UPDATE_FAILED",
+    detail || "CloudPanel could not apply the change.",
+    502,
+  );
 }
 
 export class LiveCloudPanelClient implements CloudPanelClient {
@@ -220,7 +266,11 @@ export class LiveCloudPanelClient implements CloudPanelClient {
     const user = await this.getCurrentUser(session);
     if (user.canCreateSites) return { user, panelAdmin: false };
     if (!(await isPanelAdmin(user.username)))
-      throw new AppError("FORBIDDEN", "You do not have permission to modify websites.", 403);
+      throw new AppError(
+        "FORBIDDEN",
+        "You do not have permission to modify websites.",
+        403,
+      );
     if (domain !== undefined) {
       const sites = await this.listSites(session);
       if (!sites.some((site) => site.domain === domain))
@@ -229,25 +279,46 @@ export class LiveCloudPanelClient implements CloudPanelClient {
     return { user, panelAdmin: true };
   }
 
-  async login(input: { username: string; password: string }): Promise<CloudPanelLoginResult> {
+  async login(input: {
+    username: string;
+    password: string;
+  }): Promise<CloudPanelLoginResult> {
     const result = await this.bridge({ action: "login", ...input });
     if (!result.ok || !result.user)
-      throw new AppError("INVALID_CREDENTIALS", "The user name or password is incorrect.", 401);
+      throw new AppError(
+        "INVALID_CREDENTIALS",
+        "The user name or password is incorrect.",
+        401,
+      );
     const session: CloudPanelSession = {
       cookies: {},
       usernameHint: result.user.username,
       cliAuthenticated: true,
     };
     if (result.user.mfa)
-      return { status: "two-factor-required", session: { ...session, pendingTwoFactor: true } };
+      return {
+        status: "two-factor-required",
+        session: { ...session, pendingTwoFactor: true },
+      };
     return { status: "authenticated", session, user: result.user };
   }
 
-  async verifyTwoFactor(input: { session: CloudPanelSession; code: string }): Promise<CloudPanelLoginResult> {
+  async verifyTwoFactor(input: {
+    session: CloudPanelSession;
+    code: string;
+  }): Promise<CloudPanelLoginResult> {
     const username = this.sessionUser(input.session);
-    const result = await this.bridge({ action: "mfa", username, code: input.code });
+    const result = await this.bridge({
+      action: "mfa",
+      username,
+      code: input.code,
+    });
     if (!result.ok || !result.user)
-      throw new AppError("INVALID_TWO_FACTOR_CODE", "That verification code is not valid.", 401);
+      throw new AppError(
+        "INVALID_TWO_FACTOR_CODE",
+        "That verification code is not valid.",
+        401,
+      );
     return {
       status: "authenticated",
       session: { ...input.session, pendingTwoFactor: false },
@@ -256,27 +327,55 @@ export class LiveCloudPanelClient implements CloudPanelClient {
   }
 
   async getCurrentUser(session: CloudPanelSession) {
-    const result = await this.bridge({ action: "user", username: this.sessionUser(session) });
+    const result = await this.bridge({
+      action: "user",
+      username: this.sessionUser(session),
+    });
     if (!result.ok || !result.user)
-      throw new AppError("SESSION_EXPIRED", "Your CloudPanel account is no longer active.", 401);
+      throw new AppError(
+        "SESSION_EXPIRED",
+        "Your CloudPanel account is no longer active.",
+        401,
+      );
     return result.user;
   }
 
   async listSites(session: CloudPanelSession) {
-    const result = await this.bridge({ action: "sites", username: this.sessionUser(session) });
+    const result = await this.bridge({
+      action: "sites",
+      username: this.sessionUser(session),
+    });
     if (!result.ok || !result.sites)
-      throw new AppError("CLOUDPANEL_UNAVAILABLE", "CloudPanel could not list websites.", 503);
+      throw new AppError(
+        "CLOUDPANEL_UNAVAILABLE",
+        "CloudPanel could not list websites.",
+        503,
+      );
     return result.sites;
   }
 
   async listUsers(session: CloudPanelSession) {
-    const result = await this.bridge({ action: "users", username: this.sessionUser(session) });
-    if (!result.ok || !result.data || typeof result.data !== "object") throw new AppError("FORBIDDEN", "Users are available to administrators only.", 403);
-    return ((result.data as { users?: CloudPanelUser[] }).users ?? []);
+    const result = await this.bridge({
+      action: "users",
+      username: this.sessionUser(session),
+    });
+    if (!result.ok || !result.data || typeof result.data !== "object")
+      throw new AppError(
+        "FORBIDDEN",
+        "Users are available to administrators only.",
+        403,
+      );
+    return (result.data as { users?: CloudPanelUser[] }).users ?? [];
   }
 
   async manageUser(session: CloudPanelSession, input: Record<string, unknown>) {
-    const current = await this.getCurrentUser(session); if (current.role !== "admin") throw new AppError("FORBIDDEN", "Users are available to administrators only.", 403);
+    const current = await this.getCurrentUser(session);
+    if (current.role !== "admin")
+      throw new AppError(
+        "FORBIDDEN",
+        "Users are available to administrators only.",
+        403,
+      );
     const action = String(input.action ?? "");
     if (action === "add") {
       let sites = String(input.sites ?? "");
@@ -288,34 +387,72 @@ export class LiveCloudPanelClient implements CloudPanelClient {
       if (placeholder) {
         const all = await this.listSites(session);
         if (!all.length)
-          throw new AppError("INVALID_REQUEST", "Create at least one website before adding restricted users.", 400);
+          throw new AppError(
+            "INVALID_REQUEST",
+            "Create at least one website before adding restricted users.",
+            400,
+          );
         sites = all[0].domain;
       }
-      const timezone = /^[A-Za-z0-9_+\-/]{1,64}$/.test(String(input.timezone ?? "")) ? String(input.timezone) : "UTC";
-      const created = await this.bridge({
-        action: "clpctl-user-add",
-        username: this.sessionUser(session),
-        targetUsername: String(input.username ?? ""),
-        email: String(input.email ?? ""),
-        firstName: String(input.firstName ?? ""),
-        lastName: String(input.lastName ?? ""),
-        password: String(input.password ?? ""),
-        role: String(input.role ?? ""),
-        sites: sites.split(",").map((site) => site.trim()).filter(Boolean),
-        timezone,
-      }, 90_000);
+      const timezone = /^[A-Za-z0-9_+\-/]{1,64}$/.test(
+        String(input.timezone ?? ""),
+      )
+        ? String(input.timezone)
+        : "UTC";
+      const created = await this.bridge(
+        {
+          action: "clpctl-user-add",
+          username: this.sessionUser(session),
+          targetUsername: String(input.username ?? ""),
+          email: String(input.email ?? ""),
+          firstName: String(input.firstName ?? ""),
+          lastName: String(input.lastName ?? ""),
+          password: String(input.password ?? ""),
+          role: String(input.role ?? ""),
+          sites: sites
+            .split(",")
+            .map((site) => site.trim())
+            .filter(Boolean),
+          timezone,
+        },
+        90_000,
+      );
       if (!created.ok)
         throw this.privilegedError(
           created,
           "CloudPanel could not create the user.",
         );
       if (placeholder) {
-        const cleared = await this.bridge({ action: "manage-user", username: this.sessionUser(session), operation: { username: input.username, role: "user", status: true, sites: [] } });
-        if (!cleared.ok) throw new AppError("INVALID_REQUEST", "User was created but the placeholder site could not be removed.", 400);
+        const cleared = await this.bridge({
+          action: "manage-user",
+          username: this.sessionUser(session),
+          operation: {
+            username: input.username,
+            role: "user",
+            status: true,
+            sites: [],
+          },
+        });
+        if (!cleared.ok)
+          throw new AppError(
+            "INVALID_REQUEST",
+            "User was created but the placeholder site could not be removed.",
+            400,
+          );
       }
-    }
-    else if (action === "update") { const result = await this.bridge({ action: "manage-user", username: this.sessionUser(session), operation: input }); if (!result.ok) throw new AppError("INVALID_REQUEST", "User settings could not be updated.", 400); }
-    else if (action === "reset-password") {
+    } else if (action === "update") {
+      const result = await this.bridge({
+        action: "manage-user",
+        username: this.sessionUser(session),
+        operation: input,
+      });
+      if (!result.ok)
+        throw new AppError(
+          "INVALID_REQUEST",
+          "User settings could not be updated.",
+          400,
+        );
+    } else if (action === "reset-password") {
       const reset = await this.bridge({
         action: "clpctl-user-reset-password",
         username: this.sessionUser(session),
@@ -323,27 +460,40 @@ export class LiveCloudPanelClient implements CloudPanelClient {
         password: String(input.password ?? ""),
       });
       if (!reset.ok)
-        throw this.privilegedError(reset, "CloudPanel could not reset the password.");
-    }
-    else if (action === "delete") {
+        throw this.privilegedError(
+          reset,
+          "CloudPanel could not reset the password.",
+        );
+    } else if (action === "delete") {
       const deleted = await this.bridge({
         action: "clpctl-user-delete",
         username: this.sessionUser(session),
         targetUsername: String(input.username ?? ""),
       });
       if (!deleted.ok)
-        throw this.privilegedError(deleted, "CloudPanel could not delete the user.");
-    }
-    else throw new AppError("INVALID_REQUEST", "Unknown user action.", 400);
+        throw this.privilegedError(
+          deleted,
+          "CloudPanel could not delete the user.",
+        );
+    } else throw new AppError("INVALID_REQUEST", "Unknown user action.", 400);
   }
 
-  async getSiteCreationOptions(session: CloudPanelSession): Promise<SiteCreationOptions> {
+  async getSiteCreationOptions(
+    session: CloudPanelSession,
+  ): Promise<SiteCreationOptions> {
     const user = await this.getCurrentUser(session);
     if (!user.canCreateSites && !(await isPanelAdmin(user.username)))
-      throw new AppError("FORBIDDEN", "You do not have permission to create websites.", 403);
+      throw new AppError(
+        "FORBIDDEN",
+        "You do not have permission to create websites.",
+        403,
+      );
     let phpVersions: string[] = [];
     try {
-      phpVersions = (await readdir("/etc/php")).filter((v) => /^\d+\.\d+$/.test(v)).sort().reverse();
+      phpVersions = (await readdir("/etc/php"))
+        .filter((v) => /^\d+\.\d+$/.test(v))
+        .sort()
+        .reverse();
     } catch {}
     const templates = await this.bridge({
       action: "clpctl-vhost-templates",
@@ -357,12 +507,19 @@ export class LiveCloudPanelClient implements CloudPanelClient {
     const vhostTemplates = Array.isArray(
       (templates.data as { templates?: unknown } | undefined)?.templates,
     )
-      ? ((templates.data as { templates: unknown[] }).templates.filter(
+      ? (templates.data as { templates: unknown[] }).templates.filter(
           (value): value is string => typeof value === "string",
-        ))
+        )
       : [];
     return {
-      allowedTypes: ["php", "nodejs", "static", "python", "reverse-proxy", "docker"],
+      allowedTypes: [
+        "php",
+        "nodejs",
+        "static",
+        "python",
+        "reverse-proxy",
+        "docker",
+      ],
       phpVersions,
       nodeVersions: ["22", "20", "18", "16", "14", "12"],
       pythonVersions: ["3.12", "3.10", "3.9"],
@@ -370,31 +527,64 @@ export class LiveCloudPanelClient implements CloudPanelClient {
     };
   }
 
-  async createSite(session: CloudPanelSession, input: CreateSiteInput): Promise<CloudPanelSite> {
+  async createSite(
+    session: CloudPanelSession,
+    input: CreateSiteInput,
+  ): Promise<CloudPanelSite> {
     const options = await this.getSiteCreationOptions(session);
     if (!options.allowedTypes.includes(input.type))
-      throw new AppError("INVALID_SITE_TYPE", "This site type is not supported.", 400);
+      throw new AppError(
+        "INVALID_SITE_TYPE",
+        "This site type is not supported.",
+        400,
+      );
     if (input.type === "php" && !options.phpVersions.includes(input.phpVersion))
-      throw new AppError("INVALID_RUNTIME_VERSION", "That PHP version is not installed.", 400);
-    if (input.type === "nodejs" && !options.nodeVersions.includes(input.nodeVersion))
-      throw new AppError("INVALID_RUNTIME_VERSION", "That Node.js version is not supported.", 400);
-    if (input.type === "python" && !options.pythonVersions.includes(input.pythonVersion))
-      throw new AppError("INVALID_RUNTIME_VERSION", "That Python version is not supported.", 400);
+      throw new AppError(
+        "INVALID_RUNTIME_VERSION",
+        "That PHP version is not installed.",
+        400,
+      );
+    if (
+      input.type === "nodejs" &&
+      !options.nodeVersions.includes(input.nodeVersion)
+    )
+      throw new AppError(
+        "INVALID_RUNTIME_VERSION",
+        "That Node.js version is not supported.",
+        400,
+      );
+    if (
+      input.type === "python" &&
+      !options.pythonVersions.includes(input.pythonVersion)
+    )
+      throw new AppError(
+        "INVALID_RUNTIME_VERSION",
+        "That Python version is not supported.",
+        400,
+      );
     try {
-      const result = await this.bridge({
-        action: "clpctl-site-create",
-        username: this.sessionUser(session),
-        panelAdmin: await isPanelAdmin(this.sessionUser(session)),
-        site: input,
-      }, 90_000);
+      const result = await this.bridge(
+        {
+          action: "clpctl-site-create",
+          username: this.sessionUser(session),
+          panelAdmin: await isPanelAdmin(this.sessionUser(session)),
+          site: input,
+        },
+        90_000,
+      );
       if (!result.ok)
         throw this.privilegedError(
           result,
           "CloudPanel could not create the website.",
         );
     } catch (error) {
-      if (error instanceof AppError && error.code === "REQUEST_TIMEOUT") throw error;
-      throw new AppError("SITE_CREATION_FAILED", "CloudPanel could not create the website.", 502);
+      if (error instanceof AppError && error.code === "REQUEST_TIMEOUT")
+        throw error;
+      throw new AppError(
+        "SITE_CREATION_FAILED",
+        "CloudPanel could not create the website.",
+        502,
+      );
     }
     return {
       id: `live-${input.domain}`,
@@ -429,20 +619,30 @@ export class LiveCloudPanelClient implements CloudPanelClient {
       panelAdmin,
     });
     if (!result.ok || !result.site)
-      throw new AppError("SITE_UPDATE_FAILED", "CloudPanel could not update the website.", 502);
+      throw new AppError(
+        "SITE_UPDATE_FAILED",
+        "CloudPanel could not update the website.",
+        502,
+      );
     return result.site;
   }
 
   async deleteSite(session: CloudPanelSession, domain: string) {
     const { panelAdmin } = await this.requireSiteAccess(session, domain);
-    const result = await this.bridge({
-      action: "clpctl-site-delete",
-      username: this.sessionUser(session),
-      domain,
-      panelAdmin,
-    }, 1_850_000);
+    const result = await this.bridge(
+      {
+        action: "clpctl-site-delete",
+        username: this.sessionUser(session),
+        domain,
+        panelAdmin,
+      },
+      1_850_000,
+    );
     if (!result.ok)
-      throw this.privilegedError(result, "CloudPanel could not delete the website.");
+      throw this.privilegedError(
+        result,
+        "CloudPanel could not delete the website.",
+      );
   }
 
   async assignSite(session: CloudPanelSession, domain: string) {
@@ -452,10 +652,18 @@ export class LiveCloudPanelClient implements CloudPanelClient {
       domain,
     });
     if (!result.ok)
-      throw new AppError("SITE_UPDATE_FAILED", "The website could not be assigned to your account.", 502);
+      throw new AppError(
+        "SITE_UPDATE_FAILED",
+        "The website could not be assigned to your account.",
+        502,
+      );
   }
 
-  async getSiteSection(session: CloudPanelSession, domain: string, section: string) {
+  async getSiteSection(
+    session: CloudPanelSession,
+    domain: string,
+    section: string,
+  ) {
     const applicationRootDirectory = await getSiteRootOverride(domain);
     const result = await this.bridge({
       action: "site-section",
@@ -465,7 +673,11 @@ export class LiveCloudPanelClient implements CloudPanelClient {
       applicationRootDirectory,
     });
     if (!result.ok)
-      throw new AppError("SITE_NOT_FOUND", "Website section could not be loaded.", 404);
+      throw new AppError(
+        "SITE_NOT_FOUND",
+        "Website section could not be loaded.",
+        404,
+      );
     return result.data;
   }
 
@@ -481,83 +693,128 @@ export class LiveCloudPanelClient implements CloudPanelClient {
     if (panelAdmin && section === "databases" && action === "delete") {
       // clpctl db:delete is addressed by database name alone, so confirm the
       // database actually belongs to this (already authorized) site first.
-      const data = (await this.getSiteSection(session, domain, "databases")) as {
+      const data = (await this.getSiteSection(
+        session,
+        domain,
+        "databases",
+      )) as {
         items?: { name?: string }[];
       };
       if (!data?.items?.some((item) => item.name === String(input.name)))
-        throw new AppError("FORBIDDEN", "That database does not belong to this website.", 403);
+        throw new AppError(
+          "FORBIDDEN",
+          "That database does not belong to this website.",
+          403,
+        );
     }
     if (section === "databases" && action === "add") {
-      const result = await this.bridge({
-        action: "clpctl-db-add",
-        username: this.sessionUser(session),
-        domain,
-        panelAdmin,
-        databaseName: String(input.name ?? ""),
-        databaseUsername: String(input.username ?? ""),
-        password: String(input.password ?? ""),
-      }, 90_000);
+      const result = await this.bridge(
+        {
+          action: "clpctl-db-add",
+          username: this.sessionUser(session),
+          domain,
+          panelAdmin,
+          databaseName: String(input.name ?? ""),
+          databaseUsername: String(input.username ?? ""),
+          password: String(input.password ?? ""),
+        },
+        90_000,
+      );
       if (!result.ok)
-        throw this.privilegedError(result, "CloudPanel could not create the database.");
+        throw this.privilegedError(
+          result,
+          "CloudPanel could not create the database.",
+        );
     } else if (section === "databases" && action === "delete") {
-      const result = await this.bridge({
-        action: "clpctl-db-delete",
-        username: this.sessionUser(session),
-        domain,
-        panelAdmin,
-        databaseName: String(input.name ?? ""),
-      }, 90_000);
+      const result = await this.bridge(
+        {
+          action: "clpctl-db-delete",
+          username: this.sessionUser(session),
+          domain,
+          panelAdmin,
+          databaseName: String(input.name ?? ""),
+        },
+        90_000,
+      );
       if (!result.ok)
-        throw this.privilegedError(result, "CloudPanel could not delete the database.");
+        throw this.privilegedError(
+          result,
+          "CloudPanel could not delete the database.",
+        );
     } else if (section === "databases" && action === "manage-login") {
       // One-time phpMyAdmin sign-on: the broker writes the database user's
       // credentials into an expiring token file readable only by the
       // database-manager site; the browser receives just the random token.
       const managerUrl = await getDatabaseManagerUrl();
       if (!managerUrl)
-        throw new AppError("INVALID_REQUEST", "No database manager is configured on this server.", 400);
-      const result = await this.bridge({
-        action: "db-signon",
-        username: this.sessionUser(session),
-        domain,
-        panelAdmin,
-        databaseName: String(input.name ?? ""),
-        managerDomain: new URL(managerUrl).hostname,
-      }, 30_000);
+        throw new AppError(
+          "INVALID_REQUEST",
+          "No database manager is configured on this server.",
+          400,
+        );
+      const result = await this.bridge(
+        {
+          action: "db-signon",
+          username: this.sessionUser(session),
+          domain,
+          panelAdmin,
+          databaseName: String(input.name ?? ""),
+          managerDomain: new URL(managerUrl).hostname,
+        },
+        30_000,
+      );
       if (!result.ok)
-        throw this.privilegedError(result, "The phpMyAdmin sign-in could not be prepared.");
+        throw this.privilegedError(
+          result,
+          "The phpMyAdmin sign-in could not be prepared.",
+        );
       const signon = result.data as { token?: string; db?: string };
       if (!signon?.token)
-        throw new AppError("SITE_UPDATE_FAILED", "The phpMyAdmin sign-in could not be prepared.", 502);
+        throw new AppError(
+          "SITE_UPDATE_FAILED",
+          "The phpMyAdmin sign-in could not be prepared.",
+          502,
+        );
       return {
         url: `${managerUrl}/signon.php?token=${encodeURIComponent(signon.token)}`,
       };
     } else if (section === "certificates" && action === "lets-encrypt") {
-      const result = await this.bridge({
-        action: "clpctl-cert-install",
-        username: this.sessionUser(session),
-        domain,
-        panelAdmin,
-        subjectAlternativeNames: input.subjectAlternativeName
-          ? String(input.subjectAlternativeName).split(",").map((name) => name.trim()).filter(Boolean)
-          : [],
-      }, 90_000);
+      const result = await this.bridge(
+        {
+          action: "clpctl-cert-install",
+          username: this.sessionUser(session),
+          domain,
+          panelAdmin,
+          subjectAlternativeNames: input.subjectAlternativeName
+            ? String(input.subjectAlternativeName)
+                .split(",")
+                .map((name) => name.trim())
+                .filter(Boolean)
+            : [],
+        },
+        90_000,
+      );
       if (!result.ok)
-        throw this.privilegedError(result, "CloudPanel could not install the certificate.");
+        throw this.privilegedError(
+          result,
+          "CloudPanel could not install the certificate.",
+        );
     } else {
       // Site actions (npm install, builds, docker compose…) legitimately run
       // for minutes; everything else stays on the short default timeout.
-      const result = await this.bridge({
-        action: "manage-section",
-        username: this.sessionUser(session),
-        domain,
-        section,
-        operation: input,
-        panelAdmin,
-        applicationRootDirectory,
-      }, section === "actions" || section === "backups" ? 1_850_000 : section === "file-manager" ? 620_000 : section === "git" ? 300_000 : section === "terminal" ? 200_000 : section === "env" ? 60_000 : undefined);
-      if (!result.ok)
-        throw siteSectionBridgeError(result);
+      const result = await this.bridge(
+        {
+          action: "manage-section",
+          username: this.sessionUser(session),
+          domain,
+          section,
+          operation: input,
+          panelAdmin,
+          applicationRootDirectory,
+        },
+        siteSectionTimeout(section),
+      );
+      if (!result.ok) throw siteSectionBridgeError(result);
       if (result.data !== undefined) return result.data;
     }
     return this.getSiteSection(session, domain, section);
@@ -569,16 +826,25 @@ export class LiveCloudPanelClient implements CloudPanelClient {
       60_000,
     );
     if (!result.ok || !result.data)
-      throw new AppError("FORBIDDEN", "Server resources are available to administrators only.", 403);
+      throw new AppError(
+        "FORBIDDEN",
+        "Server resources are available to administrators only.",
+        403,
+      );
     return result.data as ServerResources;
   }
 
   async getServerInfo(session: CloudPanelSession) {
-    const result = await this.bridge(
-      { action: "server-info", username: this.sessionUser(session) },
-    );
+    const result = await this.bridge({
+      action: "server-info",
+      username: this.sessionUser(session),
+    });
     if (!result.ok || !result.data)
-      throw new AppError("FORBIDDEN", "Server information is available to administrators only.", 403);
+      throw new AppError(
+        "FORBIDDEN",
+        "Server information is available to administrators only.",
+        403,
+      );
     return result.data as ServerInfo;
   }
 
@@ -587,9 +853,17 @@ export class LiveCloudPanelClient implements CloudPanelClient {
     if (input.action === "change-password") {
       // Verify the current password before resetting; clpctl itself has no
       // notion of "change with verification".
-      const check = await this.bridge({ action: "login", username, password: input.currentPassword });
+      const check = await this.bridge({
+        action: "login",
+        username,
+        password: input.currentPassword,
+      });
       if (!check.ok)
-        throw new AppError("INVALID_CREDENTIALS", "Your current password is incorrect.", 401);
+        throw new AppError(
+          "INVALID_CREDENTIALS",
+          "Your current password is incorrect.",
+          401,
+        );
       const reset = await this.bridge({
         action: "clpctl-user-reset-password",
         username,
@@ -598,7 +872,10 @@ export class LiveCloudPanelClient implements CloudPanelClient {
         selfService: true,
       });
       if (!reset.ok)
-        throw this.privilegedError(reset, "CloudPanel could not change your password.");
+        throw this.privilegedError(
+          reset,
+          "CloudPanel could not change your password.",
+        );
       return this.getCurrentUser(session);
     }
     const result = await this.bridge({
@@ -612,7 +889,11 @@ export class LiveCloudPanelClient implements CloudPanelClient {
       },
     });
     if (!result.ok || !result.user)
-      throw new AppError("INVALID_REQUEST", "Your profile could not be updated.", 400);
+      throw new AppError(
+        "INVALID_REQUEST",
+        "Your profile could not be updated.",
+        400,
+      );
     return result.user;
   }
 

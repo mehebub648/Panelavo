@@ -1,5 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { siteSectionBridgeError } from "./live-client";
+import { siteSectionBridgeError, siteSectionTimeout } from "./live-client";
+
+describe("siteSectionTimeout", () => {
+  it("keeps the bounded timeout policy explicit", () => {
+    expect(siteSectionTimeout("actions")).toBe(1_850_000);
+    expect(siteSectionTimeout("backups")).toBe(1_850_000);
+    expect(siteSectionTimeout("file-manager")).toBe(620_000);
+    expect(siteSectionTimeout("git")).toBe(300_000);
+    expect(siteSectionTimeout("terminal")).toBe(200_000);
+    expect(siteSectionTimeout("env")).toBe(60_000);
+    expect(siteSectionTimeout("domains")).toBeUndefined();
+  });
+});
 
 describe("siteSectionBridgeError", () => {
   it("returns the file-manager upload limit", () => {
@@ -51,7 +63,10 @@ describe("siteSectionBridgeError", () => {
   });
 
   it("falls back to a generic message when the bridge sends no detail", () => {
-    const error = siteSectionBridgeError({ ok: false, code: "SITE_UPDATE_FAILED" });
+    const error = siteSectionBridgeError({
+      ok: false,
+      code: "SITE_UPDATE_FAILED",
+    });
     expect(error.status).toBe(502);
     expect(error.message).toBe("CloudPanel could not apply the change.");
   });
