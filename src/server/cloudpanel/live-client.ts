@@ -17,7 +17,7 @@ import { getDatabaseManagerUrl } from "@/server/sites/database-manager";
 import { getSiteRootOverride } from "@/server/sites/site-root-overlay";
 import { AppError } from "./errors";
 
-export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 9;
+export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 10;
 export const CLOUDPANEL_BROKER_PATH =
   "/usr/local/libexec/panelavo/panelavo-broker";
 

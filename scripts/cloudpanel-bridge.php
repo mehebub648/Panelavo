@@ -29,7 +29,7 @@ use App\Site\Updater\StaticSite as StaticSiteUpdater;
 use Symfony\Component\Dotenv\Dotenv;
 
 const CLOUDPANEL_ROOT = '/home/clp/htdocs/app/files';
-const PANELAVO_BROKER_PROTOCOL_VERSION = 9;
+const PANELAVO_BROKER_PROTOCOL_VERSION = 10;
 const PANELAVO_BROKER_MAX_INPUT_BYTES = 100663296;
 const PANELAVO_ROOTLESS_MIGRATION_ROOT = '/var/lib/panelavo/rootless-migrations';
 const PANELAVO_ROOTLESS_MIGRATION_TTL = 86400;
@@ -4604,20 +4604,13 @@ try {
                         'compose-validate', 'compose-pull', 'compose-deploy', 'compose-up', 'compose-restart', 'compose-ps',
                         'pm2-start', 'pm2-restart', 'pm2-restart-one', 'pm2-save', 'upstream-check',
                     ];
-                    $hookSteps = [];
-                    $state = operationsState($site, $user);
+                    $normalizedHooks = [];
                     foreach ($hookOperations as $hookOperation) {
                         if (!is_array($hookOperation) || array_diff(array_keys($hookOperation), ['command', 'script', 'name'])) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
                         $command = (string) ($hookOperation['command'] ?? '');
                         if (!in_array($command, $allowedHooks, true)) respond(['ok' => false, 'code' => 'INVALID_ACTION']);
-                        $hookSteps[] = resolveOperationStep($state, $command, $hookOperation);
-                        if (!empty($state['expectedPort']) && in_array($command, ['compose-up', 'compose-deploy', 'compose-restart'], true)) {
-                            $hookSteps[] = resolveOperationStep($state, 'compose-port-verify', []);
-                        } elseif (!empty($state['expectedPort']) && in_array($command, ['pm2-start', 'pm2-restart', 'pm2-restart-one'], true)) {
-                            $hookSteps[] = resolveOperationStep($state, 'runtime-port-verify', []);
-                        }
+                        $normalizedHooks[] = $hookOperation;
                     }
-                    foreach ($hookSteps as $stepDefinition) if (!empty($stepDefinition['asRoot'])) respond(['ok' => false, 'code' => 'FORBIDDEN']);
                     $lock = @fopen('/var/lock/panelavo-operations-' . $site->getUser() . '.lock', 'c');
                     if (!$lock || !flock($lock, LOCK_EX | LOCK_NB)) respond(['ok' => false, 'code' => 'OPERATION_BUSY']);
                     $dirty = gitChanges($site) !== [];
@@ -4633,7 +4626,22 @@ try {
                             ? 'Pulled remote changes and restored your local changes.'
                             : 'Pulled remote changes, but some local changes conflicted. Resolve the marked files; the safety stash was kept.';
                     }
-                    if ($hookSteps && (!$dirty || $restore['code'] === 0)) {
+                    if ($normalizedHooks && (!$dirty || $restore['code'] === 0)) {
+                        // Pull may change manifests, scripts, or Compose files.
+                        // Resolve the saved identifiers from the newly pulled
+                        // tree while the same site lock is still held.
+                        $hookSteps = [];
+                        $state = operationsState($site, $user);
+                        foreach ($normalizedHooks as $hookOperation) {
+                            $command = (string) $hookOperation['command'];
+                            $hookSteps[] = resolveOperationStep($state, $command, $hookOperation);
+                            if (!empty($state['expectedPort']) && in_array($command, ['compose-up', 'compose-deploy', 'compose-restart'], true)) {
+                                $hookSteps[] = resolveOperationStep($state, 'compose-port-verify', []);
+                            } elseif (!empty($state['expectedPort']) && in_array($command, ['pm2-start', 'pm2-restart', 'pm2-restart-one'], true)) {
+                                $hookSteps[] = resolveOperationStep($state, 'runtime-port-verify', []);
+                            }
+                        }
+                        foreach ($hookSteps as $stepDefinition) if (!empty($stepDefinition['asRoot'])) respond(['ok' => false, 'code' => 'FORBIDDEN']);
                         $startedAt = gmdate(DATE_ATOM);
                         $hookResults = executeOperationSteps($site, $hookSteps);
                         $lastHook = end($hookResults);

@@ -1,6 +1,6 @@
 {
   "name": "panelavo",
-  "version": "0.1.76",
+  "version": "0.1.77",
   "private": true,
   "scripts": {
     "dev": "next dev -p 10443",
@@ -57,6 +57,6 @@
   },
   "packageManager": "pnpm@10.12.1",
   "panelavo": {
-    "brokerProtocolVersion": 9
+    "brokerProtocolVersion": 10
   }
 }
