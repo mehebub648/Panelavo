@@ -102,6 +102,8 @@ The root-owned broker uses fixed CloudPanel CLI argument arrays for supported mu
 
 After the CLI bridge accepts credentials and MFA when enabled, the browser receives only a random application-session identifier. Every protected route revalidates the account and current role through the bridge. Restricted site lists are selected from the user's CloudPanel assignments before they reach the browser. Profile includes self-service authenticator enrollment and disable controls: unconfirmed secrets are encrypted in `.data`, expire after ten minutes, and are written to CloudPanel only after its own MFA verifier accepts the first code.
 
+Profile also issues scoped API tokens for automation. Token secrets are shown once and only an HMAC digest is stored; expiry, revocation, per-token throttling, and current CloudPanel account/role revalidation apply on every use. Send `Authorization: Bearer <token>` to `GET /api/v1/sites`, `GET /api/v1/sites/<domain>/sections/<section>`, or `POST /api/v1/sites/<domain>/sections/<section>`. Read calls require `sites:read`; mutations require `sites:write` and still pass through the same schemas, site assignments, server-owned operation plans, and broker authorization as the browser UI. The versioned API deliberately does not expose Terminal's free-form command surface.
+
 Create permission is derived from CloudPanel's Admin and Site Manager roles. Unknown roles do not receive elevated access.
 
 ### Site list
