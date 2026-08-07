@@ -29,7 +29,7 @@ use App\Site\Updater\StaticSite as StaticSiteUpdater;
 use Symfony\Component\Dotenv\Dotenv;
 
 const CLOUDPANEL_ROOT = '/home/clp/htdocs/app/files';
-const PANELAVO_BROKER_PROTOCOL_VERSION = 5;
+const PANELAVO_BROKER_PROTOCOL_VERSION = 6;
 const PANELAVO_BROKER_MAX_INPUT_BYTES = 100663296;
 const PANELAVO_ROOTLESS_MIGRATION_ROOT = '/var/lib/panelavo/rootless-migrations';
 const PANELAVO_ROOTLESS_MIGRATION_TTL = 86400;
@@ -463,7 +463,7 @@ function backupsSection(Site $site): array
 
 // Keeps the newest PANELAVO_BACKUP_RETENTION complete snapshots and removes the
 // rest. Ids are UTC timestamps, so a reverse lexical sort is newest-first.
-function pruneBackups(Site $site): void
+function pruneBackups(Site $site, int $retention = PANELAVO_BACKUP_RETENTION): void
 {
     $base = backupsBase($site);
     $dirs = array_values(array_filter(
@@ -471,7 +471,8 @@ function pruneBackups(Site $site): void
         static fn($dir) => is_file($dir . '/manifest.json'),
     ));
     usort($dirs, static fn($a, $b) => strcmp($b, $a));
-    foreach (array_slice($dirs, PANELAVO_BACKUP_RETENTION) as $old) deleteTree($old);
+    $retention = max(1, min(100, $retention));
+    foreach (array_slice($dirs, $retention) as $old) deleteTree($old);
 }
 
 function createBackup(Site $site, array $operation): array
@@ -540,7 +541,8 @@ function createBackup(Site $site, array $operation): array
     }
     chown($dir . '/manifest.json', $site->getUser());
     chgrp($dir . '/manifest.json', $site->getUser());
-    pruneBackups($site);
+    $retention = (int) ($operation['retention'] ?? PANELAVO_BACKUP_RETENTION);
+    pruneBackups($site, $retention);
     return backupsSection($site);
 }
 
@@ -3983,6 +3985,24 @@ try {
     $kernel = new Kernel($_SERVER['APP_ENV'] ?? 'prod', false);
     $kernel->boot();
     $manager = $kernel->getContainer()->get('doctrine')->getManager();
+    if (($input['action'] ?? '') === 'scheduled-backup') {
+        $domain = brokerDomainValue($input['domain'] ?? null);
+        $site = $manager->getRepository(Site::class)->findOneBy(['domainName' => $domain]);
+        if (!$site instanceof Site) respond(['ok' => false, 'code' => 'SITE_NOT_FOUND']);
+        $retention = $input['retention'] ?? null;
+        if (!is_int($retention) || $retention < 1 || $retention > 100) invalidBrokerRequest();
+        ensureSiteProjectAccess($site);
+        $lock = @fopen('/var/lock/panelavo-operations-' . $site->getUser() . '.lock', 'c');
+        if (!$lock || !flock($lock, LOCK_EX | LOCK_NB)) respond(['ok' => false, 'code' => 'OPERATION_BUSY']);
+        $section = createBackup($site, [
+            'files' => true,
+            'retention' => $retention,
+            'note' => 'Scheduled backup',
+        ]);
+        respond(['ok' => true, 'data' => [
+            'backupId' => $section['items'][0]['id'] ?? null,
+        ]]);
+    }
     $user = $manager->getRepository(User::class)->findOneBy([
         'userName' => strtolower(trim((string) ($input['username'] ?? ''))),
     ]);

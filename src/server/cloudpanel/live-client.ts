@@ -17,7 +17,7 @@ import { getDatabaseManagerUrl } from "@/server/sites/database-manager";
 import { getSiteRootOverride } from "@/server/sites/site-root-overlay";
 import { AppError } from "./errors";
 
-export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 5;
+export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 6;
 export const CLOUDPANEL_BROKER_PATH =
   "/usr/local/libexec/panelavo/panelavo-broker";
 
@@ -118,6 +118,25 @@ function invokeBroker(
       );
     });
   });
+}
+
+export async function runScheduledBackup(input: {
+  domain: string;
+  applicationRootDirectory?: string;
+  retention: number;
+}): Promise<{ skipped: boolean; backupId?: string }> {
+  await checkCloudPanelBroker();
+  const result = await invokeBroker(
+    { action: "scheduled-backup", ...input },
+    1_850_000,
+  );
+  if (result.code === "OPERATION_BUSY") return { skipped: true };
+  if (!result.ok)
+    throw siteSectionBridgeError(result);
+  return {
+    skipped: false,
+    backupId: (result.data as { backupId?: string } | undefined)?.backupId,
+  };
 }
 
 export async function checkCloudPanelBroker() {

@@ -15,6 +15,7 @@ import { getServerPublicIp } from "@/server/network/server-ip";
 import { getDatabaseManagerUrl } from "@/server/sites/database-manager";
 import { getSiteMeta } from "@/server/sites/site-meta";
 import { getSiteRootOverride } from "@/server/sites/site-root-overlay";
+import { getBackupSchedule } from "@/server/backups/schedule";
 import { SERVICE_SECTIONS } from "@/components/sites/site-sections";
 import type { OperationsData } from "@/types/operations";
 
@@ -123,11 +124,10 @@ export default async function SiteSectionPage({
     );
   }
   if (section === "backups") {
-    const backups = await cloudPanel.getSiteSection(
-      session.record.cloudPanel,
-      domain,
-      "backups",
-    );
+    const [backups, schedule] = await Promise.all([
+      cloudPanel.getSiteSection(session.record.cloudPanel, domain, "backups"),
+      getBackupSchedule(domain),
+    ]);
     return (
       <div className="w-full space-y-5">
         <div>
@@ -136,7 +136,11 @@ export default async function SiteSectionPage({
         </div>
         <BackupsManager
           domain={domain}
-          initialData={backups as BackupsData}
+          initialData={{
+            ...(backups as BackupsData),
+            retention: schedule.retention,
+            schedule,
+          }}
           canWrite={canWrite}
         />
       </div>

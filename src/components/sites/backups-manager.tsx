@@ -4,6 +4,7 @@ import { useState } from "react";
 import { createPortal } from "react-dom";
 import {
   Archive,
+  CalendarClock,
   Clock,
   Database,
   FolderOpen,
@@ -36,6 +37,16 @@ export type BackupsData = {
   items?: BackupSnapshot[];
   databases?: string[];
   retention?: number;
+  schedule?: {
+    enabled: boolean;
+    frequency: "daily" | "weekly";
+    hour: number;
+    weekday?: number;
+    retention: number;
+    lastRunAt?: string;
+    lastOutcome?: "success" | "failed" | "skipped";
+    lastMessage?: string;
+  };
 };
 
 function formatBytes(bytes: number) {
@@ -68,12 +79,59 @@ export function BackupsManager({
   const [data, setData] = useState(initialData);
   const [busy, setBusy] = useState<string | false>(false);
   const [showCreate, setShowCreate] = useState(false);
+  const [schedule, setSchedule] = useState(
+    initialData.schedule ?? {
+      enabled: false,
+      frequency: "daily" as const,
+      hour: 2,
+      retention: initialData.retention ?? 10,
+    },
+  );
   const [confirmAction, setConfirmAction] = useState<
     { title: string; message: string; variant?: "danger" | "default"; confirmText?: string; onConfirm: () => void } | null
   >(null);
 
   const items = data.items ?? [];
   const databases = data.databases ?? [];
+
+  async function saveSchedule() {
+    if (busy) return;
+    setBusy("schedule");
+    try {
+      const response = await fetch(
+        `/api/sites/${encodeURIComponent(domain)}/backups/schedule`,
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            enabled: schedule.enabled,
+            frequency: schedule.frequency,
+            hour: schedule.hour,
+            ...(schedule.frequency === "weekly"
+              ? { weekday: schedule.weekday ?? 1 }
+              : {}),
+            retention: schedule.retention,
+          }),
+        },
+      );
+      const result = await response.json();
+      if (!result.success)
+        throw new Error(result.error?.message || "The schedule could not be saved.");
+      setSchedule(result.data);
+      setData((current) => ({
+        ...current,
+        retention: result.data.retention,
+        schedule: result.data,
+      }));
+      toast.success("Backup schedule saved");
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "The schedule could not be saved.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function request(body: Record<string, unknown>, key: string, success: string) {
     if (busy) return;
@@ -132,6 +190,132 @@ export function BackupsManager({
 
   return (
     <div className="space-y-5">
+      <section className={card}>
+        <div className="flex gap-3 border-b border-slate-200/50 bg-slate-50/40 px-5 py-4 sm:px-6">
+          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-panel-50 text-panel-600">
+            <CalendarClock className="h-5 w-5" />
+          </span>
+          <div>
+            <h3 className="font-bold">Schedule and retention</h3>
+            <p className="mt-0.5 text-sm text-slate-500">
+              Run an automatic snapshot in UTC and keep only the newest configured number.
+            </p>
+          </div>
+        </div>
+        <div className="grid gap-4 px-5 py-5 sm:grid-cols-2 sm:px-6 lg:grid-cols-5">
+          <label className="flex items-center gap-2 text-sm font-semibold">
+            <input
+              type="checkbox"
+              checked={schedule.enabled}
+              disabled={!canWrite || Boolean(busy)}
+              onChange={(event) =>
+                setSchedule((current) => ({
+                  ...current,
+                  enabled: event.target.checked,
+                }))
+              }
+            />
+            Automatic backups
+          </label>
+          <label className="space-y-1 text-xs font-semibold text-slate-500">
+            Frequency
+            <select
+              className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-ink"
+              value={schedule.frequency}
+              disabled={!canWrite || Boolean(busy)}
+              onChange={(event) =>
+                setSchedule((current) => ({
+                  ...current,
+                  frequency: event.target.value as "daily" | "weekly",
+                }))
+              }
+            >
+              <option value="daily">Daily</option>
+              <option value="weekly">Weekly</option>
+            </select>
+          </label>
+          {schedule.frequency === "weekly" ? (
+            <label className="space-y-1 text-xs font-semibold text-slate-500">
+              Weekday
+              <select
+                className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-ink"
+                value={schedule.weekday ?? 1}
+                disabled={!canWrite || Boolean(busy)}
+                onChange={(event) =>
+                  setSchedule((current) => ({
+                    ...current,
+                    weekday: Number(event.target.value),
+                  }))
+                }
+              >
+                {[
+                  "Sunday",
+                  "Monday",
+                  "Tuesday",
+                  "Wednesday",
+                  "Thursday",
+                  "Friday",
+                  "Saturday",
+                ].map((day, index) => (
+                  <option key={day} value={index}>
+                    {day}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+          <label className="space-y-1 text-xs font-semibold text-slate-500">
+            Hour (UTC)
+            <Input
+              type="number"
+              min={0}
+              max={23}
+              value={schedule.hour}
+              disabled={!canWrite || Boolean(busy)}
+              onChange={(event) =>
+                setSchedule((current) => ({
+                  ...current,
+                  hour: Number(event.target.value),
+                }))
+              }
+            />
+          </label>
+          <label className="space-y-1 text-xs font-semibold text-slate-500">
+            Keep newest
+            <Input
+              type="number"
+              min={1}
+              max={100}
+              value={schedule.retention}
+              disabled={!canWrite || Boolean(busy)}
+              onChange={(event) =>
+                setSchedule((current) => ({
+                  ...current,
+                  retention: Number(event.target.value),
+                }))
+              }
+            />
+          </label>
+          {canWrite ? (
+            <div className="flex items-end">
+              <Button disabled={Boolean(busy)} onClick={() => void saveSchedule()}>
+                {busy === "schedule" ? (
+                  <LoaderCircle className="h-4 w-4 animate-spin" />
+                ) : null}
+                Save schedule
+              </Button>
+            </div>
+          ) : null}
+        </div>
+        {schedule.lastRunAt ? (
+          <div className="border-t border-slate-100 px-5 py-3 text-xs text-slate-500 sm:px-6">
+            Last scheduled run: {formatDate(schedule.lastRunAt)} —{" "}
+            {schedule.lastOutcome ?? "unknown"}
+            {schedule.lastMessage ? ` (${schedule.lastMessage})` : ""}
+          </div>
+        ) : null}
+      </section>
+
       <section className={card}>
         <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200/50 bg-slate-50/40 px-5 py-4 sm:px-6">
           <div className="flex gap-3">
@@ -242,9 +426,9 @@ export function BackupsManager({
         <p>
           Backups live in <code className="text-xs">{data.path}</code>. Download or copy them from
           the <b>Files</b> tab (browse to <code className="text-xs">backups</code>), or over SSH/SFTP
-          from the <b>Terminal</b> tab for large archives. Panelavo runs synchronous, on-server
-          snapshots — it does not manage off-site or scheduled backups yet, so keep an independent
-          copy of anything critical.
+          from the <b>Terminal</b> tab for large archives. Automatic schedules use the same
+          per-site lock and skip a due run if another deployment or backup is already active. Keep
+          an independent off-site copy of anything critical.
         </p>
       </div>
 

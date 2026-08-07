@@ -18,6 +18,7 @@ import {
 import { AppError } from "@/server/cloudpanel/errors";
 import { autoDeleteDns } from "@/server/network/auto-dns";
 import { getRequestServerPublicIp } from "@/server/network/server-ip";
+import { removeBackupSchedule } from "@/server/backups/schedule";
 
 type Context = { params: Promise<{ domain: string }> };
 
@@ -92,6 +93,7 @@ export async function DELETE(request: NextRequest, context: Context) {
     // Free the reserved id/port so it can be reallocated.
     await removeSiteMeta(decodedDomain).catch(() => undefined);
     await removeSiteRootOverride(decodedDomain).catch(() => undefined);
+    await removeBackupSchedule(decodedDomain).catch(() => undefined);
 
     // Background DNS cleanup
     void (async () => {
