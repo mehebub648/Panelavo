@@ -17,7 +17,7 @@ import { getDatabaseManagerUrl } from "@/server/sites/database-manager";
 import { getSiteRootOverride } from "@/server/sites/site-root-overlay";
 import { AppError } from "./errors";
 
-export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 6;
+export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 7;
 export const CLOUDPANEL_BROKER_PATH =
   "/usr/local/libexec/panelavo/panelavo-broker";
 
@@ -137,6 +137,44 @@ export async function runScheduledBackup(input: {
     skipped: false,
     backupId: (result.data as { backupId?: string } | undefined)?.backupId,
   };
+}
+
+export async function prepareBackupStaging(): Promise<{ directory: string }> {
+  await checkCloudPanelBroker();
+  const result = await invokeBroker({ action: "backup-staging" });
+  if (!result.ok) throw siteSectionBridgeError(result);
+  const data = result.data as { directory?: string } | undefined;
+  if (!data?.directory?.match(/^\/run\/user\/\d+\/panelavo-backup-staging$/))
+    throw new AppError("CLOUDPANEL_UNAVAILABLE", "The backup staging path was invalid.", 503);
+  return { directory: data.directory };
+}
+
+export async function stageBackupBundle(input: {
+  domain: string;
+  id: string;
+  applicationRootDirectory?: string;
+}): Promise<{ path: string; bytes: number }> {
+  await checkCloudPanelBroker();
+  const result = await invokeBroker({ action: "stage-backup", ...input }, 920_000);
+  if (!result.ok) throw siteSectionBridgeError(result);
+  const data = result.data as { path?: string; bytes?: number } | undefined;
+  if (!data?.path?.match(/^\/run\/user\/\d+\/panelavo-backup-staging\/[a-f0-9]{32}\.tar\.gz$/))
+    throw new AppError("CLOUDPANEL_UNAVAILABLE", "The staged backup path was invalid.", 503);
+  return { path: data.path, bytes: Number(data.bytes ?? 0) };
+}
+
+export async function importBackupBundle(input: {
+  domain: string;
+  id: string;
+  path: string;
+  applicationRootDirectory?: string;
+}) {
+  await checkCloudPanelBroker();
+  const result = await invokeBroker(
+    { action: "import-backup-bundle", ...input },
+    920_000,
+  );
+  if (!result.ok) throw siteSectionBridgeError(result);
 }
 
 export async function checkCloudPanelBroker() {

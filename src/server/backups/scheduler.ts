@@ -5,6 +5,7 @@ import {
   claimDueBackupSchedules,
   recordBackupScheduleOutcome,
 } from "./schedule";
+import { getOffsiteDestination, uploadOffsiteBackup } from "./offsite";
 
 const INTERVAL_MS = 60_000;
 type SchedulerState = { timer?: NodeJS.Timeout; running: boolean };
@@ -24,6 +25,9 @@ export async function runBackupScheduler(now = new Date()) {
           applicationRootDirectory: await getSiteRootOverride(domain),
           retention: schedule.retention,
         });
+        const destination = await getOffsiteDestination(domain);
+        if (!result.skipped && result.backupId && destination?.enabled)
+          await uploadOffsiteBackup(domain, result.backupId);
         await recordBackupScheduleOutcome(domain, {
           lastOutcome: result.skipped ? "skipped" : "success",
           lastMessage: result.skipped

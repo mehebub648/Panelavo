@@ -16,6 +16,7 @@ import { getDatabaseManagerUrl } from "@/server/sites/database-manager";
 import { getSiteMeta } from "@/server/sites/site-meta";
 import { getSiteRootOverride } from "@/server/sites/site-root-overlay";
 import { getBackupSchedule } from "@/server/backups/schedule";
+import { getOffsiteDestination, listOffsiteBackups } from "@/server/backups/offsite";
 import { SERVICE_SECTIONS } from "@/components/sites/site-sections";
 import type { OperationsData } from "@/types/operations";
 
@@ -124,9 +125,11 @@ export default async function SiteSectionPage({
     );
   }
   if (section === "backups") {
-    const [backups, schedule] = await Promise.all([
+    const [backups, schedule, destination, offsiteItems] = await Promise.all([
       cloudPanel.getSiteSection(session.record.cloudPanel, domain, "backups"),
       getBackupSchedule(domain),
+      getOffsiteDestination(domain),
+      listOffsiteBackups(domain).catch(() => []),
     ]);
     return (
       <div className="w-full space-y-5">
@@ -140,6 +143,7 @@ export default async function SiteSectionPage({
             ...(backups as BackupsData),
             retention: schedule.retention,
             schedule,
+            offsite: { destination, items: offsiteItems },
           }}
           canWrite={canWrite}
         />

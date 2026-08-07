@@ -33,9 +33,19 @@ case "${BRIDGE_MODE}" in root:root:644|root:root:444) ;; *)
 esac
 
 umask 077
+CALLER_UID="${SUDO_UID:-}"
+CALLER_GID="${SUDO_GID:-}"
+case "${CALLER_UID}:${CALLER_GID}" in
+  *[!0-9:]*|:*)
+    echo "panelavo broker caller identity is invalid" >&2
+    exit 77
+    ;;
+esac
 exec /usr/bin/env -i \
   PATH=/usr/sbin:/usr/bin:/sbin:/bin \
   HOME=/root \
   LANG=C.UTF-8 \
   PANELAVO_BROKER=1 \
+  PANELAVO_CALLER_UID="${CALLER_UID}" \
+  PANELAVO_CALLER_GID="${CALLER_GID}" \
   /usr/bin/php "${BRIDGE}"

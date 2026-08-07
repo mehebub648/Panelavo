@@ -29,7 +29,7 @@ use App\Site\Updater\StaticSite as StaticSiteUpdater;
 use Symfony\Component\Dotenv\Dotenv;
 
 const CLOUDPANEL_ROOT = '/home/clp/htdocs/app/files';
-const PANELAVO_BROKER_PROTOCOL_VERSION = 6;
+const PANELAVO_BROKER_PROTOCOL_VERSION = 7;
 const PANELAVO_BROKER_MAX_INPUT_BYTES = 100663296;
 const PANELAVO_ROOTLESS_MIGRATION_ROOT = '/var/lib/panelavo/rootless-migrations';
 const PANELAVO_ROOTLESS_MIGRATION_TTL = 86400;
@@ -584,6 +584,80 @@ function restoreBackup(Site $site, array $operation): void
             if ($result['code'] !== 0) respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED', 'message' => 'Database restore failed for "' . $name . '": ' . (trim($result['stderr'] ?: $result['stdout']) ?: 'clpctl error')]);
         }
     }
+}
+
+function backupStagingDirectory(): string
+{
+    $uid = getenv('PANELAVO_CALLER_UID');
+    $gid = getenv('PANELAVO_CALLER_GID');
+    if (!is_string($uid) || !ctype_digit($uid) || !is_string($gid) || !ctype_digit($gid)) invalidBrokerRequest();
+    $uid = (int) $uid; $gid = (int) $gid;
+    if ($uid < 1 || $gid < 1) invalidBrokerRequest();
+    $runtime = realpath('/run/user/' . $uid);
+    if (!$runtime || is_link($runtime) || fileowner($runtime) !== $uid) invalidBrokerRequest();
+    $directory = $runtime . '/panelavo-backup-staging';
+    if (!is_dir($directory)) {
+        if (!mkdir($directory, 0700)) invalidBrokerRequest();
+        chown($directory, $uid); chgrp($directory, $gid); chmod($directory, 0700);
+    }
+    $real = realpath($directory);
+    if (!$real || is_link($directory) || fileowner($real) !== $uid) invalidBrokerRequest();
+    return $real;
+}
+
+function stageBackupBundle(Site $site, string $id): array
+{
+    $directory = safeBackupDir($site, $id);
+    $staging = backupStagingDirectory();
+    $path = $staging . '/' . bin2hex(random_bytes(16)) . '.tar.gz';
+    $entries = ['manifest.json'];
+    if (is_file($directory . '/files.tar.gz')) $entries[] = 'files.tar.gz';
+    if (is_dir($directory . '/databases')) $entries[] = 'databases';
+    $result = runSiteCommand($site, array_merge(['/usr/bin/tar', 'czf', $path, '-C', $directory], $entries), 900, true);
+    if ($result['code'] !== 0 || !is_file($path)) {
+        @unlink($path);
+        respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED', 'message' => 'The off-site transfer archive could not be created.']);
+    }
+    chown($path, (int) getenv('PANELAVO_CALLER_UID'));
+    chgrp($path, (int) getenv('PANELAVO_CALLER_GID'));
+    chmod($path, 0600);
+    return ['path' => $path, 'bytes' => (int) filesize($path)];
+}
+
+function importBackupBundle(Site $site, string $id, string $submittedPath): void
+{
+    if (!preg_match('/^[A-Za-z0-9-]{1,64}$/', $id)) invalidBrokerRequest();
+    $staging = backupStagingDirectory();
+    $path = realpath($submittedPath);
+    if (!$path || !str_starts_with($path, $staging . '/') || !is_file($path) || is_link($path)) invalidBrokerRequest();
+    $base = backupsBase($site);
+    $destination = $base . '/' . $id;
+    if (is_dir($destination) && readBackupManifest($destination)) return;
+    if (file_exists($destination)) invalidBrokerRequest();
+    $names = runSiteCommand($site, ['/usr/bin/tar', 'tzf', $path], 300, true);
+    if ($names['code'] !== 0) invalidBrokerRequest();
+    foreach (preg_split('/\R/', trim($names['stdout'])) ?: [] as $name) {
+        if ($name === '') continue;
+        if (!preg_match('#^(manifest\.json|files\.tar\.gz|databases/?|databases/[A-Za-z0-9_-]{1,64}\.sql\.gz)$#', $name)) invalidBrokerRequest();
+    }
+    $listing = runSiteCommand($site, ['/usr/bin/tar', 'tvzf', $path], 300, true);
+    if ($listing['code'] !== 0) invalidBrokerRequest();
+    foreach (preg_split('/\R/', trim($listing['stdout'])) ?: [] as $line) {
+        if ($line === '') continue;
+        if (!in_array($line[0], ['-', 'd'], true)) invalidBrokerRequest();
+    }
+    $temporary = $base . '/.offsite-' . bin2hex(random_bytes(8));
+    if (!mkdir($temporary, 0700)) invalidBrokerRequest();
+    $abort = static function () use ($temporary): never {
+        deleteTree($temporary);
+        respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+    };
+    $extract = runSiteCommand($site, ['/usr/bin/tar', 'xzf', $path, '--no-same-owner', '--no-same-permissions', '-C', $temporary], 900, true);
+    if ($extract['code'] !== 0) $abort();
+    $manifest = readBackupManifest($temporary);
+    if (!$manifest || (string) ($manifest['id'] ?? '') !== $id) $abort();
+    $ownership = runSiteCommand($site, ['/usr/bin/chown', '-R', '--', $site->getUser() . ':' . $site->getUser(), $temporary], 300, true);
+    if ($ownership['code'] !== 0 || !rename($temporary, $destination)) $abort();
 }
 
 function siteKeyPair(Site $site): array
@@ -3985,6 +4059,23 @@ try {
     $kernel = new Kernel($_SERVER['APP_ENV'] ?? 'prod', false);
     $kernel->boot();
     $manager = $kernel->getContainer()->get('doctrine')->getManager();
+    if (($input['action'] ?? '') === 'backup-staging') {
+        respond(['ok' => true, 'data' => ['directory' => backupStagingDirectory()]]);
+    }
+    if (in_array(($input['action'] ?? ''), ['stage-backup', 'import-backup-bundle'], true)) {
+        $domain = brokerDomainValue($input['domain'] ?? null);
+        $site = $manager->getRepository(Site::class)->findOneBy(['domainName' => $domain]);
+        if (!$site instanceof Site) respond(['ok' => false, 'code' => 'SITE_NOT_FOUND']);
+        ensureSiteProjectAccess($site);
+        $lock = @fopen('/var/lock/panelavo-operations-' . $site->getUser() . '.lock', 'c');
+        if (!$lock || !flock($lock, LOCK_EX | LOCK_NB)) respond(['ok' => false, 'code' => 'OPERATION_BUSY']);
+        $id = (string) ($input['id'] ?? '');
+        if (($input['action'] ?? '') === 'stage-backup') {
+            respond(['ok' => true, 'data' => stageBackupBundle($site, $id)]);
+        }
+        importBackupBundle($site, $id, (string) ($input['path'] ?? ''));
+        respond(['ok' => true, 'data' => ['backupId' => $id]]);
+    }
     if (($input['action'] ?? '') === 'scheduled-backup') {
         $domain = brokerDomainValue($input['domain'] ?? null);
         $site = $manager->getRepository(Site::class)->findOneBy(['domainName' => $domain]);

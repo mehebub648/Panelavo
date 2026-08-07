@@ -21,6 +21,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { OffsiteBackups, type OffsiteBackupData } from "./offsite-backups";
 
 export type BackupSnapshot = {
   id: string;
@@ -47,6 +48,7 @@ export type BackupsData = {
     lastOutcome?: "success" | "failed" | "skipped";
     lastMessage?: string;
   };
+  offsite?: OffsiteBackupData;
 };
 
 function formatBytes(bytes: number) {
@@ -315,6 +317,13 @@ export function BackupsManager({
           </div>
         ) : null}
       </section>
+
+      <OffsiteBackups
+        domain={domain}
+        initialData={data.offsite ?? { destination: null, items: [] }}
+        snapshots={items}
+        canWrite={canWrite}
+      />
 
       <section className={card}>
         <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200/50 bg-slate-50/40 px-5 py-4 sm:px-6">
