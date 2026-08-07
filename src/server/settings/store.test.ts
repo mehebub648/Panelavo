@@ -2,7 +2,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { getPanelSettings, passwordPolicyError } from "./store";
+import {
+  getPanelSettings,
+  getSecuritySettings,
+  passwordPolicyError,
+} from "./store";
 
 describe("panel settings defaults", () => {
   let directory: string;
@@ -67,5 +71,18 @@ describe("password policy", () => {
     expect(passwordPolicyError("panelavo-2026!", policy)).toBe(
       "Add an uppercase letter.",
     );
+  });
+  it("accepts printable Unicode and rejects control characters", () => {
+    expect(passwordPolicyError("Pānelavo-2026!", policy)).toBeNull();
+    expect(passwordPolicyError("Panelavo\n2026!", policy)).toBe(
+      "Control characters are not allowed.",
+    );
+  });
+  it("falls back safely when the environment lifetime is malformed", async () => {
+    process.env.SESSION_MAX_AGE_SECONDS = "not-a-number";
+    await expect(getSecuritySettings()).resolves.toMatchObject({
+      sessionLifetimeMinutes: 60,
+    });
+    delete process.env.SESSION_MAX_AGE_SECONDS;
   });
 });

@@ -84,21 +84,17 @@ export async function setUpdateRepository(updateRepository: string) {
 export async function getSecuritySettings(): Promise<SecuritySettings> {
   const stored = await store.load();
   const value = stored.security ?? {};
+  const seededSeconds = Number(process.env.SESSION_MAX_AGE_SECONDS ?? 3600);
+  const seededMinutes = Number.isFinite(seededSeconds)
+    ? Math.max(15, Math.min(10_080, Math.round(seededSeconds / 60)))
+    : DEFAULT_SECURITY_SETTINGS.sessionLifetimeMinutes;
   return {
     sessionLifetimeMinutes:
       Number.isInteger(value.sessionLifetimeMinutes) &&
       Number(value.sessionLifetimeMinutes) >= 15 &&
       Number(value.sessionLifetimeMinutes) <= 10_080
         ? Number(value.sessionLifetimeMinutes)
-        : Math.max(
-            15,
-            Math.min(
-              10_080,
-              Math.round(
-                Number(process.env.SESSION_MAX_AGE_SECONDS ?? 3600) / 60,
-              ),
-            ),
-          ),
+        : seededMinutes,
     passwordMinLength:
       Number.isInteger(value.passwordMinLength) &&
       Number(value.passwordMinLength) >= 12 &&
@@ -125,7 +121,8 @@ export function passwordPolicyError(
 ) {
   if (password.length < policy.passwordMinLength || password.length > 128)
     return `Use a password of at least ${policy.passwordMinLength} characters.`;
-  if (/[^\x20-\x7e]/.test(password)) return "Use printable characters only.";
+  if (/[\x00-\x1f\x7f]/.test(password))
+    return "Control characters are not allowed.";
   if (policy.requireUppercase && !/[A-Z]/.test(password))
     return "Add an uppercase letter.";
   if (policy.requireLowercase && !/[a-z]/.test(password))
