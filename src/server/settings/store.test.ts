@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { getPanelSettings } from "./store";
+import { getPanelSettings, passwordPolicyError } from "./store";
 
 describe("panel settings defaults", () => {
   let directory: string;
@@ -48,5 +48,24 @@ describe("panel settings defaults", () => {
       wildcardRegistrationEndpoint: "https://dns.example.com/register",
       wildcardRegistrationBaseDomain: "example.com",
     });
+  });
+});
+
+describe("password policy", () => {
+  const policy = {
+    sessionLifetimeMinutes: 60,
+    passwordMinLength: 12,
+    requireUppercase: true,
+    requireLowercase: true,
+    requireNumber: true,
+    requireSymbol: true,
+  };
+  it("accepts a password that satisfies every enabled rule", () => {
+    expect(passwordPolicyError("Panelavo-2026!", policy)).toBeNull();
+  });
+  it("reports the first missing requirement", () => {
+    expect(passwordPolicyError("panelavo-2026!", policy)).toBe(
+      "Add an uppercase letter.",
+    );
   });
 });

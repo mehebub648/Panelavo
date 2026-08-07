@@ -7,6 +7,7 @@ import { PanelSettingsForm } from "@/components/settings/panel-settings-form";
 import { getUpdateState } from "@/server/updates/panel-updater";
 import { getPublicNotificationSettings } from "@/server/notifications/store";
 import { getMonitoringSettings } from "@/server/monitoring/store";
+import { getSecuritySettings } from "@/server/settings/store";
 
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Settings" };
@@ -20,10 +21,11 @@ export default async function SettingsPage() {
   // The card below is therefore a read-only status view; reconfiguring the base
   // domain happens on the dedicated /setup screen.
   const status = await getSystemStatus();
-  const [update, notifications, monitoring] = await Promise.all([
+  const [update, notifications, monitoring, security] = await Promise.all([
     getUpdateState(),
     getPublicNotificationSettings(),
     getMonitoringSettings(),
+    getSecuritySettings(),
   ]);
 
   return (
@@ -37,6 +39,7 @@ export default async function SettingsPage() {
       update={update}
       notifications={notifications}
       monitoring={monitoring}
+      security={security}
     />
   );
 }

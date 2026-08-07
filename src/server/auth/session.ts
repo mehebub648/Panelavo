@@ -8,6 +8,7 @@ import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { cookies, headers } from "next/headers";
 import type { CloudPanelSession, CloudPanelUser } from "@/types/cloudpanel";
+import { getSecuritySettings } from "@/server/settings/store";
 
 const COOKIE_NAME = "server_panel_session";
 export interface SessionRecord {
@@ -15,6 +16,10 @@ export interface SessionRecord {
   user?: CloudPanelUser;
   twoFactorPending?: boolean;
   expiresAt: number;
+  createdAt?: number;
+  lastSeenAt?: number;
+  address?: string;
+  userAgent?: string;
 }
 
 // Sessions live in a process-global map (survives Next.js module reloads) and
@@ -80,8 +85,8 @@ async function persistThrottled() {
 
 const developmentSecret = randomBytes(32).toString("hex");
 
-function maxAge() {
-  return Number(process.env.SESSION_MAX_AGE_SECONDS ?? 3600);
+async function maxAge() {
+  return (await getSecuritySettings()).sessionLifetimeMinutes * 60;
 }
 function sessionSecret() {
   const value = process.env.SESSION_SECRET;
@@ -149,14 +154,23 @@ export async function createSession(record: Omit<SessionRecord, "expiresAt">) {
   // evicted on a same-id lookup, so the in-memory map grows without bound.
   sweepExpiredSessions(now);
   const id = randomBytes(32).toString("base64url");
-  sessions.set(id, { ...record, expiresAt: now + maxAge() * 1000 });
+  const incoming = await headers();
+  const age = await maxAge();
+  sessions.set(id, {
+    ...record,
+    createdAt: now,
+    lastSeenAt: now,
+    address: incoming.get("x-forwarded-for")?.split(",")[0]?.trim(),
+    userAgent: incoming.get("user-agent")?.slice(0, 300),
+    expiresAt: now + age * 1000,
+  });
   const jar = await cookies();
   jar.set(COOKIE_NAME, tokenFor(id), {
     httpOnly: true,
     secure: await isSecureRequest(),
     sameSite: "strict",
     path: "/",
-    maxAge: maxAge(),
+    maxAge: age,
   });
   await saveSessions();
   return id;
@@ -182,13 +196,75 @@ export async function updateSession(id: string, patch: Partial<SessionRecord>) {
   await ensureLoaded();
   const current = sessions.get(id);
   if (current) {
+    const age = await maxAge();
     sessions.set(id, {
       ...current,
       ...patch,
-      expiresAt: Date.now() + maxAge() * 1000,
+      lastSeenAt: Date.now(),
+      expiresAt: Date.now() + age * 1000,
     });
     await persistThrottled();
   }
+}
+
+export type PublicSession = {
+  id: string;
+  current: boolean;
+  createdAt: number;
+  lastSeenAt: number;
+  expiresAt: number;
+  address?: string;
+  userAgent?: string;
+};
+
+export async function listUserSessions(username: string, currentId: string) {
+  await ensureLoaded();
+  sweepExpiredSessions(Date.now());
+  return [...sessions.entries()]
+    .filter(
+      ([, record]) =>
+        (
+          record.user?.username || record.cloudPanel.usernameHint
+        )?.toLowerCase() === username.toLowerCase(),
+    )
+    .map(([id, record]): PublicSession => ({
+      id,
+      current: id === currentId,
+      createdAt: record.createdAt ?? record.lastSeenAt ?? Date.now(),
+      lastSeenAt: record.lastSeenAt ?? record.createdAt ?? Date.now(),
+      expiresAt: record.expiresAt,
+      address: record.address,
+      userAgent: record.userAgent,
+    }))
+    .sort((a, b) => b.lastSeenAt - a.lastSeenAt);
+}
+
+export async function revokeUserSession(
+  username: string,
+  id: string,
+  currentId: string,
+) {
+  await ensureLoaded();
+  if (id === currentId)
+    throw new Error("Use sign out to end the current session.");
+  const record = sessions.get(id);
+  const owner = record?.user?.username || record?.cloudPanel.usernameHint;
+  if (record && owner?.toLowerCase() === username.toLowerCase())
+    sessions.delete(id);
+  await saveSessions();
+}
+
+export async function revokeOtherUserSessions(
+  username: string,
+  currentId: string,
+) {
+  await ensureLoaded();
+  for (const [id, record] of sessions) {
+    const owner = record.user?.username || record.cloudPanel.usernameHint;
+    if (id !== currentId && owner?.toLowerCase() === username.toLowerCase())
+      sessions.delete(id);
+  }
+  await saveSessions();
 }
 
 export async function destroySession() {

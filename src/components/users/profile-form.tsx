@@ -17,7 +17,13 @@ import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { timezoneChoices } from "@/lib/timezones";
 
-export function ProfileForm({ user }: { user: CloudPanelUser }) {
+export function ProfileForm({
+  user,
+  passwordMinLength = 12,
+}: {
+  user: CloudPanelUser;
+  passwordMinLength?: number;
+}) {
   const router = useRouter();
   const [busy, setBusy] = useState<"profile" | "password" | null>(null);
   const zones = useMemo(() => timezoneChoices(user.timezone), [user.timezone]);
@@ -219,8 +225,8 @@ export function ProfileForm({ user }: { user: CloudPanelUser }) {
               id="new-password"
               type="password"
               autoComplete="new-password"
-              minLength={12}
-              placeholder="Min 12 characters"
+              minLength={passwordMinLength}
+              placeholder={`Min ${passwordMinLength} characters`}
               value={passwords.next}
               onChange={(event) =>
                 setPasswords({ ...passwords, next: event.target.value })
@@ -235,7 +241,7 @@ export function ProfileForm({ user }: { user: CloudPanelUser }) {
               id="confirm-password"
               type="password"
               autoComplete="new-password"
-              minLength={12}
+              minLength={passwordMinLength}
               value={passwords.confirm}
               onChange={(event) =>
                 setPasswords({ ...passwords, confirm: event.target.value })

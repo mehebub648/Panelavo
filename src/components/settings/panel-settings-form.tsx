@@ -3,9 +3,14 @@ import { CheckCircle2, Globe2, Pencil, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { UpdateManager } from "@/components/settings/update-manager";
 import type { UpdateState } from "@/server/updates/panel-updater";
-import { NotificationManager, type PublicNotificationSettings } from "@/components/settings/notification-manager";
+import {
+  NotificationManager,
+  type PublicNotificationSettings,
+} from "@/components/settings/notification-manager";
 import { MonitoringManager } from "@/components/settings/monitoring-manager";
 import type { MonitoringSettings } from "@/server/monitoring/store";
+import { SecurityPolicyManager } from "@/components/settings/security-policy-manager";
+import type { SecuritySettings } from "@/server/settings/store";
 
 type Category = { id: string; label: string; start: number; end: number };
 
@@ -19,6 +24,7 @@ export function PanelSettingsForm({
   update,
   notifications,
   monitoring,
+  security,
 }: {
   baseDomain: string;
   serverIp: string;
@@ -29,6 +35,7 @@ export function PanelSettingsForm({
   update: UpdateState;
   notifications: PublicNotificationSettings;
   monitoring: MonitoringSettings;
+  security: SecuritySettings;
 }) {
   const panelAddress = `panel.${serverIp}.${baseDomain}`;
 
@@ -108,6 +115,8 @@ export function PanelSettingsForm({
       <NotificationManager initialSettings={notifications} />
 
       <MonitoringManager initialSettings={monitoring} />
+
+      <SecurityPolicyManager initialSettings={security} />
 
       <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-card">
         <div className="border-b border-slate-100 bg-slate-50/60 px-5 py-4 sm:px-6">

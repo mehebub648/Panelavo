@@ -167,7 +167,7 @@ pm2 reload panelavo
 pm2 save
 ```
 
-User sessions survive restarts — they are persisted to
+User sessions survive restarts and can be reviewed or revoked from Profile — they are persisted to
 `.data/sessions.json` (encrypted-at-rest material lives in `.data/`, which is
 git-ignored and created with `0700`/`0600` permissions).
 
