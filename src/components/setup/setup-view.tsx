@@ -3,63 +3,44 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import {
-  CheckCircle2,
-  Globe2,
-  LoaderCircle,
-  RefreshCw,
-  Save,
-  TriangleAlert,
-  Zap,
-} from "lucide-react";
+import { CheckCircle2, Globe2, LoaderCircle, RefreshCw, Save, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
 import { Brand } from "@/components/brand";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { SystemStatus } from "@/server/network/system-status";
+import type { AddressMode } from "@/server/settings/store";
 
-export function SetupView({
-  status: initialStatus,
-  isSuperAdmin,
-  reconfiguring = false,
-}: {
+export function SetupView({ status: initialStatus, isSuperAdmin, reconfiguring = false }: {
   status: SystemStatus;
   isSuperAdmin: boolean;
   reconfiguring?: boolean;
 }) {
   const router = useRouter();
-  const [status, setStatus] = useState<SystemStatus>(initialStatus);
-  const [baseDomain, setBaseDomain] = useState(initialStatus.baseDomain);
-  const [busy, setBusy] = useState<null | "save" | "register" | "recheck">(
-    null,
-  );
+  const [status, setStatus] = useState(initialStatus);
+  const [addressMode, setAddressMode] = useState<AddressMode>(initialStatus.addressMode);
+  const [baseDomain, setBaseDomain] = useState(initialStatus.addressMode === "custom" ? initialStatus.baseDomain : "");
+  const [busy, setBusy] = useState<null | "save" | "recheck">(null);
 
-  // Apply a fresh status; if the wildcard is now live, leave the setup screen.
-  // When reconfiguring an already-set-up panel, return to Settings instead of
-  // the app root.
-  function apply(next: SystemStatus, becameReadyMessage?: string) {
+  function apply(next: SystemStatus, message?: string) {
     setStatus(next);
-    setBaseDomain(next.baseDomain);
+    setAddressMode(next.addressMode);
+    if (next.addressMode === "custom") setBaseDomain(next.baseDomain);
     if (next.ready) {
-      if (becameReadyMessage) toast.success(becameReadyMessage);
+      if (message) toast.success(message);
       router.replace(reconfiguring ? "/settings" : "/sites");
       router.refresh();
     }
   }
 
-  async function call(
-    kind: "save" | "register" | "recheck",
-    run: () => Promise<Response>,
-    onOk?: (data: { status: SystemStatus }) => void,
-  ) {
+  async function call(kind: "save" | "recheck", run: () => Promise<Response>, message?: string) {
     setBusy(kind);
     try {
-      const response = await run();
-      const result = await response.json();
-      if (!result.success)
-        throw new Error(result.error?.message || "Request failed.");
-      onOk?.(result.data);
+      const result = await (await run()).json();
+      if (!result.success) throw new Error(result.error?.message || "Request failed.");
+      apply(result.data.status, message);
+      if (kind === "recheck" && !result.data.status.ready) toast.info("DNS is not ready yet.");
     } catch (reason) {
       toast.error(reason instanceof Error ? reason.message : "Request failed.");
     } finally {
@@ -67,223 +48,70 @@ export function SetupView({
     }
   }
 
-  const recheck = () =>
-    call(
-      "recheck",
-      () => fetch("/api/setup", { headers: { "cache-control": "no-store" } }),
-      (data) => {
-        apply(data.status, "Wildcard is live");
-        if (!data.status.ready) toast.info("Still not resolving here yet.");
-      },
-    );
+  const save = () => call("save", () => fetch("/api/setup", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      action: "configure-address",
+      addressMode,
+      ...(addressMode === "custom" ? { baseDomain } : {}),
+    }),
+  }), addressMode === "sslip" ? "sslip.io address configured" : "Custom domain saved and DNS is live");
+  const recheck = () => call("recheck", () => fetch("/api/setup", { headers: { "cache-control": "no-store" } }), "DNS is live");
 
-  const saveBaseDomain = () =>
-    call(
-      "save",
-      () =>
-        fetch("/api/setup", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ action: "set-base-domain", baseDomain }),
-        }),
-      (data) => apply(data.status, "Base domain saved and wildcard is live"),
-    );
-
-  const register = () =>
-    call(
-      "register",
-      () =>
-        fetch("/api/setup", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ action: "register" }),
-        }),
-      (data) => {
-        const withRegister = data as {
-          status: SystemStatus;
-          register?: { ok: boolean; error?: string };
-        };
-        if (withRegister.register && !withRegister.register.ok)
-          toast.error(withRegister.register.error || "Registration failed.");
-        apply(data.status, "Wildcard registered and live");
-      },
-    );
-
-  const serverIp = status.serverIp || "this server";
-  const shownWildcard =
-    status.wildcardDomain ||
-    `*.${status.serverIp || "<server-ip>"}.${baseDomain || "example.com"}`;
+  const ip = status.serverIp || "<server-ip>";
+  const effectiveBase = addressMode === "sslip" ? "sslip.io" : baseDomain || "example.com";
+  const wildcard = `*.${ip}.${effectiveBase}`;
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-10">
       <div className="mx-auto w-full max-w-2xl space-y-6">
         <div className="flex items-center justify-between">
           <Brand />
-          {reconfiguring ? (
-            <span className="rounded-full border border-panel-100 bg-panel-50 px-3 py-1 text-xs font-semibold text-panel-700">
-              Reconfigure
-            </span>
-          ) : (
-            <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">
-              Setup required
-            </span>
-          )}
+          <span className="rounded-full border border-panel-100 bg-panel-50 px-3 py-1 text-xs font-semibold text-panel-700">
+            {reconfiguring ? "Reconfigure" : "Setup required"}
+          </span>
         </div>
-
         <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-card">
           <div className="flex items-center gap-3 border-b border-slate-100 bg-slate-50/60 px-6 py-5">
-            <span className="grid h-11 w-11 place-items-center rounded-xl bg-panel-50 text-panel-600">
-              <Globe2 className="h-5 w-5" />
-            </span>
+            <span className="grid h-11 w-11 place-items-center rounded-xl bg-panel-50 text-panel-600"><Globe2 className="h-5 w-5" /></span>
             <div>
-              <h1 className="text-lg font-bold text-ink">
-                {reconfiguring ? "Change base domain" : "Finish panel setup"}
-              </h1>
-              <p className="text-sm text-slate-500">
-                Websites are served on{" "}
-                <code className="text-slate-700">
-                  site-&lt;id&gt;.{serverIp}.{baseDomain || "your-domain"}
-                </code>
-                , which needs one wildcard DNS record before the panel can be
-                used.
-              </p>
+              <h1 className="text-lg font-bold text-ink">{reconfiguring ? "Change installation address" : "Finish panel setup"}</h1>
+              <p className="text-sm text-slate-500">Choose how Panelavo and generated website hostnames resolve to this server.</p>
             </div>
           </div>
-
           <div className="space-y-5 p-6">
-            <div
-              className={`flex flex-wrap items-center gap-2 rounded-xl border px-4 py-3 text-sm ${
-                status.pointed
-                  ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                  : "border-amber-200 bg-amber-50 text-amber-700"
-              }`}
-            >
-              {status.pointed ? (
-                <>
-                  <CheckCircle2 className="h-4 w-4" /> Wildcard resolves to this
-                  server.
-                </>
-              ) : (
-                <>
-                  <TriangleAlert className="h-4 w-4" />
-                  {status.reason || "The wildcard is not resolving here yet."}
-                </>
-              )}
+            <div className={`flex items-center gap-2 rounded-xl border px-4 py-3 text-sm ${status.pointed ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-amber-200 bg-amber-50 text-amber-700"}`}>
+              {status.pointed ? <><CheckCircle2 className="h-4 w-4" /> Address resolves to this server.</> : <><TriangleAlert className="h-4 w-4" /> {status.reason}</>}
             </div>
-
-            {isSuperAdmin ? (
-              <>
-                <div className="space-y-2">
-                  <Label htmlFor="baseDomain">Base domain</Label>
-                  <div className="flex flex-col gap-2 sm:flex-row">
-                    <Input
-                      id="baseDomain"
-                      value={baseDomain}
-                      onChange={(event) =>
-                        setBaseDomain(event.target.value.toLowerCase())
-                      }
-                      placeholder="example.com"
-                    />
-                    <Button
-                      type="button"
-                      variant="outline"
-                      disabled={busy !== null || !baseDomain.trim()}
-                      onClick={saveBaseDomain}
-                    >
-                      {busy === "save" ? (
-                        <LoaderCircle className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Save className="h-4 w-4" />
-                      )}
-                      Save
-                    </Button>
-                  </div>
-                </div>
-
-                {!status.pointed && (
-                  <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm">
-                    <p className="font-semibold text-slate-800">
-                      Required wildcard DNS record
-                    </p>
-                    <p className="mt-1 text-slate-600">
-                      <code className="break-all">A {shownWildcard}</code> →{" "}
-                      <b>{status.serverIp || "this server"}</b>
-                    </p>
-                    {status.canAutoRegister ? (
-                      <div className="mt-3">
-                        <Button
-                          type="button"
-                          disabled={busy !== null}
-                          onClick={register}
-                        >
-                          {busy === "register" ? (
-                            <LoaderCircle className="h-4 w-4 animate-spin" />
-                          ) : (
-                            <Zap className="h-4 w-4" />
-                          )}
-                          Auto-register wildcard
-                        </Button>
-                      </div>
-                    ) : (
-                      <p className="mt-4 text-xs text-slate-500">
-                        Create this A record in your DNS provider, then recheck.
-                      </p>
-                    )}
-                  </div>
-                )}
-
-                {!status.pointed && (
-                  <div className="flex justify-end">
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      disabled={busy !== null}
-                      onClick={recheck}
-                    >
-                      {busy === "recheck" ? (
-                        <LoaderCircle className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <RefreshCw className="h-4 w-4" />
-                      )}
-                      Recheck DNS
-                    </Button>
-                  </div>
-                )}
-              </>
-            ) : (
-              <div className="space-y-4">
-                <p className="text-sm text-slate-600">
-                  This panel is still being set up. A super administrator needs
-                  to configure the base domain and DNS before it can be used.
-                </p>
-                <Button
-                  type="button"
-                  variant="outline"
-                  disabled={busy !== null}
-                  onClick={recheck}
-                >
-                  {busy === "recheck" ? (
-                    <LoaderCircle className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <RefreshCw className="h-4 w-4" />
-                  )}
-                  Recheck
-                </Button>
+            {isSuperAdmin ? <>
+              <fieldset className="space-y-3">
+                <legend className="text-sm font-semibold text-slate-700">Installation address</legend>
+                <label className={`block cursor-pointer rounded-xl border p-4 ${addressMode === "sslip" ? "border-panel-400 bg-panel-50/50" : "border-slate-200"}`}>
+                  <input type="radio" name="addressMode" value="sslip" checked={addressMode === "sslip"} onChange={() => setAddressMode("sslip")} className="mr-2" />
+                  <b>sslip.io — Recommended</b>
+                  <p className="mt-1 pl-6 text-xs text-slate-500">No DNS record to create. Uses panel.{ip}.sslip.io, database.{ip}.sslip.io, and site-&lt;id&gt;.{ip}.sslip.io.</p>
+                </label>
+                <label className={`block cursor-pointer rounded-xl border p-4 ${addressMode === "custom" ? "border-panel-400 bg-panel-50/50" : "border-slate-200"}`}>
+                  <input type="radio" name="addressMode" value="custom" checked={addressMode === "custom"} onChange={() => setAddressMode("custom")} className="mr-2" />
+                  <b>Custom domain</b>
+                  <p className="mt-1 pl-6 text-xs text-slate-500">Use a domain you control and create one wildcard A record.</p>
+                </label>
+              </fieldset>
+              {addressMode === "custom" && <div className="space-y-2">
+                <Label htmlFor="baseDomain">Base domain</Label>
+                <Input id="baseDomain" value={baseDomain} onChange={(event) => setBaseDomain(event.target.value.toLowerCase())} placeholder="example.com" />
+                <div className="rounded-xl bg-slate-50 p-3 text-sm text-slate-600"><b>Required A record:</b> <code className="break-all">{wildcard}</code> → <b>{ip}</b></div>
+              </div>}
+              {addressMode === "sslip" && <div className="rounded-xl bg-slate-50 p-3 text-sm text-slate-600">Generated hostnames are verified directly. Individual HTTP-01 certificates are issued; wildcard certificates are not used.</div>}
+              <div className="flex flex-wrap justify-end gap-2">
+                <Button type="button" variant="ghost" disabled={busy !== null} onClick={recheck}>{busy === "recheck" ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />} Recheck DNS</Button>
+                <Button type="button" disabled={busy !== null || (addressMode === "custom" && !baseDomain.trim())} onClick={save}>{busy === "save" ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Save</Button>
               </div>
-            )}
+            </> : <p className="text-sm text-slate-600">A super administrator needs to finish the installation address setup.</p>}
           </div>
         </div>
-
-        {reconfiguring && (
-          <div className="text-center">
-            <Link
-              href="/settings"
-              className="text-sm font-medium text-slate-500 hover:text-slate-700"
-            >
-              ← Back to settings
-            </Link>
-          </div>
-        )}
+        {reconfiguring && <div className="text-center"><Link href="/settings" className="text-sm font-medium text-slate-500 hover:text-slate-700">← Back to settings</Link></div>}
       </div>
     </main>
   );

@@ -15,22 +15,18 @@
 #   sudo bash setup.sh
 #
 # Optional environment overrides:
-#   PANEL_BASE_DOMAIN=example.com    base domain for site subdomains
+#   PANEL_ADDRESS_MODE=sslip|custom address mode (inferred when omitted)
+#   PANEL_BASE_DOMAIN=example.com    custom base domain; sslip mode uses sslip.io
 #                                    (site-<id>.<ip>.<base>); reconfigurable
 #                                    later from the panel
 #   PANEL_UPDATE_REPOSITORY=https://git.example/panelavo.git
 #                                    public updater source; otherwise an HTTPS
 #                                    .git origin is used when available
-#   PANEL_WILDCARD_REGISTRATION_ENDPOINT=https://dns.example/register
-#   PANEL_WILDCARD_REGISTRATION_BASE_DOMAIN=example.com
-#                                    optional matching wildcard registration
-#                                    service and the base domain it manages
 #   PANEL_DOMAIN=panel.example.com   panel site domain
-#                                    (default panel.<ip>.<base-domain>, which
-#                                    the wildcard record already covers)
+#                                    (default panel.<ip>.<base-domain>)
 #   DB_MANAGER_DOMAIN=...            database manager (phpMyAdmin) site domain
 #                                    (default database.<ip>.<base-domain>,
-#                                    covered by the same wildcard record)
+#                                    using the selected address mode)
 #   PANEL_SITE_USER=panelavo         CloudPanel site/system user for panelavo
 #   ADMIN_USER=admin                 Super Admin username
 #   ADMIN_PASSWORD=...               Super Admin password (default random)
@@ -181,22 +177,40 @@ SERVER_IP="$(curl -4 -fsS --max-time 10 https://api.ipify.org 2>/dev/null || tru
 [ -n "${SERVER_IP}" ] || die "Could not determine the server IP address."
 log "Server IP: ${SERVER_IP}"
 
+# Preserve an existing installation when rerunning without address overrides.
+# Read only the two plain setting values; never source the application env.
+if [ -z "${PANEL_BASE_DOMAIN:-}" ]; then
+  for EXISTING_ENV in "/home/${SITE_USER}/htdocs/"*/.env.local; do
+    [ -f "${EXISTING_ENV}" ] || continue
+    EXISTING_BASE_DOMAIN="$(sed -n 's/^PANEL_BASE_DOMAIN=//p' "${EXISTING_ENV}" | head -1)"
+    [ -n "${EXISTING_BASE_DOMAIN}" ] || continue
+    PANEL_BASE_DOMAIN="${EXISTING_BASE_DOMAIN}"
+    PANEL_ADDRESS_MODE="${PANEL_ADDRESS_MODE:-$(sed -n 's/^PANEL_ADDRESS_MODE=//p' "${EXISTING_ENV}" | head -1)}"
+    PANEL_DOMAIN="${PANEL_DOMAIN:-$(basename "$(dirname "${EXISTING_ENV}")")}"
+    break
+  done
+fi
+
 # ---------------------------------------------------------------------------
 # 3b. Interactive configuration (base domain + first Super Admin)
 #     Values already provided through the environment are never asked again.
 #
-#     One base domain drives everything: websites live on
-#     site-<id>.<ip>.<base> and the panel itself on panel.<ip>.<base>, all
-#     covered by the single wildcard record *.<ip>.<base>. An optional,
-#     explicitly configured registration endpoint can create that wildcard.
+#     sslip.io is the default. Custom mode waits for one wildcard A record.
 # ---------------------------------------------------------------------------
 if [ -t 0 ]; then
   if [ -z "${PANEL_BASE_DOMAIN:-}" ]; then
-    while [ -z "${PANEL_BASE_DOMAIN:-}" ]; do
-      read -r -p "${LOG_PREFIX} Base domain for the panel and its sites (example: example.com): " PANEL_BASE_DOMAIN_INPUT
-      PANEL_BASE_DOMAIN="${PANEL_BASE_DOMAIN_INPUT:-}"
-      [ -n "${PANEL_BASE_DOMAIN}" ] || warn "A base domain is required."
-    done
+    read -r -p "${LOG_PREFIX} Address mode: 1) sslip.io (recommended)  2) custom domain [1]: " PANEL_ADDRESS_MODE_INPUT
+    case "${PANEL_ADDRESS_MODE_INPUT:-1}" in
+      1|sslip) PANEL_ADDRESS_MODE=sslip; PANEL_BASE_DOMAIN=sslip.io ;;
+      2|custom)
+        PANEL_ADDRESS_MODE=custom
+        while [ -z "${PANEL_BASE_DOMAIN:-}" ]; do
+          read -r -p "${LOG_PREFIX} Custom base domain (example: example.com): " PANEL_BASE_DOMAIN_INPUT
+          PANEL_BASE_DOMAIN="${PANEL_BASE_DOMAIN_INPUT:-}"
+          [ -n "${PANEL_BASE_DOMAIN}" ] || warn "A base domain is required."
+        done ;;
+      *) die "Choose address mode 1 or 2." ;;
+    esac
   fi
   if [ -z "${ADMIN_USER:-}" ]; then
     read -r -p "${LOG_PREFIX} Super Admin username [admin]: " ADMIN_USER_INPUT
@@ -213,7 +227,10 @@ if [ -t 0 ]; then
     done
   fi
 fi
-[ -n "${PANEL_BASE_DOMAIN:-}" ] || die "Set PANEL_BASE_DOMAIN for a non-interactive install."
+PANEL_BASE_DOMAIN="${PANEL_BASE_DOMAIN:-sslip.io}"
+PANEL_ADDRESS_MODE="${PANEL_ADDRESS_MODE:-$([ "${PANEL_BASE_DOMAIN}" = "sslip.io" ] && echo sslip || echo custom)}"
+case "${PANEL_ADDRESS_MODE}" in sslip|custom) ;; *) die "PANEL_ADDRESS_MODE must be sslip or custom." ;; esac
+[ "${PANEL_ADDRESS_MODE}" != "sslip" ] || PANEL_BASE_DOMAIN=sslip.io
 
 SOURCE_UPDATE_REPOSITORY="$(git -C "${SRC_DIR}" remote get-url origin 2>/dev/null || true)"
 case "${SOURCE_UPDATE_REPOSITORY}" in
@@ -222,30 +239,19 @@ case "${SOURCE_UPDATE_REPOSITORY}" in
 esac
 PANEL_UPDATE_REPOSITORY="${PANEL_UPDATE_REPOSITORY:-$SOURCE_UPDATE_REPOSITORY}"
 
-if [ -n "${PANEL_WILDCARD_REGISTRATION_ENDPOINT:-}" ] || [ -n "${PANEL_WILDCARD_REGISTRATION_BASE_DOMAIN:-}" ]; then
-  [ -n "${PANEL_WILDCARD_REGISTRATION_ENDPOINT:-}" ] && [ -n "${PANEL_WILDCARD_REGISTRATION_BASE_DOMAIN:-}" ] ||
-    die "Set both PANEL_WILDCARD_REGISTRATION_ENDPOINT and PANEL_WILDCARD_REGISTRATION_BASE_DOMAIN."
-  case "${PANEL_WILDCARD_REGISTRATION_ENDPOINT}" in
-    https://*) ;;
-    *) die "PANEL_WILDCARD_REGISTRATION_ENDPOINT must use HTTPS." ;;
-  esac
-fi
-# The panel rides the same wildcard as the sites it manages, and so does the
-# database manager (a standalone phpMyAdmin with its own trusted certificate,
+# The panel and database manager follow the selected address mode and each
+# receives its own trusted certificate,
 # replacing links into CloudPanel's self-signed, firewalled port 8443).
 PANEL_DOMAIN="${PANEL_DOMAIN:-panel.${SERVER_IP}.${PANEL_BASE_DOMAIN}}"
 DB_MANAGER_DOMAIN="${DB_MANAGER_DOMAIN:-database.${SERVER_IP}.${PANEL_BASE_DOMAIN}}"
 
-if [ -n "${PANEL_WILDCARD_REGISTRATION_ENDPOINT:-}" ] &&
-   [ "${PANEL_BASE_DOMAIN}" = "${PANEL_WILDCARD_REGISTRATION_BASE_DOMAIN}" ]; then
-  log "Registering IP ${SERVER_IP} with the configured wildcard service ..."
-  curl -sS -X POST "${PANEL_WILDCARD_REGISTRATION_ENDPOINT}" -H "Content-Type: application/json" -d "{\"ip\":\"${SERVER_IP}\"}" ||
-    warn "Failed to register the wildcard through the configured service."
-fi
-
 if [ -n "${PANEL_BASE_DOMAIN}" ]; then
   WILDCARD_RECORD="*.${SERVER_IP}.${PANEL_BASE_DOMAIN}"
-  WILDCARD_PROBE="site-20001.${SERVER_IP}.${PANEL_BASE_DOMAIN}"
+  if [ "${PANEL_ADDRESS_MODE}" = "sslip" ]; then
+    WILDCARD_PROBE="panel.${SERVER_IP}.sslip.io"
+  else
+    WILDCARD_PROBE="site-20001.${SERVER_IP}.${PANEL_BASE_DOMAIN}"
+  fi
   
   wildcard_points_here() {
     local ips
@@ -253,19 +259,24 @@ if [ -n "${PANEL_BASE_DOMAIN}" ]; then
     case " ${ips} " in *" ${SERVER_IP} "*) return 0 ;; *) return 1 ;; esac
   }
 
-  log "Checking if ${WILDCARD_RECORD} points to this server (${SERVER_IP}) ..."
-  # Briefly wait for propagation in case it was just created
-  for _ in 1 2 3 4 5; do
-    if wildcard_points_here; then break; fi
-    sleep 2
-  done
+  log "Checking if ${WILDCARD_PROBE} points to this server (${SERVER_IP}) ..."
+  if [ "${PANEL_ADDRESS_MODE}" = "custom" ]; then
+    while ! wildcard_points_here; do
+      warn "Waiting for A ${WILDCARD_RECORD} -> ${SERVER_IP} to resolve ..."
+      sleep 10
+    done
+  else
+    for _ in 1 2 3 4 5; do
+      if wildcard_points_here; then break; fi
+      sleep 2
+    done
+  fi
 
   if wildcard_points_here; then
-    log "Wildcard DNS looks ready: ${WILDCARD_RECORD} -> ${SERVER_IP}"
+    log "Address DNS looks ready: ${WILDCARD_PROBE} -> ${SERVER_IP}"
   else
-    warn "Wildcard DNS is not pointing here yet."
-    warn "Please ensure you have an A record for ${WILDCARD_RECORD} pointing to ${SERVER_IP} at your DNS provider."
-    warn "Site creation requires this record to be active."
+    warn "Address DNS is not pointing here yet."
+    die "The sslip.io hostname ${WILDCARD_PROBE} did not resolve to ${SERVER_IP}. Check outbound DNS and try again."
   fi
 fi
 ADMIN_USER="${ADMIN_USER:-admin}"
@@ -409,7 +420,7 @@ id "${SITE_USER}" >/dev/null 2>&1 || die "System user ${SITE_USER} was not creat
 
 # ---------------------------------------------------------------------------
 # 7b. Database manager: a standalone phpMyAdmin in its own CloudPanel PHP
-#     site on database.<ip>.<base>. The wildcard record already covers the
+#     site on database.<ip>.<base>. The selected address mode resolves the
 #     domain, so it gets a real Let's Encrypt certificate in step 12 and the
 #     panel's database links never touch CloudPanel's self-signed, firewalled
 #     port 8443. Users sign in with their own database credentials, so MySQL
@@ -580,9 +591,8 @@ SESSION_SECRET=$(openssl rand -base64 48 | tr -d '\n')
 CREDENTIALS_ENCRYPTION_KEY=$(openssl rand -base64 48 | tr -d '\n')
 SESSION_MAX_AGE_SECONDS=3600
 ${PANEL_BASE_DOMAIN:+PANEL_BASE_DOMAIN=${PANEL_BASE_DOMAIN}}
+PANEL_ADDRESS_MODE=${PANEL_ADDRESS_MODE}
 ${PANEL_UPDATE_REPOSITORY:+PANEL_UPDATE_REPOSITORY=${PANEL_UPDATE_REPOSITORY}}
-${PANEL_WILDCARD_REGISTRATION_ENDPOINT:+PANEL_WILDCARD_REGISTRATION_ENDPOINT=${PANEL_WILDCARD_REGISTRATION_ENDPOINT}}
-${PANEL_WILDCARD_REGISTRATION_BASE_DOMAIN:+PANEL_WILDCARD_REGISTRATION_BASE_DOMAIN=${PANEL_WILDCARD_REGISTRATION_BASE_DOMAIN}}
 EOF
 fi
 # Seed newly introduced optional settings on trusted reruns without replacing
@@ -590,11 +600,8 @@ fi
 if [ -n "${PANEL_UPDATE_REPOSITORY}" ] && ! grep -q '^PANEL_UPDATE_REPOSITORY=' "${SITE_ROOT}/.env.local"; then
   echo "PANEL_UPDATE_REPOSITORY=${PANEL_UPDATE_REPOSITORY}" >> "${SITE_ROOT}/.env.local"
 fi
-if [ -n "${PANEL_WILDCARD_REGISTRATION_ENDPOINT:-}" ] && ! grep -q '^PANEL_WILDCARD_REGISTRATION_ENDPOINT=' "${SITE_ROOT}/.env.local"; then
-  echo "PANEL_WILDCARD_REGISTRATION_ENDPOINT=${PANEL_WILDCARD_REGISTRATION_ENDPOINT}" >> "${SITE_ROOT}/.env.local"
-fi
-if [ -n "${PANEL_WILDCARD_REGISTRATION_BASE_DOMAIN:-}" ] && ! grep -q '^PANEL_WILDCARD_REGISTRATION_BASE_DOMAIN=' "${SITE_ROOT}/.env.local"; then
-  echo "PANEL_WILDCARD_REGISTRATION_BASE_DOMAIN=${PANEL_WILDCARD_REGISTRATION_BASE_DOMAIN}" >> "${SITE_ROOT}/.env.local"
+if ! grep -q '^PANEL_ADDRESS_MODE=' "${SITE_ROOT}/.env.local"; then
+  echo "PANEL_ADDRESS_MODE=${PANEL_ADDRESS_MODE}" >> "${SITE_ROOT}/.env.local"
 fi
 # Record where the database manager actually lives so the panel's links keep
 # working even if the base domain is changed later. Idempotent for reruns and
@@ -693,14 +700,13 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 12. Panel SSL: once the wildcard resolves here, the panel domain
-#     (panel.<ip>.<base>) is covered by it, so a Let's Encrypt certificate
-#     can be issued immediately. Re-check first — DNS often propagates while
-#     CloudPanel was installing.
+# 12. Panel SSL: once the selected hostname resolves here, issue individual
+#     HTTP-01 certificates for the panel and database manager. sslip.io does
+#     not provide wildcard certificates.
 # ---------------------------------------------------------------------------
 PANEL_URL="https://${PANEL_DOMAIN}"
 if [ -n "${PANEL_BASE_DOMAIN}" ]; then
-  log "Re-checking wildcard DNS before issuing the panel certificate ..."
+  log "Re-checking address DNS before issuing the panel certificate ..."
   for _ in $(seq 1 15); do
     if wildcard_points_here; then WILDCARD_OK=yes; break; fi
     sleep 2
@@ -725,7 +731,7 @@ if [ -n "${PANEL_BASE_DOMAIN}" ]; then
       fi
     fi
   else
-    warn "The wildcard *.${SERVER_IP}.${PANEL_BASE_DOMAIN} does not resolve here yet."
+    warn "The hostname ${WILDCARD_PROBE} does not resolve here yet."
     warn "The panel will show a setup screen until it does; SSL for ${PANEL_DOMAIN} can then be issued with:"
     warn "  clpctl lets-encrypt:install:certificate --domainName=${PANEL_DOMAIN}"
   fi

@@ -4,14 +4,12 @@ import { requireUser } from "@/server/auth/require-user";
 import { AppError } from "@/server/cloudpanel/errors";
 import { fail, ok } from "@/server/http";
 import { audit } from "@/server/security/log";
-import { assertWriteRequest, rateLimit } from "@/server/security/request";
-import { getServerPublicIp } from "@/server/network/server-ip";
-import { registerWildcard } from "@/server/network/ippointer";
+import { assertWriteRequest } from "@/server/security/request";
 import {
   getSystemStatus,
   invalidateSystemStatus,
 } from "@/server/network/system-status";
-import { setBaseDomain } from "@/server/settings/store";
+import { setAddressSettings, setBaseDomain } from "@/server/settings/store";
 import { normalizeDomain } from "@/schemas/sites";
 
 async function requireSuperAdmin() {
@@ -50,7 +48,8 @@ const baseDomainValue = z
   );
 
 const actionSchema = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("register") }).strict(),
+  z.object({ action: z.literal("configure-address"), addressMode: z.literal("sslip") }).strict(),
+  z.object({ action: z.literal("configure-address"), addressMode: z.literal("custom"), baseDomain: baseDomainValue }).strict(),
   z
     .object({ action: z.literal("set-base-domain"), baseDomain: baseDomainValue })
     .strict(),
@@ -71,26 +70,16 @@ export async function POST(request: NextRequest) {
       });
       return ok({ status: await getSystemStatus({ refresh: true }) });
     }
-
-    // action === "register"
-    rateLimit(`setup-register:${session.user.id}`, 5, 60_000);
-    const serverIp = await getServerPublicIp();
-    if (!serverIp)
-      throw new AppError(
-        "INVALID_REQUEST",
-        "The server's public IP address could not be determined.",
-        409,
-      );
-    const result = await registerWildcard(serverIp);
+    await setAddressSettings(
+      input.addressMode,
+      input.addressMode === "sslip" ? "sslip.io" : input.baseDomain,
+    );
     invalidateSystemStatus();
-    audit("setup.register", result.ok ? "success" : "failure", {
+    audit("setup.address", "success", {
       user: session.user.username,
-      ip: serverIp,
+      addressMode: input.addressMode,
     });
-    return ok({
-      register: result,
-      status: await getSystemStatus({ refresh: true }),
-    });
+    return ok({ status: await getSystemStatus({ refresh: true }) });
   } catch (error) {
     audit("setup.action", "failure", {});
     return fail(error);

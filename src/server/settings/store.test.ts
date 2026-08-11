@@ -6,6 +6,7 @@ import {
   getPanelSettings,
   getSecuritySettings,
   passwordPolicyError,
+  setAddressSettings,
 } from "./store";
 
 describe("panel settings defaults", () => {
@@ -13,8 +14,6 @@ describe("panel settings defaults", () => {
   const environmentNames = [
     "PANEL_BASE_DOMAIN",
     "PANEL_UPDATE_REPOSITORY",
-    "PANEL_WILDCARD_REGISTRATION_ENDPOINT",
-    "PANEL_WILDCARD_REGISTRATION_BASE_DOMAIN",
   ] as const;
 
   beforeEach(async () => {
@@ -32,9 +31,8 @@ describe("panel settings defaults", () => {
   it("does not inject vendor-owned runtime defaults", async () => {
     await expect(getPanelSettings()).resolves.toEqual({
       baseDomain: "",
+      addressMode: "custom",
       updateRepository: "",
-      wildcardRegistrationEndpoint: "",
-      wildcardRegistrationBaseDomain: "",
     });
   });
 
@@ -42,15 +40,21 @@ describe("panel settings defaults", () => {
     process.env.PANEL_BASE_DOMAIN = "Example.COM";
     process.env.PANEL_UPDATE_REPOSITORY =
       "https://git.example.com/panelavo.git";
-    process.env.PANEL_WILDCARD_REGISTRATION_ENDPOINT =
-      "https://dns.example.com/register";
-    process.env.PANEL_WILDCARD_REGISTRATION_BASE_DOMAIN = "Example.COM";
-
     await expect(getPanelSettings()).resolves.toEqual({
       baseDomain: "example.com",
+      addressMode: "custom",
       updateRepository: "https://git.example.com/panelavo.git",
-      wildcardRegistrationEndpoint: "https://dns.example.com/register",
-      wildcardRegistrationBaseDomain: "example.com",
+    });
+  });
+
+  it("infers and persists address modes compatibly", async () => {
+    process.env.PANEL_BASE_DOMAIN = "sslip.io";
+    await expect(getPanelSettings()).resolves.toMatchObject({ addressMode: "sslip" });
+    delete process.env.PANEL_BASE_DOMAIN;
+    await setAddressSettings("custom", "Example.COM");
+    await expect(getPanelSettings()).resolves.toMatchObject({
+      addressMode: "custom",
+      baseDomain: "example.com",
     });
   });
 });

@@ -16,9 +16,9 @@ type Category = { id: string; label: string; start: number; end: number };
 
 export function PanelSettingsForm({
   baseDomain,
+  addressMode,
   serverIp,
   wildcardDomain,
-  canAutoRegister,
   pointed,
   categories,
   update,
@@ -27,9 +27,9 @@ export function PanelSettingsForm({
   security,
 }: {
   baseDomain: string;
+  addressMode: "sslip" | "custom";
   serverIp: string;
   wildcardDomain: string;
-  canAutoRegister: boolean;
   pointed: boolean;
   categories: Category[];
   update: UpdateState;
@@ -70,26 +70,22 @@ export function PanelSettingsForm({
             <span className="text-xl font-semibold text-ink">{baseDomain}</span>
             <span
               className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ${
-                canAutoRegister
+                addressMode === "sslip"
                   ? "bg-panel-50 text-panel-700"
                   : "bg-slate-100 text-slate-600"
               }`}
             >
-              {canAutoRegister
-                ? "Auto-registration enabled"
-                : "DNS managed manually"}
+              {addressMode === "sslip" ? "sslip.io — recommended" : "Custom DNS"}
             </span>
           </div>
 
           {pointed ? (
             <span className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-sm font-medium text-emerald-700">
-              <CheckCircle2 className="h-4 w-4" /> Configured — wildcard
-              resolves to this server
+              <CheckCircle2 className="h-4 w-4" /> Configured — address resolves to this server
             </span>
           ) : (
             <span className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-sm font-medium text-amber-700">
-              <TriangleAlert className="h-4 w-4" /> Wildcard {wildcardDomain} is
-              not resolving here
+              <TriangleAlert className="h-4 w-4" /> {addressMode === "sslip" ? "sslip.io hostname" : `Wildcard ${wildcardDomain}`} is not resolving here
             </span>
           )}
 
@@ -101,9 +97,9 @@ export function PanelSettingsForm({
               </dd>
             </div>
             <div>
-              <dt className="text-slate-500">Wildcard DNS</dt>
+              <dt className="text-slate-500">{addressMode === "sslip" ? "Address mode" : "Wildcard DNS"}</dt>
               <dd className="mt-0.5 break-all font-mono text-slate-700">
-                {wildcardDomain}
+                {addressMode === "sslip" ? "sslip.io" : wildcardDomain}
               </dd>
             </div>
           </dl>

@@ -5,9 +5,8 @@ import { jsonStore } from "@/server/storage/json-store";
 
 type StoredSettings = {
   baseDomain?: string;
+  addressMode?: AddressMode;
   updateRepository?: string;
-  wildcardRegistrationEndpoint?: string;
-  wildcardRegistrationBaseDomain?: string;
   security?: Partial<SecuritySettings>;
 };
 
@@ -31,10 +30,11 @@ export const DEFAULT_SECURITY_SETTINGS: SecuritySettings = {
 
 export type PanelSettings = {
   baseDomain: string;
+  addressMode: AddressMode;
   updateRepository: string;
-  wildcardRegistrationEndpoint: string;
-  wildcardRegistrationBaseDomain: string;
 };
+
+export type AddressMode = "sslip" | "custom";
 
 const store = jsonStore<StoredSettings>(
   "panel-settings.json",
@@ -45,22 +45,23 @@ const store = jsonStore<StoredSettings>(
 
 export async function getPanelSettings(): Promise<PanelSettings> {
   const stored = await store.load();
+  const baseDomain =
+    stored.baseDomain ||
+    process.env.PANEL_BASE_DOMAIN?.trim().toLowerCase() ||
+    "";
   return {
-    baseDomain:
-      stored.baseDomain ||
-      process.env.PANEL_BASE_DOMAIN?.trim().toLowerCase() ||
-      "",
+    baseDomain,
+    addressMode:
+      stored.addressMode === "sslip" || stored.addressMode === "custom"
+        ? stored.addressMode
+        : process.env.PANEL_ADDRESS_MODE === "sslip" || process.env.PANEL_ADDRESS_MODE === "custom"
+          ? process.env.PANEL_ADDRESS_MODE
+        : baseDomain === "sslip.io"
+          ? "sslip"
+          : "custom",
     updateRepository:
       stored.updateRepository ||
       process.env.PANEL_UPDATE_REPOSITORY?.trim() ||
-      "",
-    wildcardRegistrationEndpoint:
-      stored.wildcardRegistrationEndpoint ||
-      process.env.PANEL_WILDCARD_REGISTRATION_ENDPOINT?.trim() ||
-      "",
-    wildcardRegistrationBaseDomain:
-      stored.wildcardRegistrationBaseDomain ||
-      process.env.PANEL_WILDCARD_REGISTRATION_BASE_DOMAIN?.trim().toLowerCase() ||
       "",
   };
 }
@@ -70,8 +71,20 @@ export async function getBaseDomain(): Promise<string> {
 }
 
 export async function setBaseDomain(baseDomain: string) {
+  return setAddressSettings(
+    baseDomain.trim().toLowerCase() === "sslip.io" ? "sslip" : "custom",
+    baseDomain,
+  );
+}
+
+export async function setAddressSettings(
+  addressMode: AddressMode,
+  baseDomain: string,
+) {
   const stored = await store.load();
-  stored.baseDomain = baseDomain.trim().toLowerCase();
+  stored.addressMode = addressMode;
+  stored.baseDomain =
+    addressMode === "sslip" ? "sslip.io" : baseDomain.trim().toLowerCase();
   await store.save(stored);
 }
 

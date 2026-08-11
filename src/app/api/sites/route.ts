@@ -206,7 +206,7 @@ export async function POST(request: NextRequest) {
     // verification) runs synchronously so its warnings reach this response;
     // the actual Let's Encrypt issuance can take a minute, so it runs in the
     // background. Every panel site gets a certificate — at minimum for its
-    // wildcard-covered system domain.
+    // generated system domain.
     const plan = await planSiteSsl({
       userId: session.user.id,
       systemDomain: domain,

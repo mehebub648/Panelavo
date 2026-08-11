@@ -31,9 +31,9 @@ export default async function SettingsPage() {
   return (
     <PanelSettingsForm
       baseDomain={status.baseDomain}
+      addressMode={status.addressMode}
       serverIp={status.serverIp}
       wildcardDomain={status.wildcardDomain}
-      canAutoRegister={status.canAutoRegister}
       pointed={status.pointed}
       categories={SITE_CATEGORIES}
       update={update}

@@ -16,14 +16,12 @@ import { getServerPublicIp } from "@/server/network/server-ip";
 import { getPanelSettings } from "@/server/settings/store";
 import { resolveDnsStatus } from "@/server/network/dns";
 import { getSystemStatus, invalidateSystemStatus } from "./system-status";
-import { parseIppointerResponse } from "./ippointer";
 
 const setEnv = (baseDomain: string, ip: string) => {
   vi.mocked(getPanelSettings).mockResolvedValue({
     baseDomain,
+    addressMode: baseDomain === "sslip.io" ? "sslip" : "custom",
     updateRepository: "",
-    wildcardRegistrationEndpoint: "https://wildcard.example.test/",
-    wildcardRegistrationBaseDomain: "managed.test",
   });
   vi.mocked(getServerPublicIp).mockResolvedValue(ip);
 };
@@ -44,7 +42,6 @@ describe("getSystemStatus", () => {
     const status = await getSystemStatus({ refresh: true });
     expect(status.ready).toBe(true);
     expect(status.pointed).toBe(true);
-    expect(status.canAutoRegister).toBe(true);
     expect(status.wildcardDomain).toBe("*.1.2.3.4.managed.test");
     expect(status.reason).toBe("");
   });
@@ -57,21 +54,20 @@ describe("getSystemStatus", () => {
     expect(status.reason).toContain("*.1.2.3.4.managed.test");
   });
 
-  it("is not ready and cannot auto-register without a base domain", async () => {
+  it("is not ready without a base domain", async () => {
     setEnv("", "1.2.3.4");
     const status = await getSystemStatus({ refresh: true });
     expect(status.ready).toBe(false);
-    expect(status.canAutoRegister).toBe(false);
     expect(resolveDnsStatus).not.toHaveBeenCalled();
     expect(status.reason).toContain("base domain");
   });
 
-  it("only auto-registers the configured managed base domain", async () => {
-    setEnv("example.com", "1.2.3.4");
+  it("verifies the generated sslip hostname directly", async () => {
+    setEnv("sslip.io", "1.2.3.4");
     dnsReturns(true, ["1.2.3.4"]);
     const status = await getSystemStatus({ refresh: true });
-    expect(status.ready).toBe(true);
-    expect(status.canAutoRegister).toBe(false);
+    expect(status.addressMode).toBe("sslip");
+    expect(status.probeName).toBe("panel.1.2.3.4.sslip.io");
   });
 
   it("uses a fresh random probe label each check (defeats negative cache)", async () => {
@@ -93,37 +89,5 @@ describe("getSystemStatus", () => {
     await getSystemStatus();
     // one refresh call + cached reads => resolver hit exactly once
     expect(resolveDnsStatus).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe("parseIppointerResponse", () => {
-  it("parses a successful registration", () => {
-    const result = parseIppointerResponse(200, {
-      success: true,
-      action: "created",
-      record: "*.1.2.3.4.managed.test",
-      points_to: "1.2.3.4",
-    });
-    expect(result).toEqual({
-      ok: true,
-      action: "created",
-      record: "*.1.2.3.4.managed.test",
-      pointsTo: "1.2.3.4",
-    });
-  });
-
-  it("surfaces the ippointer error message on rejection", () => {
-    const result = parseIppointerResponse(403, {
-      success: false,
-      error: "Request IP does not match submitted IP",
-    });
-    expect(result.ok).toBe(false);
-    expect(result.error).toBe("Request IP does not match submitted IP");
-  });
-
-  it("falls back to an HTTP status message", () => {
-    const result = parseIppointerResponse(500, {});
-    expect(result.ok).toBe(false);
-    expect(result.error).toBe("ippointer returned HTTP 500");
   });
 });

@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { resolveDnsStatus, systemWildcardDomain } from "@/server/network/dns";
 import { getServerPublicIp } from "@/server/network/server-ip";
 import { getPanelSettings } from "@/server/settings/store";
+import type { AddressMode } from "@/server/settings/store";
 
 // Whether the panel is usable: a base domain is configured AND the wildcard
 // *.<serverIp>.<baseDomain> resolves to this server. The whole site scheme
@@ -10,13 +11,13 @@ import { getPanelSettings } from "@/server/settings/store";
 
 export type SystemStatus = {
   baseDomain: string;
+  addressMode: AddressMode;
   serverIp: string;
   wildcardDomain: string; // *.<ip>.<base>
   probeName: string; // the (random) label used for the readiness check
   ready: boolean;
   pointed: boolean; // wildcard resolves to serverIp
   resolvedIps: string[];
-  canAutoRegister: boolean; // base domain is the ippointer-managed zone
   reason: string; // human explanation when not ready ("" when ready)
 };
 
@@ -46,11 +47,15 @@ export async function getSystemStatus(
 
   const settings = await getPanelSettings();
   const baseDomain = settings.baseDomain;
+  const addressMode = settings.addressMode;
   const serverIp = await getServerPublicIp();
   const wildcardDomain =
     baseDomain && serverIp ? systemWildcardDomain(serverIp, baseDomain) : "";
-  const probeName =
-    baseDomain && serverIp ? randomProbe(serverIp, baseDomain) : "";
+  const probeName = baseDomain && serverIp
+    ? addressMode === "sslip"
+      ? `panel.${serverIp}.sslip.io`
+      : randomProbe(serverIp, baseDomain)
+    : "";
 
   let pointed = false;
   let resolvedIps: string[] = [];
@@ -66,22 +71,20 @@ export async function getSystemStatus(
     : !serverIp
       ? "The server's public IP address could not be determined."
       : !pointed
-        ? `The wildcard ${wildcardDomain} is not resolving to this server (${serverIp}) yet.`
+        ? addressMode === "sslip"
+          ? `The sslip.io hostname ${probeName} is not resolving to this server (${serverIp}) yet.`
+          : `The wildcard ${wildcardDomain} is not resolving to this server (${serverIp}) yet.`
         : "";
 
   const status: SystemStatus = {
     baseDomain,
+    addressMode,
     serverIp,
     wildcardDomain,
     probeName,
     ready,
     pointed,
     resolvedIps,
-    canAutoRegister: Boolean(
-      settings.wildcardRegistrationEndpoint &&
-      settings.wildcardRegistrationBaseDomain &&
-      baseDomain === settings.wildcardRegistrationBaseDomain,
-    ),
     reason,
   };
   cached = { status, at: Date.now() };

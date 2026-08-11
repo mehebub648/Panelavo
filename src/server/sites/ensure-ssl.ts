@@ -6,7 +6,7 @@ import type { CloudPanelSession } from "@/types/cloudpanel";
 
 // Certificate lifecycle policy: every panel-created site always carries a
 // Let's Encrypt certificate for its system domain (site-<id>.<ip>.<base>,
-// which the base wildcard guarantees resolves here), topped up with every
+// whose generated hostname is verified during setup), topped up with every
 // alias that currently points at this server. Aliases that do not point here
 // yet are skipped with a warning instead of failing the whole issuance — the
 // user re-runs the check once DNS is fixed and the certificate grows to cover

@@ -8,7 +8,7 @@ import { getBaseDomain } from "@/server/settings/store";
 // database user's own credentials, so MySQL enforces per-site scope.
 //
 // setup.sh records the actually provisioned address in DATABASE_MANAGER_URL;
-// without it the address is derived from the same wildcard convention the
+// without it the address is derived from the same generated-host convention the
 // installer uses, so links keep working on installs that predate the variable.
 
 export function getConfiguredDatabaseManagerUrl(): string | null {
