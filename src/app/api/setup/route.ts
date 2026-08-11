@@ -47,7 +47,7 @@ const baseDomainValue = z
     "Enter a valid domain, such as example.com.",
   );
 
-const actionSchema = z.discriminatedUnion("action", [
+const actionSchema = z.union([
   z.object({ action: z.literal("configure-address"), addressMode: z.literal("sslip") }).strict(),
   z.object({ action: z.literal("configure-address"), addressMode: z.literal("custom"), baseDomain: baseDomainValue }).strict(),
   z
