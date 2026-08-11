@@ -1,8 +1,6 @@
 import type { NextRequest } from "next/server";
 import { z } from "zod";
-import { requireUser } from "@/server/auth/require-user";
 import { getCloudPanelClient } from "@/server/cloudpanel";
-import { AppError } from "@/server/cloudpanel/errors";
 import { fail, ok } from "@/server/http";
 import { assertWriteRequest } from "@/server/security/request";
 import {
@@ -15,6 +13,10 @@ import {
   saveOffsiteDestination,
   uploadOffsiteBackup,
 } from "@/server/backups/offsite";
+import {
+  requireAccessibleSite,
+  requireWritableSite,
+} from "@/server/auth/site-access";
 
 const actionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("upload"), id: z.string().regex(/^[A-Za-z0-9-]{1,64}$/) }).strict(),
@@ -23,12 +25,11 @@ const actionSchema = z.discriminatedUnion("action", [
 ]);
 
 async function authorized(encodedDomain: string, write = false) {
-  const session = await requireUser();
   const domain = decodeURIComponent(encodedDomain);
-  await getCloudPanelClient().getSiteSection(session.record.cloudPanel, domain, "backups");
-  if (write && !(session.user.canCreateSites || session.user.panelRole === "admin"))
-    throw new AppError("FORBIDDEN", "You do not have permission to manage these backups.", 403);
-  return { session, domain };
+  const access = write
+    ? await requireWritableSite(domain)
+    : await requireAccessibleSite(domain);
+  return { ...access, domain };
 }
 
 export async function GET(

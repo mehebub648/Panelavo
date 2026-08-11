@@ -1,30 +1,12 @@
 import type { NextRequest } from "next/server";
-import { requireUser } from "@/server/auth/require-user";
-import { getCloudPanelClient } from "@/server/cloudpanel";
 import { getDeployHooks, setDeployHooks } from "@/server/deploy/hooks";
 import { fail, ok } from "@/server/http";
 import { audit } from "@/server/security/log";
 import { assertWriteRequest, rateLimit } from "@/server/security/request";
-import { isPanelAdmin } from "@/server/auth/panel-roles";
-import { AppError } from "@/server/cloudpanel/errors";
+import { requireWritableSite } from "@/server/auth/site-access";
 
 async function siteWriter(domain: string) {
-  const session = await requireUser();
-  if (
-    !session.user.canCreateSites &&
-    !(await isPanelAdmin(session.user.username))
-  )
-    throw new AppError(
-      "FORBIDDEN",
-      "You do not have permission to configure deployments.",
-      403,
-    );
-  const sites = await getCloudPanelClient().listSites(
-    session.record.cloudPanel,
-  );
-  if (!sites.some((site) => site.domain === domain))
-    throw new AppError("SITE_NOT_FOUND", "Website not found.", 404);
-  return session;
+  return (await requireWritableSite(domain)).session;
 }
 export async function GET(
   _request: NextRequest,

@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
-import { requireUserOrRedirect } from "@/server/auth/require-user";
 import { getCloudPanelClient } from "@/server/cloudpanel";
+import { requireAccessibleSiteOrRedirect } from "@/server/auth/site-access";
 import { SiteSettings } from "@/components/sites/site-settings";
 import { LinkedServices } from "@/components/sites/linked-services";
 import { DomainsManager } from "@/components/sites/domains-manager";
@@ -62,21 +62,18 @@ export default async function SiteSectionPage({
   const { domain: encodedDomain, section } = await params;
   if (!titles[section]) notFound();
   const domain = decodeURIComponent(encodedDomain);
+  const { session, site } = await requireAccessibleSiteOrRedirect(domain, {
+    allowDuringUpdate: true,
+  });
   // Linked services are proxy-only sites: everything operational (files,
   // databases, operations, backups, …) lives on their parent website.
   const siteMeta = await getSiteMeta(domain);
   if (siteMeta?.parent && !SERVICE_SECTIONS.has(section)) notFound();
-  const session = await requireUserOrRedirect({ allowDuringUpdate: true });
   const cloudPanel = getCloudPanelClient();
   const canWrite =
     session.user.canCreateSites || session.user.panelRole === "admin";
   if (section === "settings") {
-    const [sites, uptime] = await Promise.all([
-      cloudPanel.listSites(session.record.cloudPanel),
-      getUptime(domain),
-    ]);
-    const site = sites.find((item) => item.domain === domain);
-    if (!site) notFound();
+    const uptime = await getUptime(domain);
     const applicationRootDirectory = await getSiteRootOverride(domain);
     const mergedSite = {
       ...site,

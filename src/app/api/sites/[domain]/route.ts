@@ -1,11 +1,10 @@
 import type { NextRequest } from "next/server";
-import { requireUser } from "@/server/auth/require-user";
-import { getCloudPanelClient } from "@/server/cloudpanel";
 import { updateSiteSchema } from "@/schemas/sites";
 import { assertWriteRequest } from "@/server/security/request";
 import { fail, ok } from "@/server/http";
 import {
   changeSiteId,
+  assertSiteIdChange,
   getLinkedServiceMeta,
   getSiteMeta,
   removeSiteMeta,
@@ -16,6 +15,7 @@ import {
   setSiteRootOverride,
 } from "@/server/sites/site-root-overlay";
 import { AppError } from "@/server/cloudpanel/errors";
+import { requireWritableSite } from "@/server/auth/site-access";
 import { autoDeleteDns } from "@/server/network/auto-dns";
 import { getRequestServerPublicIp } from "@/server/network/server-ip";
 import { removeBackupSchedule } from "@/server/backups/schedule";
@@ -27,9 +27,9 @@ type Context = { params: Promise<{ domain: string }> };
 export async function PATCH(request: NextRequest, context: Context) {
   try {
     assertWriteRequest(request);
-    const session = await requireUser();
     const { domain } = await context.params;
     const decodedDomain = decodeURIComponent(domain);
+    const { session, client } = await requireWritableSite(decodedDomain);
     const input = updateSiteSchema.parse(await request.json());
     const {
       applicationRootDirectory,
@@ -38,11 +38,16 @@ export async function PATCH(request: NextRequest, context: Context) {
       ...otherSettings
     } = input;
     // Sites with a reserved id treat the app port as that id: moving the port
-    // moves the reservation (and validates the target range) first.
+    // moves the reservation. Validate before touching either system, update
+    // the authoritative site first, and only then persist the local overlay.
     const meta = await getSiteMeta(decodedDomain);
-    if (input.appPort !== undefined && meta && input.appPort !== meta.id)
-      await changeSiteId(decodedDomain, input.appPort);
-    const site = await getCloudPanelClient().updateSite(
+    const previousId = meta?.id;
+    const movingId =
+      input.appPort !== undefined &&
+      previousId !== undefined &&
+      input.appPort !== previousId;
+    if (movingId) await assertSiteIdChange(decodedDomain, input.appPort!);
+    const site = await client.updateSite(
       session.record.cloudPanel,
       decodedDomain,
       {
@@ -51,6 +56,18 @@ export async function PATCH(request: NextRequest, context: Context) {
         rootDirectory: servingDirectory ?? legacyServingDirectory,
       },
     );
+    if (movingId) {
+      try {
+        await changeSiteId(decodedDomain, input.appPort!);
+      } catch (error) {
+        await client
+          .updateSite(session.record.cloudPanel, decodedDomain, {
+            appPort: previousId,
+          })
+          .catch(() => undefined);
+        throw error;
+      }
+    }
     if (applicationRootDirectory !== undefined)
       await setSiteRootOverride(decodedDomain, applicationRootDirectory);
     return ok({
@@ -71,9 +88,9 @@ export async function PATCH(request: NextRequest, context: Context) {
 export async function DELETE(request: NextRequest, context: Context) {
   try {
     assertWriteRequest(request);
-    const session = await requireUser();
     const { domain } = await context.params;
     const decodedDomain = decodeURIComponent(domain);
+    const { session, client } = await requireWritableSite(decodedDomain);
     const meta = await getSiteMeta(decodedDomain);
     // Deleting a parent never cascades into its linked-service sites: the
     // operator detaches or deletes each service first, deliberately.
@@ -88,10 +105,7 @@ export async function DELETE(request: NextRequest, context: Context) {
         409,
       );
 
-    await getCloudPanelClient().deleteSite(
-      session.record.cloudPanel,
-      decodedDomain,
-    );
+    await client.deleteSite(session.record.cloudPanel, decodedDomain);
     // Free the reserved id/port so it can be reallocated.
     await removeSiteMeta(decodedDomain).catch(() => undefined);
     await removeSiteRootOverride(decodedDomain).catch(() => undefined);

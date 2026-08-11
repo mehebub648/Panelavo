@@ -1,6 +1,5 @@
 import type { NextRequest } from "next/server";
 import { z } from "zod";
-import { requireUser } from "@/server/auth/require-user";
 import { getCloudPanelClient } from "@/server/cloudpanel";
 import { AppError } from "@/server/cloudpanel/errors";
 import { fail, ok } from "@/server/http";
@@ -24,33 +23,18 @@ import {
 } from "@/server/sites/site-meta";
 import { domainValue } from "@/schemas/sites";
 import { certAlternativeNames } from "@/lib/domains";
+import {
+  requireAccessibleSite,
+  requireWritableSite,
+} from "@/server/auth/site-access";
 
 type Context = { params: Promise<{ domain: string }> };
-
-async function requireSite(domain: string) {
-  const session = await requireUser();
-  const sites = await getCloudPanelClient().listSites(
-    session.record.cloudPanel,
-  );
-  const site = sites.find((item) => item.domain === domain);
-  if (!site) throw new AppError("SITE_NOT_FOUND", "Website not found.", 404);
-  return { session, site };
-}
-
-function requireWrite(session: Awaited<ReturnType<typeof requireUser>>) {
-  if (!session.user.canCreateSites && session.user.panelRole !== "admin")
-    throw new AppError(
-      "FORBIDDEN",
-      "You do not have permission to modify websites.",
-      403,
-    );
-}
 
 export async function GET(request: NextRequest, context: Context) {
   try {
     const { domain } = await context.params;
     const decodedDomain = decodeURIComponent(domain);
-    await requireSite(decodedDomain);
+    await requireAccessibleSite(decodedDomain);
     const serverIp = await getRequestServerPublicIp(request);
     const meta = await getSiteMeta(decodedDomain);
     const dns = await resolveDnsStatus(
@@ -83,7 +67,7 @@ const actionSchema = z.discriminatedUnion("action", [
 ]);
 
 async function syncVhost(
-  session: Awaited<ReturnType<typeof requireUser>>,
+  session: Awaited<ReturnType<typeof requireAccessibleSite>>["session"],
   domain: string,
   meta: SiteMeta,
 ) {
@@ -106,8 +90,7 @@ export async function POST(request: NextRequest, context: Context) {
     assertWriteRequest(request);
     const { domain } = await context.params;
     const decodedDomain = decodeURIComponent(domain);
-    const { session } = await requireSite(decodedDomain);
-    requireWrite(session);
+    const { session } = await requireWritableSite(decodedDomain);
     const input = actionSchema.parse(await request.json());
     const meta = await getSiteMeta(decodedDomain);
     if (!meta)

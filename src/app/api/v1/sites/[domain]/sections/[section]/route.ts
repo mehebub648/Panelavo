@@ -68,6 +68,12 @@ export async function POST(
               ? backupRequestSchema.parse(submitted)
               : submitted;
     const decoded = decodeURIComponent(domain);
+    if (section === "git" && input.action === "pull")
+      await getCloudPanelClient().getSiteSection(
+        actor.cloudPanel,
+        decoded,
+        "git",
+      );
     const operation =
       section === "git" && input.action === "pull"
         ? { ...input, deployOperations: await getDeployHooks(decoded) }

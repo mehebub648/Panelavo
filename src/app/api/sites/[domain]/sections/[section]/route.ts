@@ -1,5 +1,4 @@
 import type { NextRequest } from "next/server";
-import { requireUser } from "@/server/auth/require-user";
 import { getCloudPanelClient } from "@/server/cloudpanel";
 import { assertWriteRequest } from "@/server/security/request";
 import { fail, ok } from "@/server/http";
@@ -11,6 +10,7 @@ import {
   terminalRequestSchema,
 } from "@/schemas/operations";
 import { getDeployHooks } from "@/server/deploy/hooks";
+import { requireWritableSite } from "@/server/auth/site-access";
 
 export async function POST(
   request: NextRequest,
@@ -18,8 +18,9 @@ export async function POST(
 ) {
   try {
     assertWriteRequest(request);
-    const session = await requireUser();
     const { domain, section } = await params;
+    const decodedDomain = decodeURIComponent(domain);
+    const { session } = await requireWritableSite(decodedDomain);
     const submitted = await request.json();
     const input =
       section === "git"
@@ -37,12 +38,12 @@ export async function POST(
       section === "git" && input.action === "pull"
         ? {
             ...input,
-            deployOperations: await getDeployHooks(decodeURIComponent(domain)),
+            deployOperations: await getDeployHooks(decodedDomain),
           }
         : input;
     const data = await getCloudPanelClient().manageSiteSection(
       session.record.cloudPanel,
-      decodeURIComponent(domain),
+      decodedDomain,
       section,
       operation,
     );

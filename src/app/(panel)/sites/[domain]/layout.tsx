@@ -4,6 +4,7 @@ import { ArrowLeft, ExternalLink, Globe2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { SiteSectionNav } from "@/components/sites/site-section-nav";
 import { getSiteMeta } from "@/server/sites/site-meta";
+import { requireAccessibleSiteOrRedirect } from "@/server/auth/site-access";
 
 export default async function SiteLayout({
   children,
@@ -13,6 +14,7 @@ export default async function SiteLayout({
   params: Promise<{ domain: string }>;
 }) {
   const domain = decodeURIComponent((await params).domain);
+  await requireAccessibleSiteOrRedirect(domain, { allowDuringUpdate: true });
   const meta = await getSiteMeta(domain);
   const displayDomain = meta?.aliases?.[0] || domain;
   

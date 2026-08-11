@@ -160,7 +160,25 @@ export async function changeSiteId(
 ) {
   const value = await store.load();
   const key = domain.toLowerCase();
-  const meta = value.sites[key];
+  const meta = validateSiteIdChange(value.sites, key, newId, externallyUsedPorts);
+  if (meta.id === newId) return meta;
+  const category = SITE_CATEGORIES.find(
+    (item) => newId >= item.start && newId <= item.end,
+  )!;
+  meta.id = newId;
+  meta.category = category.id;
+  await store.save(value);
+  return meta;
+}
+
+export function validateSiteIdChange(
+  sites: Record<string, SiteMeta>,
+  domain: string,
+  newId: number,
+  externallyUsedPorts: number[] = [],
+) {
+  const key = domain.toLowerCase();
+  const meta = sites[key];
   if (!meta)
     throw new AppError(
       "SITE_NOT_FOUND",
@@ -178,7 +196,7 @@ export async function changeSiteId(
       400,
     );
   const taken = new Set([
-    ...Object.entries(value.sites)
+    ...Object.entries(sites)
       .filter(([other]) => other !== key)
       .map(([, value]) => value.id),
     ...externallyUsedPorts,
@@ -189,8 +207,18 @@ export async function changeSiteId(
       `Port ${newId} is already reserved by another website.`,
       409,
     );
-  meta.id = newId;
-  meta.category = category.id;
-  await store.save(value);
   return meta;
+}
+
+export async function assertSiteIdChange(
+  domain: string,
+  newId: number,
+  externallyUsedPorts: number[] = [],
+) {
+  return validateSiteIdChange(
+    (await store.load()).sites,
+    domain,
+    newId,
+    externallyUsedPorts,
+  );
 }

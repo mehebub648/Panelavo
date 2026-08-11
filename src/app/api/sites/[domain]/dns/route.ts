@@ -1,19 +1,19 @@
 import { Resolver } from "node:dns/promises";
 import type { NextRequest } from "next/server";
-import { requireUser } from "@/server/auth/require-user";
 import { fail, ok } from "@/server/http";
 import { getZones } from "@/server/cloudflare/store";
 import { pointDns, pointDnsError } from "@/server/cloudflare/point-dns";
 import { getRequestServerPublicIp } from "@/server/network/server-ip";
 import { assertWriteRequest } from "@/server/security/request";
+import { requireAccessibleDomainTarget } from "@/server/auth/site-access";
 
 type Context = { params: Promise<{ domain: string }> };
 
 export async function GET(request: NextRequest, context: Context) {
   try {
-    const session = await requireUser();
     const { domain } = await context.params;
     const decodedDomain = decodeURIComponent(domain);
+    const { session } = await requireAccessibleDomainTarget(decodedDomain);
 
     const serverIp = await getRequestServerPublicIp(request);
 
@@ -55,9 +55,11 @@ export async function GET(request: NextRequest, context: Context) {
 export async function POST(request: NextRequest, context: Context) {
   try {
     assertWriteRequest(request);
-    const session = await requireUser();
     const { domain } = await context.params;
     const decodedDomain = decodeURIComponent(domain);
+    const { session } = await requireAccessibleDomainTarget(decodedDomain, {
+      write: true,
+    });
     const raw = await request.json();
 
     const serverIp = await getRequestServerPublicIp(request);

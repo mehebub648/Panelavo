@@ -1,7 +1,5 @@
 import { randomInt, randomUUID } from "node:crypto";
 import type { NextRequest } from "next/server";
-import { requireUser } from "@/server/auth/require-user";
-import { getCloudPanelClient } from "@/server/cloudpanel";
 import { AppError } from "@/server/cloudpanel/errors";
 import { createLinkedServiceSchema } from "@/schemas/sites";
 import { fail, ok } from "@/server/http";
@@ -19,6 +17,10 @@ import {
   systemDomainFor,
 } from "@/server/sites/site-meta";
 import { issueSiteSsl, planSiteSsl } from "@/server/sites/ensure-ssl";
+import {
+  requireAccessibleSite,
+  requireWritableSite,
+} from "@/server/auth/site-access";
 
 type Context = { params: Promise<{ domain: string }> };
 
@@ -36,18 +38,11 @@ function makeSiteUserPassword() {
 export async function GET(request: NextRequest, context: Context) {
   const requestId = randomUUID();
   try {
-    const session = await requireUser();
     const parentDomain = decodeURIComponent(
       (await context.params).domain,
     ).toLowerCase();
-    const [sites, children] = await Promise.all([
-      getCloudPanelClient().listSites(session.record.cloudPanel),
-      getLinkedServiceMeta(parentDomain),
-    ]);
-    // The parent must be one of the caller's own sites before its linked
-    // services (which panel admins may not have assigned) are revealed.
-    if (!sites.some((site) => site.domain.toLowerCase() === parentDomain))
-      throw new AppError("SITE_NOT_FOUND", "This website was not found.", 404);
+    const { sites } = await requireAccessibleSite(parentDomain);
+    const children = await getLinkedServiceMeta(parentDomain);
     const services = Object.entries(children).map(([domain, meta]) => {
       const site = sites.find((item) => item.domain.toLowerCase() === domain);
       return {
@@ -70,17 +65,12 @@ export async function POST(request: NextRequest, context: Context) {
   const requestId = randomUUID();
   try {
     assertWriteRequest(request);
-    const session = await requireUser();
-    rateLimit(`site-create:${session.user.id}`, 5, 10 * 60_000);
-    if (!session.user.canCreateSites)
-      throw new AppError(
-        "FORBIDDEN",
-        "You do not have permission to create websites.",
-        403,
-      );
     const parentDomain = decodeURIComponent(
       (await context.params).domain,
     ).toLowerCase();
+    const { session, sites, client } =
+      await requireWritableSite(parentDomain);
+    rateLimit(`site-create:${session.user.id}`, 5, 10 * 60_000);
     const input = createLinkedServiceSchema.parse(await request.json());
 
     const baseDomain = await getBaseDomain();
@@ -98,13 +88,6 @@ export async function POST(request: NextRequest, context: Context) {
         503,
       );
 
-    const client = getCloudPanelClient();
-    const sites = await client.listSites(session.record.cloudPanel);
-    const parent = sites.find(
-      (site) => site.domain.toLowerCase() === parentDomain,
-    );
-    if (!parent)
-      throw new AppError("SITE_NOT_FOUND", "This website was not found.", 404);
     const allMeta = await getAllSiteMeta();
     const parentMeta = allMeta[parentDomain];
     if (!parentMeta)

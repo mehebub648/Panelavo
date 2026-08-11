@@ -110,6 +110,8 @@ Create permission is derived from CloudPanel's Admin and Site Manager roles. Unk
 
 The bridge loads sites through CloudPanel's own Doctrine entities. Admins and Site Managers receive all sites; restricted users receive only their assigned collection.
 
+Every site-specific page and API first resolves the caller's current live site collection, then reads or changes Panelavo metadata. Missing and unassigned domains both return 404. This prevents stale assignments or local overlays from granting access when a deleted domain is later recreated for another user, and DNS alias operations are accepted only when their owning live site is visible to the caller.
+
 ### Site identity: categories, ids, and domains
 
 panelavo chooses each website's primary system domain. On creation the user picks a project category; the next free id in that category's range becomes the site id, the application port, and the site user:

@@ -1,20 +1,15 @@
 import type { NextRequest } from "next/server";
 import { backupScheduleSchema, getBackupSchedule, saveBackupSchedule } from "@/server/backups/schedule";
-import { requireUser } from "@/server/auth/require-user";
-import { getCloudPanelClient } from "@/server/cloudpanel";
-import { AppError } from "@/server/cloudpanel/errors";
 import { fail, ok } from "@/server/http";
 import { assertWriteRequest } from "@/server/security/request";
+import {
+  requireAccessibleSite,
+  requireWritableSite,
+} from "@/server/auth/site-access";
 
 async function authorizedDomain(encodedDomain: string) {
-  const session = await requireUser();
   const domain = decodeURIComponent(encodedDomain);
-  await getCloudPanelClient().getSiteSection(
-    session.record.cloudPanel,
-    domain,
-    "backups",
-  );
-  return { session, domain };
+  return { ...(await requireAccessibleSite(domain)), domain };
 }
 
 export async function GET(
@@ -35,13 +30,8 @@ export async function PUT(
 ) {
   try {
     assertWriteRequest(request);
-    const { session, domain } = await authorizedDomain((await params).domain);
-    if (!(session.user.canCreateSites || session.user.panelRole === "admin"))
-      throw new AppError(
-        "FORBIDDEN",
-        "You do not have permission to change this schedule.",
-        403,
-      );
+    const domain = decodeURIComponent((await params).domain);
+    await requireWritableSite(domain);
     return ok(
       await saveBackupSchedule(
         domain,
