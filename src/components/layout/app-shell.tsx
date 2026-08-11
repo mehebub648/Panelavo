@@ -126,7 +126,7 @@ export function AppShell({
               {user.displayName || user.username}
             </p>
             <p className="truncate text-xs capitalize text-slate-400">
-              {user.panelRole?.replace("-", " ") || "CloudPanel user"}
+              {user.panelRole?.replace("-", " ") || "Server user"}
             </p>
           </div>
         </div>
@@ -171,7 +171,7 @@ export function AppShell({
                   ? "Configure and maintain your website"
                   : title === "About panelavo"
                     ? "Product details and project notices"
-                    : "Manage your CloudPanel websites"}
+                    : "Manage your server websites"}
               </p>
             </div>
           </div>
@@ -183,7 +183,7 @@ export function AppShell({
                     {user.username}
                   </span>
                   <span className="block text-xs capitalize text-slate-400">
-                    {user.panelRole?.replace("-", " ") || "CloudPanel user"}
+                    {user.panelRole?.replace("-", " ") || "Server user"}
                   </span>
                 </span>
                 <span className="grid h-9 w-9 place-items-center rounded-full bg-panel-100 text-panel-700">

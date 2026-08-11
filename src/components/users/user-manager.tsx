@@ -458,7 +458,7 @@ function AddUserForm({ close, act, sites, busy }: { close: () => void, act: (bod
            <div className="grid md:grid-cols-[1fr_2fr] gap-6">
              <div>
                <h4 className="text-sm font-bold text-slate-900">Account Security</h4>
-               <p className="text-xs text-slate-500 mt-1">Credentials used to log into CloudPanel.</p>
+               <p className="text-xs text-slate-500 mt-1">Credentials used to log into this server.</p>
              </div>
              <div className="bg-white p-5 rounded-xl border shadow-sm space-y-4">
                <div className="space-y-1">

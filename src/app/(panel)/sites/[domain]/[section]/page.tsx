@@ -314,7 +314,7 @@ function SectionUnavailable({ name }: { name: string }) {
       <p className="font-bold">Could not load {name}</p>
       <p className="mt-1 text-amber-800">
         The other Operations sections remain available. Refresh this page after
-        checking the CloudPanel service.
+        checking the server service.
       </p>
     </div>
   );

@@ -81,7 +81,7 @@ function dockerData(ready: boolean): OperationsData {
       portMatches: ready,
       canAutoRemap: false,
       portDetail: ready
-        ? 'Entry service "web" maps container port 3000 to 127.0.0.1:24001, matching CloudPanel.'
+        ? 'Entry service "web" maps container port 3000 to 127.0.0.1:24001, matching the configured upstream.'
         : undefined,
     },
   };

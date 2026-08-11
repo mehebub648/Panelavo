@@ -135,7 +135,7 @@ function detections(raw: RawOperationsData, type: string) {
   if (raw.reverseProxyUrl)
     found.push(
       detection("reverse-proxy", "proxy", "Reverse proxy", [
-        "CloudPanel upstream URL",
+        "Configured upstream URL",
       ]),
     );
 
@@ -165,7 +165,7 @@ function detections(raw: RawOperationsData, type: string) {
     found.find((item) => item.id === preferred) ??
     found[0] ??
     detection(type || "generic", type || "generic", "Generic website", [
-      "CloudPanel site type",
+      "Configured site type",
     ]);
   return {
     primary,
@@ -456,7 +456,7 @@ function preflightChecks(raw: RawOperationsData, type: string) {
           raw.compose?.configValid !== true
             ? "Entry-service and port matching will run after the Compose configuration can be resolved."
             : raw.compose?.portDetail ||
-              "Panelavo could not match a Compose service to CloudPanel's configured upstream port.",
+              "Panelavo could not match a Compose service to the configured upstream port.",
         blocker:
           raw.compose?.configValid === true &&
           !raw.compose?.portMatches &&
@@ -531,7 +531,7 @@ function preflightChecks(raw: RawOperationsData, type: string) {
           Boolean(raw.hasBuildScript),
           "A production build script was detected.",
           "The static project has no build script.",
-          "Add an explicit production build script and configure CloudPanel to serve its output directory.",
+          "Add an explicit production build script and configure the server to serve its output directory.",
         ),
       );
     }
@@ -553,7 +553,7 @@ function preflightChecks(raw: RawOperationsData, type: string) {
           toolAvailable(raw, "composer"),
           "Composer is available.",
           "Composer is unavailable.",
-          "Install Composer system-wide or through CloudPanel.",
+          "Install Composer system-wide through the server administrator.",
           { fix: makeFix(raw, FIXES["install-composer"]) },
         ),
         check(
@@ -632,7 +632,7 @@ function preflightChecks(raw: RawOperationsData, type: string) {
         raw.port.listening,
         raw.port.detail,
         raw.port.detail,
-        `The deployment will provide PORT=${raw.port.expected} and verify 127.0.0.1:${raw.port.expected}. If an ecosystem file overrides PORT, update it to match CloudPanel.`,
+        `The deployment will provide PORT=${raw.port.expected} and verify 127.0.0.1:${raw.port.expected}. If an ecosystem file overrides PORT, update it to match the configured port.`,
         { warning: true },
       ),
     );
@@ -1522,7 +1522,7 @@ function planFor(
                 command: "compose-port-verify",
                 label: "Verify website entry port",
                 description:
-                  "Confirm CloudPanel can connect to the expected loopback port.",
+                  "Confirm the server can connect to the expected loopback port.",
               },
             ]
           : []),
@@ -1568,7 +1568,7 @@ function planFor(
               command: "runtime-port-verify",
               label: "Verify application port",
               description:
-                "Confirm the app accepts traffic on CloudPanel's configured port.",
+                "Confirm the app accepts traffic on the configured port.",
             },
           ]
         : []),
@@ -1611,7 +1611,7 @@ function planFor(
         },
       ],
       warnings: [
-        "Confirm CloudPanel serves the framework's configured output directory before switching traffic.",
+        "Confirm the server serves the framework's configured output directory before switching traffic.",
       ],
       confirmation: {
         title: "Build the static website?",
@@ -1743,7 +1743,7 @@ function planFor(
                       command: "runtime-port-verify",
                       label: "Verify application port",
                       description:
-                        "Confirm the app accepts traffic on CloudPanel's configured port.",
+                        "Confirm the app accepts traffic on the configured port.",
                     },
                   ]
                 : []),

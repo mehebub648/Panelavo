@@ -57,7 +57,7 @@ function parseBrokerOutput(output: string): BridgeResult {
   } catch {
     throw new AppError(
       "CLOUDPANEL_UNAVAILABLE",
-      "The privileged CloudPanel broker returned invalid data.",
+      "The privileged server service returned invalid data.",
       503,
     );
   }
@@ -92,7 +92,7 @@ function invokeBroker(
       reject(
         new AppError(
           "CLOUDPANEL_UNAVAILABLE",
-          "The privileged CloudPanel broker could not be started.",
+          "The privileged server service could not be started.",
           503,
         ),
       );
@@ -111,8 +111,8 @@ function invokeBroker(
         new AppError(
           signal === "SIGKILL" ? "REQUEST_TIMEOUT" : "CLOUDPANEL_UNAVAILABLE",
           signal === "SIGKILL"
-            ? "The privileged CloudPanel broker took too long to respond."
-            : "The privileged CloudPanel broker rejected the request.",
+            ? "The privileged server service took too long to respond."
+            : "The privileged server service rejected the request.",
           signal === "SIGKILL" ? 504 : 503,
         ),
       );
@@ -210,7 +210,7 @@ export async function checkCloudPanelBroker() {
       ) {
         throw new AppError(
           "CLOUDPANEL_UNAVAILABLE",
-          "The installed CloudPanel broker is unavailable or incompatible.",
+          "The installed server service is unavailable or incompatible.",
           503,
         );
       }
@@ -294,7 +294,7 @@ export function siteSectionBridgeError(result: BridgeResult) {
   const detail = result.message?.trim();
   return new AppError(
     "SITE_UPDATE_FAILED",
-    detail || "CloudPanel could not apply the change.",
+    detail || "The server could not apply the change.",
     502,
   );
 }
@@ -312,7 +312,7 @@ export class LiveCloudPanelClient implements CloudPanelClient {
     if (result.code === "REQUEST_TIMEOUT")
       return new AppError(
         "REQUEST_TIMEOUT",
-        "CloudPanel took too long to respond.",
+        "The server took too long to respond.",
         504,
       );
     const detail = result.message ?? "";
@@ -405,7 +405,7 @@ export class LiveCloudPanelClient implements CloudPanelClient {
     if (!result.ok || !result.user)
       throw new AppError(
         "SESSION_EXPIRED",
-        "Your CloudPanel account is no longer active.",
+        "Your server account is no longer active.",
         401,
       );
     return result.user;
@@ -419,7 +419,7 @@ export class LiveCloudPanelClient implements CloudPanelClient {
     if (!result.ok || !result.sites)
       throw new AppError(
         "CLOUDPANEL_UNAVAILABLE",
-        "CloudPanel could not list websites.",
+        "The server could not list websites.",
         503,
       );
     return result.sites;
@@ -491,7 +491,7 @@ export class LiveCloudPanelClient implements CloudPanelClient {
       if (!created.ok)
         throw this.privilegedError(
           created,
-          "CloudPanel could not create the user.",
+          "The server could not create the user.",
         );
       if (placeholder) {
         const cleared = await this.bridge({
@@ -533,7 +533,7 @@ export class LiveCloudPanelClient implements CloudPanelClient {
       if (!reset.ok)
         throw this.privilegedError(
           reset,
-          "CloudPanel could not reset the password.",
+          "The server could not reset the password.",
         );
     } else if (action === "delete") {
       const deleted = await this.bridge({
@@ -544,7 +544,7 @@ export class LiveCloudPanelClient implements CloudPanelClient {
       if (!deleted.ok)
         throw this.privilegedError(
           deleted,
-          "CloudPanel could not delete the user.",
+          "The server could not delete the user.",
         );
     } else throw new AppError("INVALID_REQUEST", "Unknown user action.", 400);
   }
@@ -573,7 +573,7 @@ export class LiveCloudPanelClient implements CloudPanelClient {
     if (!templates.ok)
       throw this.privilegedError(
         templates,
-        "CloudPanel could not list vhost templates.",
+        "The server could not list vhost templates.",
       );
     const vhostTemplates = Array.isArray(
       (templates.data as { templates?: unknown } | undefined)?.templates,
@@ -646,14 +646,14 @@ export class LiveCloudPanelClient implements CloudPanelClient {
       if (!result.ok)
         throw this.privilegedError(
           result,
-          "CloudPanel could not create the website.",
+          "The server could not create the website.",
         );
     } catch (error) {
       if (error instanceof AppError && error.code === "REQUEST_TIMEOUT")
         throw error;
       throw new AppError(
         "SITE_CREATION_FAILED",
-        "CloudPanel could not create the website.",
+        "The server could not create the website.",
         502,
       );
     }
@@ -692,7 +692,7 @@ export class LiveCloudPanelClient implements CloudPanelClient {
     if (!result.ok || !result.site)
       throw new AppError(
         "SITE_UPDATE_FAILED",
-        "CloudPanel could not update the website.",
+        "The server could not update the website.",
         502,
       );
     return result.site;
@@ -712,7 +712,7 @@ export class LiveCloudPanelClient implements CloudPanelClient {
     if (!result.ok)
       throw this.privilegedError(
         result,
-        "CloudPanel could not delete the website.",
+        "The server could not delete the website.",
       );
   }
 
@@ -794,7 +794,7 @@ export class LiveCloudPanelClient implements CloudPanelClient {
       if (!result.ok)
         throw this.privilegedError(
           result,
-          "CloudPanel could not create the database.",
+          "The server could not create the database.",
         );
     } else if (section === "databases" && action === "delete") {
       const result = await this.bridge(
@@ -810,7 +810,7 @@ export class LiveCloudPanelClient implements CloudPanelClient {
       if (!result.ok)
         throw this.privilegedError(
           result,
-          "CloudPanel could not delete the database.",
+          "The server could not delete the database.",
         );
     } else if (section === "databases" && action === "manage-login") {
       // One-time phpMyAdmin sign-on: the broker writes the database user's
@@ -868,7 +868,7 @@ export class LiveCloudPanelClient implements CloudPanelClient {
       if (!result.ok)
         throw this.privilegedError(
           result,
-          "CloudPanel could not install the certificate.",
+          "The server could not install the certificate.",
         );
     } else {
       // Site actions (npm install, builds, docker compose…) legitimately run
@@ -949,7 +949,7 @@ export class LiveCloudPanelClient implements CloudPanelClient {
       if (!reset.ok)
         throw this.privilegedError(
           reset,
-          "CloudPanel could not change your password.",
+          "The server could not change your password.",
         );
       return this.getCurrentUser(session);
     }

@@ -197,7 +197,7 @@ export function SiteList({ user }: { user: CloudPanelUser }) {
           </h2>
           <p className="mt-1 text-sm text-slate-500">
             {sites.length} {sites.length === 1 ? "website" : "websites"}{" "}
-            available to your CloudPanel account
+            available to your server account
           </p>
         </div>
         {user.canCreateSites && (

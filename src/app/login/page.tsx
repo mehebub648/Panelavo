@@ -38,22 +38,21 @@ export default async function LoginPage({
         </div>
         <div className="relative my-auto max-w-xl pb-16">
           <p className="mb-5 text-sm font-bold uppercase tracking-[.2em] text-cyan-300">
-            panelavo for CloudPanel servers
+            Self-hosted server management
           </p>
           <h1 className="text-5xl font-bold leading-[1.08] tracking-[-.04em]">
-            Your CloudPanel server.
+            Your websites and server.
             <br />
             Cleaner to manage.
           </h1>
           <p className="mt-6 max-w-lg text-lg leading-8 text-slate-200">
-            panelavo is a self-hosted companion interface for CloudPanel. It
-            keeps CloudPanel as the source of truth while giving day-to-day
-            website work a focused workspace.
+            panelavo gives day-to-day website and server work a focused,
+            secure workspace without duplicating your accounts.
           </p>
           <div className="mt-12 grid grid-cols-2 gap-4">
             {[
               { icon: Globe2, label: "Sites at a glance" },
-              { icon: ShieldCheck, label: "CloudPanel permissions" },
+              { icon: ShieldCheck, label: "Server permissions" },
               { icon: ServerCog, label: "Self-hosted install" },
               { icon: CheckCircle2, label: "No duplicated accounts" },
             ].map(({ icon: Icon, label }) => (
@@ -67,10 +66,7 @@ export default async function LoginPage({
             ))}
           </div>
         </div>
-        <p className="relative text-xs text-slate-400">
-          panelavo is not affiliated with, endorsed by, or sponsored by
-          CloudPanel.
-        </p>
+        <p className="relative text-xs text-slate-400">Your infrastructure stays under your control.</p>
       </section>
       <section className="flex min-h-screen items-center justify-center bg-[#fbfcfe] px-6 py-12">
         <div className="w-full max-w-[430px]">
@@ -82,10 +78,10 @@ export default async function LoginPage({
               WELCOME TO PANELAVO
             </p>
             <h2 className="text-3xl font-bold tracking-tight text-ink">
-              Sign in with CloudPanel
+              Sign in to Panelavo
             </h2>
             <p className="mt-3 text-sm leading-6 text-slate-500">
-              Use your existing CloudPanel account. panelavo does not create a
+              Use your existing server account. Panelavo does not create a
               separate user database.
             </p>
           </div>

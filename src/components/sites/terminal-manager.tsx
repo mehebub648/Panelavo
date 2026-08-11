@@ -255,7 +255,7 @@ export function TerminalManager({
             <ul className="mt-2 list-disc space-y-1.5 pl-4 text-xs leading-5 text-slate-600">
               <li>
                 Use the <b>{initialData.user}</b> password chosen when the website was
-                created, or reset it in CloudPanel.
+                created, or ask an administrator to reset it.
               </li>
               <li>
                 For key-based login, append your public key to{" "}

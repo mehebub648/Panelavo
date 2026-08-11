@@ -103,7 +103,7 @@ export function SiteSectionManager({
       const result = await response.json();
       if (!result.success)
         throw new Error(
-          result.error?.message || "CloudPanel could not apply the change.",
+          result.error?.message || "The server could not apply the change.",
         );
       toast.success("Changes applied");
       router.refresh();

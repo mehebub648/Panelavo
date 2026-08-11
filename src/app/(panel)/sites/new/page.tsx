@@ -17,7 +17,7 @@ export default async function AddSitePage() {
           </span>
           <h2 className="mt-5 text-xl font-bold">Permission required</h2>
           <p className="mt-2 text-sm text-slate-500">
-            Your CloudPanel role does not allow website creation.
+            Your account role does not allow website creation.
           </p>
           <Button asChild variant="outline" className="mt-6">
             <Link href="/sites">Back to websites</Link>

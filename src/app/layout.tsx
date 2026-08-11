@@ -6,7 +6,7 @@ import "./globals.css";
 const appName = process.env.NEXT_PUBLIC_APP_NAME ?? "panelavo";
 export const metadata: Metadata = {
   title: { default: appName, template: `%s · ${appName}` },
-  description: "A secure frontend for CloudPanel website management.",
+  description: "A secure interface for server and website management.",
 };
 
 export default function RootLayout({

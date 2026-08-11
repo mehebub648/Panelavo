@@ -64,7 +64,7 @@ export function LoginForm({
       setError(
         reason instanceof Error
           ? reason.message
-          : "CloudPanel could not be reached.",
+          : "The server could not be reached.",
       );
     } finally {
       setBusy(false);
@@ -85,7 +85,7 @@ export function LoginForm({
               id="username"
               name="username"
               autoComplete="username"
-              placeholder="Enter your CloudPanel user name"
+              placeholder="Enter your server user name"
               required
               autoFocus
             />

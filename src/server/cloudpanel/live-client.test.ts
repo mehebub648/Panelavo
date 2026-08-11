@@ -68,7 +68,7 @@ describe("siteSectionBridgeError", () => {
       code: "SITE_UPDATE_FAILED",
     });
     expect(error.status).toBe(502);
-    expect(error.message).toBe("CloudPanel could not apply the change.");
+    expect(error.message).toBe("The server could not apply the change.");
   });
 
   it("does not expose unsafe Compose details returned by the bridge", () => {

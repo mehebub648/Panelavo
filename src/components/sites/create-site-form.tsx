@@ -343,7 +343,7 @@ export function CreateSiteForm() {
           <div className="mb-5">
             <h3 className="font-bold">What would you like to host?</h3>
             <p className="mt-1 text-sm text-slate-500">
-              Only types supported by this CloudPanel installation are shown.
+              Only website types supported by this server are shown.
             </p>
           </div>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
