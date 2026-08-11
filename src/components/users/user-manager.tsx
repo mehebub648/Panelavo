@@ -1,5 +1,6 @@
 "use client";
-import { useState, useMemo, useEffect } from "react";
+import React from "react";
+import { useState, useMemo, useEffect, useId, useRef } from "react";
 import { createPortal } from "react-dom";
 import { KeyRound, LinkIcon, Pencil, Plus, Trash2, UserRound, X, Shield, Globe, ShieldAlert, CheckCircle2, Clock, Lock, Shuffle, Search, Copy } from "lucide-react";
 import { timezoneChoices } from "@/lib/timezones";
@@ -387,7 +388,7 @@ function AddUserForm({ close, act, sites, busy }: { close: () => void, act: (bod
   return (
     <UserModal title="Create New User" close={close}>
       <form
-        className="flex flex-col h-full"
+        className="flex min-h-0 flex-1 flex-col"
         onSubmit={async (event) => {
           event.preventDefault();
           if (role === "user" && selectedSites.length === 0) {
@@ -593,7 +594,7 @@ function EditUserForm({ user, close, act, sites, busy }: { user: CloudPanelUser,
   return (
     <UserModal title={`Edit User: ${user.username}`} close={close}>
       <form
-        className="flex flex-col h-full"
+        className="flex min-h-0 flex-1 flex-col"
         onSubmit={async (event) => {
           event.preventDefault();
           if (
@@ -690,7 +691,7 @@ function EditUserForm({ user, close, act, sites, busy }: { user: CloudPanelUser,
   );
 }
 
-function UserModal({
+export function UserModal({
   title,
   close,
   children,
@@ -699,20 +700,66 @@ function UserModal({
   close: () => void;
   children: React.ReactNode;
 }) {
-  // Portal to <body> so the slide-over always covers the full viewport,
-  // independent of any transformed/blurred ancestor in the page layout.
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+
+  useEffect(() => {
+    const previousFocus = document.activeElement as HTMLElement | null;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const focusable = () => Array.from(dialogRef.current?.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+    ) ?? []).filter((item) => !item.hasAttribute("hidden"));
+    (focusable()[0] ?? dialogRef.current)?.focus();
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        close();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const items = focusable();
+      if (!items.length) {
+        event.preventDefault();
+        dialogRef.current?.focus();
+        return;
+      }
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.body.style.overflow = previousOverflow;
+      previousFocus?.focus();
+    };
+  }, [close]);
+
   return createPortal(
     <div
-      className="fixed inset-0 z-[80] flex justify-end bg-slate-950/40 backdrop-blur-sm animate-in fade-in duration-200"
+      className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/40 p-3 backdrop-blur-sm animate-in fade-in duration-200 sm:p-6"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) close();
       }}
     >
-      {/* Slide-over panel */}
-      <div className="w-full max-w-2xl h-full bg-white shadow-2xl animate-in slide-in-from-right duration-300 flex flex-col overflow-hidden">
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        className="flex max-h-[calc(100dvh-1.5rem)] w-full max-w-4xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl animate-in zoom-in-95 duration-200 sm:max-h-[calc(100dvh-3rem)]"
+      >
         <div className="px-6 py-5 border-b border-slate-100 flex justify-between items-center bg-white shrink-0">
-          <h3 className="text-xl font-bold text-slate-900">{title}</h3>
-          <button onClick={close} className="p-1.5 rounded-full hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors">
+          <h3 id={titleId} className="text-xl font-bold text-slate-900">{title}</h3>
+          <button type="button" aria-label="Close dialog" onClick={close} className="p-1.5 rounded-full hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors">
             <X className="h-5 w-5" />
           </button>
         </div>
