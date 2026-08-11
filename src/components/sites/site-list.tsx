@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
@@ -17,7 +17,6 @@ import {
   Plus,
   RefreshCw,
   Search,
-  Server,
   ServerCrash,
   Settings,
 } from "lucide-react";
@@ -30,10 +29,8 @@ import type {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
-import { formatDate } from "@/lib/utils";
-import type { UptimeState } from "@/server/monitoring/store";
 
-type ListedSite = CloudPanelSite & { uptime?: UptimeState };
+type ListedSite = CloudPanelSite;
 
 const typeLabels: Record<SiteType, string> = {
   php: "PHP",
@@ -47,7 +44,7 @@ const typeVisuals: Record<SiteType, { icon: typeof Globe2; color: string }> = {
   php: { icon: Code2, color: "bg-violet-50 text-violet-600" },
   nodejs: { icon: Braces, color: "bg-emerald-50 text-emerald-600" },
   static: { icon: FileCode2, color: "bg-amber-50 text-amber-600" },
-  python: { icon: Server, color: "bg-blue-50 text-blue-600" },
+  python: { icon: Code2, color: "bg-blue-50 text-blue-600" },
   "reverse-proxy": { icon: Network, color: "bg-rose-50 text-rose-600" },
   docker: { icon: Container, color: "bg-sky-50 text-sky-600" },
 };
@@ -67,26 +64,6 @@ function TypeBadge({ type }: { type?: SiteType }) {
     </span>
   );
 }
-function Status({ status, uptime }: { status?: string; uptime?: UptimeState }) {
-  const monitored = uptime?.status;
-  return (
-    <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700">
-      <span
-        className={`h-1.5 w-1.5 rounded-full ${monitored === "down" ? "bg-red-500" : status === "inactive" ? "bg-slate-400" : "bg-emerald-500"}`}
-      />
-      {monitored === "down"
-        ? "Down"
-        : monitored === "up"
-          ? "Up"
-          : status === "inactive"
-        ? "Inactive"
-        : status === "unknown"
-          ? "Unknown"
-          : "Active"}
-    </span>
-  );
-}
-
 export function SiteList({ user }: { user: CloudPanelUser }) {
   const router = useRouter();
   const params = useSearchParams();
@@ -151,9 +128,11 @@ export function SiteList({ user }: { user: CloudPanelUser }) {
         (type === "all" || site.type === type) &&
         [
           site.domain,
-          site.siteUser,
+          site.label,
+          ...(site.meta?.aliases ?? []),
           site.application,
-          site.runtimeVersion,
+          site.categoryLabel,
+          site.type ? typeLabels[site.type] : undefined,
           site.meta?.serviceName,
         ].some((value) => value?.toLowerCase().includes(query.toLowerCase())),
     );
@@ -169,6 +148,12 @@ export function SiteList({ user }: { user: CloudPanelUser }) {
         children.set(parent, [...(children.get(parent) ?? []), site]);
       else roots.push(site);
     }
+    roots.sort(
+      (left, right) =>
+        (left.categoryOrder ?? Number.MAX_SAFE_INTEGER) -
+          (right.categoryOrder ?? Number.MAX_SAFE_INTEGER) ||
+        left.domain.localeCompare(right.domain),
+    );
     return roots.flatMap((site) => [
       site,
       ...(children.get(site.domain.toLowerCase()) ?? []),
@@ -231,7 +216,7 @@ export function SiteList({ user }: { user: CloudPanelUser }) {
             <Input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search domains, users, or runtimes…"
+              placeholder="Search labels, domains, types, or categories…"
               className="pl-10 shadow-none"
               aria-label="Search websites"
             />
@@ -306,17 +291,22 @@ export function SiteList({ user }: { user: CloudPanelUser }) {
                 <thead>
                   <tr className="bg-slate-50/70 text-[11px] font-bold uppercase tracking-wider text-slate-400">
                     <th className="px-6 py-3.5">Domain</th>
+                    <th className="px-4 py-3.5">Label</th>
                     <th className="px-4 py-3.5">Type</th>
-                    <th className="px-4 py-3.5">Runtime</th>
-                    <th className="px-4 py-3.5">Site user</th>
-                    <th className="px-4 py-3.5">Status</th>
-                    <th className="px-4 py-3.5">Created</th>
                     <th className="px-6 py-3.5 text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {filtered.map((site) => (
-                    <tr key={site.id} className="group hover:bg-slate-50/50">
+                  {filtered.map((site, index) => (
+                    <Fragment key={site.id}>
+                    {(index === 0 || filtered[index - 1]?.categoryLabel !== site.categoryLabel) && (
+                      <tr className="border-y border-slate-100 bg-slate-50/90">
+                        <td colSpan={4} className="px-6 py-2 text-xs font-bold uppercase tracking-wider text-slate-500">
+                          {site.categoryLabel || "Uncategorized"}
+                        </td>
+                      </tr>
+                    )}
+                    <tr className="group hover:bg-slate-50/50">
                       <td className="px-6 py-4">
                         <div
                           className={`flex items-center gap-3 ${site.meta?.parent ? "pl-6" : ""}`}
@@ -342,20 +332,11 @@ export function SiteList({ user }: { user: CloudPanelUser }) {
                           </div>
                         </div>
                       </td>
+                      <td className="px-4 py-4 text-sm font-medium text-slate-700">
+                        {site.label || site.meta?.serviceName || "—"}
+                      </td>
                       <td className="px-4 py-4">
                         <TypeBadge type={site.type} />
-                      </td>
-                      <td className="px-4 py-4 text-sm text-slate-600">
-                        {site.runtimeVersion || "—"}
-                      </td>
-                      <td className="px-4 py-4 text-sm text-slate-600">
-                        {site.siteUser || "—"}
-                      </td>
-                      <td className="px-4 py-4">
-                        <Status status={site.status} uptime={site.uptime} />
-                      </td>
-                      <td className="px-4 py-4 text-sm text-slate-500">
-                        {formatDate(site.createdAt)}
                       </td>
                       <td className="px-6 py-4">
                         <div className="flex justify-end gap-1">
@@ -389,19 +370,28 @@ export function SiteList({ user }: { user: CloudPanelUser }) {
                         </div>
                       </td>
                     </tr>
+                    </Fragment>
                   ))}
                 </tbody>
               </table>
             </div>
             <div className="space-y-3 p-3 md:hidden">
-              {filtered.map((site) => (
+              {filtered.map((site, index) => (
+                <Fragment key={site.id}>
+                {(index === 0 || filtered[index - 1]?.categoryLabel !== site.categoryLabel) && (
+                  <h3 className="px-1 pt-2 text-xs font-bold uppercase tracking-wider text-slate-500">
+                    {site.categoryLabel || "Uncategorized"}
+                  </h3>
+                )}
                 <article
-                  key={site.id}
                   className="overflow-hidden rounded-xl border border-slate-200/80 bg-white shadow-sm"
                 >
                   <div className="flex items-start gap-3 p-4">
                     <SiteIcon type={site.type} />
                     <div className="min-w-0 flex-1">
+                      {site.label && (
+                        <p className="mb-1 truncate font-semibold text-slate-800">{site.label}</p>
+                      )}
                       {/* Tapping the domain copies it — no separate copy button. */}
                       <button
                         type="button"
@@ -429,21 +419,8 @@ export function SiteList({ user }: { user: CloudPanelUser }) {
                           </>
                         ) : null}
                         <span>{typeLabels[site.type as SiteType] ?? "Website"}</span>
-                        {site.runtimeVersion && (
-                          <>
-                            <span className="text-slate-200">•</span>
-                            <span>{site.runtimeVersion}</span>
-                          </>
-                        )}
-                        {site.siteUser && (
-                          <>
-                            <span className="text-slate-200">•</span>
-                            <span>{site.siteUser}</span>
-                          </>
-                        )}
                       </p>
                     </div>
-                    <Status status={site.status} uptime={site.uptime} />
                   </div>
                   <div className="grid grid-cols-2 divide-x divide-slate-100 border-t border-slate-100 bg-slate-50/40">
                     <Link
@@ -462,6 +439,7 @@ export function SiteList({ user }: { user: CloudPanelUser }) {
                     </a>
                   </div>
                 </article>
+                </Fragment>
               ))}
             </div>
           </>

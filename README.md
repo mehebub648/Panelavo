@@ -112,6 +112,8 @@ The bridge loads sites through CloudPanel's own Doctrine entities. Admins and Si
 
 Every site-specific page and API first resolves the caller's current live site collection, then reads or changes Panelavo metadata. Missing and unassigned domains both return 404. This prevents stale assignments or local overlays from granting access when a deleted domain is later recreated for another user, and DNS alias operations are accepted only when their owning live site is visible to the caller.
 
+The website list is grouped in the configured Project-category order, with external or legacy sites under **Uncategorized** and linked services immediately below their parent. An optional private label (up to 80 safe characters) can be set during creation or in website Settings. Labels are stored against both the normalized domain and the current upstream site-record ID, so a recreated domain never inherits an old label. Runtime, site user, status, and creation date remain available in the website-specific Settings details card rather than the main list.
+
 ### Site identity: categories, ids, and domains
 
 panelavo chooses each website's primary system domain. On creation the user picks a project category; the next free id in that category's range becomes the site id, the application port, and the site user:

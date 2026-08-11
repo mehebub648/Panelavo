@@ -14,6 +14,7 @@ import { BackupsManager, type BackupsData } from "@/components/sites/backups-man
 import { getServerPublicIp } from "@/server/network/server-ip";
 import { getDatabaseManagerUrl } from "@/server/sites/database-manager";
 import { getSiteMeta } from "@/server/sites/site-meta";
+import { getSiteLabel } from "@/server/sites/site-labels";
 import { getSiteRootOverride } from "@/server/sites/site-root-overlay";
 import { getBackupSchedule } from "@/server/backups/schedule";
 import { getOffsiteDestination, listOffsiteBackups } from "@/server/backups/offsite";
@@ -75,8 +76,10 @@ export default async function SiteSectionPage({
   if (section === "settings") {
     const uptime = await getUptime(domain);
     const applicationRootDirectory = await getSiteRootOverride(domain);
+    const label = await getSiteLabel(domain, site.id);
     const mergedSite = {
       ...site,
+      label,
       applicationRootDirectory: applicationRootDirectory ?? site.rootDirectory,
       ...(siteMeta ? { meta: siteMeta } : {}),
     };

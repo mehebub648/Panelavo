@@ -93,6 +93,7 @@ type Category = {
   nextId: number | null;
 };
 type Values = {
+  label: string;
   siteUserPassword: string;
   phpVersion: string;
   vhostTemplate: string;
@@ -101,6 +102,7 @@ type Values = {
   reverseProxyUrl: string;
 };
 const initial: Values = {
+  label: "",
   siteUserPassword: "",
   phpVersion: "",
   vhostTemplate: "",
@@ -210,6 +212,7 @@ export function CreateSiteForm() {
       category: category.id,
       aliases,
       siteUserPassword: values.siteUserPassword,
+      label: values.label,
     };
     const body =
       type === "php"
@@ -403,6 +406,19 @@ export function CreateSiteForm() {
             </Button>
           </div>
           <div className="grid gap-x-6 gap-y-5 p-5 sm:grid-cols-2 sm:p-7">
+            <div className="sm:col-span-2">
+              <Label htmlFor="label">Label (optional)</Label>
+              <Input
+                id="label"
+                value={values.label}
+                onChange={(event) => change("label", event.target.value)}
+                maxLength={80}
+                placeholder="For example, Customer portal"
+              />
+              <p className="mt-1.5 text-xs text-slate-400">
+                A private name that makes this website easier to identify.
+              </p>
+            </div>
             <div className="sm:col-span-2">
               <Label htmlFor="category">Project category</Label>
               <Select

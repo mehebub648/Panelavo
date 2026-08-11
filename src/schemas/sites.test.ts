@@ -13,6 +13,18 @@ const shared = {
 };
 
 describe("site validation", () => {
+  it("normalizes optional labels and rejects unsafe labels", () => {
+    expect(
+      createSiteSchema.parse({ ...shared, label: "  Customer portal  " }).label,
+    ).toBe("Customer portal");
+    expect(updateSiteSchema.parse({ label: "API" }).label).toBe("API");
+    expect(
+      createSiteSchema.safeParse({ ...shared, label: "x".repeat(81) }).success,
+    ).toBe(false);
+    expect(updateSiteSchema.safeParse({ label: "bad\nlabel" }).success).toBe(
+      false,
+    );
+  });
   it("normalizes safe alias domains", () => {
     expect(normalizeDomain(" HTTPS://Example.COM. ")).toBe("example.com");
     expect(

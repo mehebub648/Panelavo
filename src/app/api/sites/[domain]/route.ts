@@ -21,6 +21,7 @@ import { getRequestServerPublicIp } from "@/server/network/server-ip";
 import { removeBackupSchedule } from "@/server/backups/schedule";
 import { removeOffsiteDestination } from "@/server/backups/offsite";
 import { removeUptime } from "@/server/monitoring/store";
+import { getSiteLabel, removeSiteLabel, setSiteLabel } from "@/server/sites/site-labels";
 
 type Context = { params: Promise<{ domain: string }> };
 
@@ -29,12 +30,13 @@ export async function PATCH(request: NextRequest, context: Context) {
     assertWriteRequest(request);
     const { domain } = await context.params;
     const decodedDomain = decodeURIComponent(domain);
-    const { session, client } = await requireWritableSite(decodedDomain);
+    const { session, client, site: accessibleSite } = await requireWritableSite(decodedDomain);
     const input = updateSiteSchema.parse(await request.json());
     const {
       applicationRootDirectory,
       servingDirectory,
       rootDirectory: legacyServingDirectory,
+      label,
       ...otherSettings
     } = input;
     // Sites with a reserved id treat the app port as that id: moving the port
@@ -47,15 +49,14 @@ export async function PATCH(request: NextRequest, context: Context) {
       previousId !== undefined &&
       input.appPort !== previousId;
     if (movingId) await assertSiteIdChange(decodedDomain, input.appPort!);
-    const site = await client.updateSite(
-      session.record.cloudPanel,
-      decodedDomain,
-      {
+    const upstreamSettings = {
         ...otherSettings,
         applicationRootDirectory,
         rootDirectory: servingDirectory ?? legacyServingDirectory,
-      },
-    );
+      };
+    const site = Object.values(upstreamSettings).some((value) => value !== undefined)
+      ? await client.updateSite(session.record.cloudPanel, decodedDomain, upstreamSettings)
+      : accessibleSite;
     if (movingId) {
       try {
         await changeSiteId(decodedDomain, input.appPort!);
@@ -70,9 +71,14 @@ export async function PATCH(request: NextRequest, context: Context) {
     }
     if (applicationRootDirectory !== undefined)
       await setSiteRootOverride(decodedDomain, applicationRootDirectory);
+    if (label !== undefined) await setSiteLabel(decodedDomain, site.id, label);
     return ok({
       site: {
         ...site,
+        label:
+          label !== undefined
+            ? label || undefined
+            : await getSiteLabel(decodedDomain, site.id),
         applicationRootDirectory:
           applicationRootDirectory ??
           (await getSiteRootOverride(decodedDomain)) ??
@@ -112,6 +118,7 @@ export async function DELETE(request: NextRequest, context: Context) {
     await removeBackupSchedule(decodedDomain).catch(() => undefined);
     await removeOffsiteDestination(decodedDomain).catch(() => undefined);
     await removeUptime(decodedDomain).catch(() => undefined);
+    await removeSiteLabel(decodedDomain).catch(() => undefined);
 
     // Background DNS cleanup
     void (async () => {

@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { formatDate } from "@/lib/utils";
 import { UptimeSettings } from "@/components/sites/uptime-settings";
 import type { UptimeConfig, UptimeState } from "@/server/monitoring/store";
 
@@ -81,6 +82,7 @@ export function SiteSettings({
     setSaved(false);
     const data = new FormData(event.currentTarget);
     const body: Record<string, string | number> = {
+      label: String(data.get("label") ?? ""),
       applicationRootDirectory: String(data.get("applicationRootDirectory") ?? ""),
       servingDirectory: String(data.get("servingDirectory") ?? ""),
     };
@@ -157,6 +159,23 @@ export function SiteSettings({
         </p>
       </div>
 
+      <section className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-card sm:p-6">
+        <h3 className="font-bold">Website details</h3>
+        <dl className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {[
+            ["Runtime", site.runtimeVersion || "Not applicable"],
+            ["Site user", site.siteUser || "Not available"],
+            ["Status", site.status ? site.status[0].toUpperCase() + site.status.slice(1) : "Unknown"],
+            ["Created", formatDate(site.createdAt)],
+          ].map(([term, value]) => (
+            <div key={term} className="rounded-xl bg-slate-50 p-3">
+              <dt className="text-xs font-semibold uppercase tracking-wide text-slate-400">{term}</dt>
+              <dd className="mt-1 text-sm font-semibold text-slate-700">{value}</dd>
+            </div>
+          ))}
+        </dl>
+      </section>
+
       {site.meta?.parent && (
         <div className="rounded-xl border border-panel-200/60 bg-panel-50/40 p-4 text-sm text-slate-600">
           This website is a linked service
@@ -201,6 +220,19 @@ export function SiteSettings({
           )}
         </div>
         <div className="grid gap-5 p-5 sm:grid-cols-2 sm:p-6">
+          <div className="sm:col-span-2">
+            <Label htmlFor="label" className="font-medium text-slate-700">Label</Label>
+            <Input
+              id="label"
+              name="label"
+              defaultValue={site.label}
+              maxLength={80}
+              disabled={!user.canCreateSites}
+              placeholder="For example, Customer portal"
+              className="mt-1.5 bg-white/70"
+            />
+            <p className="mt-1.5 text-xs text-slate-400">Optional private identification shown in the website list.</p>
+          </div>
           <div>
             <Label htmlFor="applicationRootDirectory" className="font-medium text-slate-700">Root directory</Label>
             <Input

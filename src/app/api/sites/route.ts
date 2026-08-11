@@ -16,7 +16,9 @@ import {
   setSiteMeta,
   siteUserForId,
   systemDomainFor,
+  SITE_CATEGORIES,
 } from "@/server/sites/site-meta";
+import { getLabelsForSites, removeSiteLabel, setSiteLabel } from "@/server/sites/site-labels";
 import { issueSiteSsl, planSiteSsl } from "@/server/sites/ensure-ssl";
 import type { CreateSiteInput } from "@/types/cloudpanel";
 import { localSiteProxyUrl } from "@/lib/site-url";
@@ -26,16 +28,23 @@ export async function GET() {
   const requestId = randomUUID();
   try {
     const session = await requireUser();
-    const [sites, meta, uptime] = await Promise.all([
-      getCloudPanelClient().listSites(session.record.cloudPanel),
+    const sites = await getCloudPanelClient().listSites(session.record.cloudPanel);
+    const [meta, uptime, labels] = await Promise.all([
       getAllSiteMeta(),
       getAllUptimeStates(),
+      getLabelsForSites(sites),
     ]);
     return ok({
       sites: sites.map((site) => {
         const siteMeta = meta[site.domain.toLowerCase()];
+        const categoryIndex = SITE_CATEGORIES.findIndex((item) => item.id === siteMeta?.category);
+        const category = categoryIndex >= 0 ? SITE_CATEGORIES[categoryIndex] : undefined;
         return {
           ...site,
+          label: labels[site.domain.toLowerCase()],
+          category: category?.id ?? "uncategorized",
+          categoryLabel: category?.label ?? "Uncategorized",
+          categoryOrder: categoryIndex >= 0 ? categoryIndex : SITE_CATEGORIES.length,
           ...(siteMeta ? { meta: siteMeta } : {}),
           uptime: uptime[site.domain.toLowerCase()],
         };
@@ -160,11 +169,13 @@ export async function POST(request: NextRequest) {
         aliases,
         block: "none",
       });
+      await setSiteLabel(domain, site.id, input.label ?? "");
     } catch (error) {
       await client
         .deleteSite(session.record.cloudPanel, domain)
         .catch(() => undefined);
       await removeSiteMeta(domain).catch(() => undefined);
+      await removeSiteLabel(domain).catch(() => undefined);
       throw error;
     }
 
@@ -224,6 +235,10 @@ export async function POST(request: NextRequest) {
       {
         site: {
           ...site,
+          label: input.label || undefined,
+          category: category.id,
+          categoryLabel: category.label,
+          categoryOrder: SITE_CATEGORIES.findIndex((item) => item.id === category.id),
           meta: { id, category: category.id, aliases, block: "none" },
         },
         warnings,

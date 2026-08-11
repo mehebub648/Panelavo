@@ -62,6 +62,10 @@ const shared = {
   category: categoryId,
   aliases: aliasList,
   siteUserPassword: password,
+  label: z.string().trim().max(80).refine(
+    (value) => !/[\x00-\x1f\x7f]/.test(value),
+    "Label contains an unsupported character.",
+  ).optional(),
 };
 
 const proxyUrl = z
@@ -177,6 +181,10 @@ export const updateSiteSchema = z
     runtimeVersion: runtime.optional(),
     appPort: z.coerce.number().int().min(1024).max(65535).optional(),
     reverseProxyUrl: proxyUrl.optional(),
+    label: z.string().trim().max(80).refine(
+      (value) => !/[\x00-\x1f\x7f]/.test(value),
+      "Label contains an unsupported character.",
+    ).optional(),
   })
   .strict()
   .refine(

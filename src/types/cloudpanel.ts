@@ -49,6 +49,10 @@ export interface CloudPanelSite {
   reverseProxyUrl?: string;
   status?: "active" | "inactive" | "unknown";
   createdAt?: string;
+  label?: string;
+  category?: string;
+  categoryLabel?: string;
+  categoryOrder?: number;
   url: string;
   meta?: {
     aliases?: string[];
