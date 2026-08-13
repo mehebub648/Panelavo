@@ -22,8 +22,10 @@ type ApiResponse = {
 
 export function LoginForm({
   initialTwoFactor = false,
+  returnTo,
 }: {
   initialTwoFactor?: boolean;
+  returnTo?: string;
 }) {
   const router = useRouter();
   const [step, setStep] = useState<"login" | "two-factor">(
@@ -58,7 +60,12 @@ export function LoginForm({
         setStep("two-factor");
         return;
       }
-      router.replace("/sites");
+      router.replace(
+        returnTo === "/oauth/authorize" ||
+          returnTo?.startsWith("/oauth/authorize?")
+          ? returnTo
+          : "/sites",
+      );
       router.refresh();
     } catch (reason) {
       setError(

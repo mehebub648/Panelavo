@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { PanelActor } from "./site-access";
 
 const { requireUser, listSites, getSiteMeta } = vi.hoisted(() => ({
   requireUser: vi.fn(),
@@ -16,12 +17,13 @@ vi.mock("@/server/cloudpanel", () => ({
 vi.mock("@/server/sites/site-meta", () => ({ getSiteMeta }));
 
 import {
+  accessibleDomainTargetForActor,
   requireAccessibleDomainTarget,
   requireAccessibleSite,
   requireWritableSite,
 } from "./site-access";
 
-const record = { cloudPanel: { usernameHint: "user-a" } };
+const record = { cloudPanel: { cookies: {}, usernameHint: "user-a" } };
 
 function session(overrides: Record<string, unknown> = {}) {
   return {
@@ -47,18 +49,24 @@ describe("site access", () => {
   });
 
   it("returns 404 for an unassigned or recreated site", async () => {
-    await expect(requireAccessibleSite("site-y.example.com")).rejects.toMatchObject({
+    await expect(
+      requireAccessibleSite("site-y.example.com"),
+    ).rejects.toMatchObject({
       code: "SITE_NOT_FOUND",
       status: 404,
     });
   });
 
   it("checks site visibility before write permission", async () => {
-    await expect(requireWritableSite("site-y.example.com")).rejects.toMatchObject({
+    await expect(
+      requireWritableSite("site-y.example.com"),
+    ).rejects.toMatchObject({
       code: "SITE_NOT_FOUND",
       status: 404,
     });
-    await expect(requireWritableSite("site-x.example.com")).rejects.toMatchObject({
+    await expect(
+      requireWritableSite("site-x.example.com"),
+    ).rejects.toMatchObject({
       code: "FORBIDDEN",
       status: 403,
     });
@@ -68,7 +76,9 @@ describe("site access", () => {
     requireUser.mockResolvedValue(
       session({ canCreateSites: true, panelRole: "admin" }),
     );
-    await expect(requireWritableSite("site-x.example.com")).resolves.toMatchObject({
+    await expect(
+      requireWritableSite("site-x.example.com"),
+    ).resolves.toMatchObject({
       site: { id: "site-x-id" },
     });
   });
@@ -85,5 +95,28 @@ describe("site access", () => {
     await expect(
       requireAccessibleDomainTarget("private.example.com"),
     ).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("applies the same alias and write boundary to non-browser actors", async () => {
+    getSiteMeta.mockResolvedValue({ aliases: ["app.example.com"] });
+    const actor: PanelActor = {
+      user: {
+        id: "1",
+        username: "user-a",
+        canCreateSites: false,
+        panelRole: "user",
+      },
+      cloudPanel: record.cloudPanel,
+      authentication: "mcp",
+    };
+
+    await expect(
+      accessibleDomainTargetForActor(actor, "app.example.com"),
+    ).resolves.toMatchObject({ site: { id: "site-x-id" } });
+    await expect(
+      accessibleDomainTargetForActor(actor, "app.example.com", {
+        write: true,
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN", status: 403 });
   });
 });

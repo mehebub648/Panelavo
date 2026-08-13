@@ -7,6 +7,7 @@ import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
   Activity,
   BadgeInfo,
+  Bot,
   Cloud,
   Globe2,
   Info,
@@ -37,29 +38,32 @@ export function AppShell({
   const title =
     pathname === "/domains"
       ? "Domains & DNS"
-      : pathname === "/settings"
-        ? "Panel settings"
-        : pathname === "/users"
-          ? "User management"
-          : pathname === "/audit"
-            ? "Audit trail"
-            : pathname === "/resources"
-              ? "Server resources"
-              : pathname === "/about"
-                ? "About panelavo"
-                : pathname === "/information"
-                  ? "Server information"
-                  : pathname === "/profile"
-                    ? "My profile"
-                    : pathname === "/sites/new"
-                      ? "Add website"
-                      : pathname.split("/").length > 3
-                        ? "Website workspace"
-                        : "Websites";
+      : pathname === "/ai-access"
+        ? "AI access"
+        : pathname === "/settings"
+          ? "Panel settings"
+          : pathname === "/users"
+            ? "User management"
+            : pathname === "/audit"
+              ? "Audit trail"
+              : pathname === "/resources"
+                ? "Server resources"
+                : pathname === "/about"
+                  ? "About panelavo"
+                  : pathname === "/information"
+                    ? "Server information"
+                    : pathname === "/profile"
+                      ? "My profile"
+                      : pathname === "/sites/new"
+                        ? "Add website"
+                        : pathname.split("/").length > 3
+                          ? "Website workspace"
+                          : "Websites";
   const elevated = ["super-admin", "manager"].includes(user.panelRole ?? "");
   const nav = [
     { href: "/sites", label: "Websites", icon: Globe2 },
     { href: "/domains", label: "Domains", icon: Cloud },
+    { href: "/ai-access", label: "AI access", icon: Bot },
     ...(elevated
       ? [{ href: "/resources", label: "Resources", icon: Activity }]
       : []),
@@ -169,9 +173,11 @@ export function AppShell({
               <p className="mt-0.5 hidden text-xs text-slate-400 sm:block">
                 {title === "Website workspace"
                   ? "Configure and maintain your website"
-                  : title === "About panelavo"
-                    ? "Product details and project notices"
-                    : "Manage your server websites"}
+                  : title === "AI access"
+                    ? "Connect an assistant to the websites you can access"
+                    : title === "About panelavo"
+                      ? "Product details and project notices"
+                      : "Manage your server websites"}
               </p>
             </div>
           </div>

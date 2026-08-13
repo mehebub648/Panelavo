@@ -12,6 +12,7 @@ import { AppError } from "@/server/cloudpanel/errors";
 import { ok, fail } from "@/server/http";
 import { assertWriteRequest, rateLimit } from "@/server/security/request";
 import { audit } from "@/server/security/log";
+import { revokeAllMcpConnections } from "@/server/mcp/oauth";
 
 export async function POST(request: NextRequest) {
   let username: string | undefined;
@@ -59,6 +60,7 @@ export async function POST(request: NextRequest) {
       });
       await clearMfaEnrollment(username);
       await updateSession(session.id, { user });
+      await revokeAllMcpConnections(user.id, user.username);
       await audit("profile.mfa.enabled", "success", { actor: user });
       return ok({ user });
     }
@@ -69,6 +71,7 @@ export async function POST(request: NextRequest) {
       });
       await clearMfaEnrollment(username);
       await updateSession(session.id, { user });
+      await revokeAllMcpConnections(user.id, user.username);
       await audit("profile.mfa.disabled", "success", { actor: user });
       return ok({ user });
     }

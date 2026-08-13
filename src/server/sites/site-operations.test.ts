@@ -180,7 +180,7 @@ describe("normalizeOperationsData", () => {
     const superAdmin = normalizeOperationsData(
       {
         ...raw,
-        permissions: { ...raw.permissions, hostAdmin: true },
+        permissions: { manage: true, docker: false, hostAdmin: true },
         migration: { ...raw.migration, allServicesPrepared: true },
       },
       { typeOverride: "docker" },
@@ -536,7 +536,9 @@ describe("normalizeOperationsData", () => {
 
     // Host prerequisites are provisioned, so that check is green.
     expect(
-      data.preflight.checks.find((item) => item.id === "rootless-prerequisites"),
+      data.preflight.checks.find(
+        (item) => item.id === "rootless-prerequisites",
+      ),
     ).toMatchObject({ status: "ready" });
     // The per-user daemon is down, and a site-write user can start it
     // themselves — the fix is the site-scoped runtime self-init, authorized.
@@ -552,18 +554,16 @@ describe("normalizeOperationsData", () => {
   });
 
   it("attaches a Composer installer fix on PHP sites missing Composer", () => {
-    const data = normalizeOperationsData(
-      {
-        ...base,
-        type: "php",
-        permissions: { manage: true, docker: true, hostAdmin: true },
-        hasComposer: true,
-        tools: {
-          ...base.tools,
-          composer: { id: "composer", label: "Composer", available: false },
-        },
+    const data = normalizeOperationsData({
+      ...base,
+      type: "php",
+      permissions: { manage: true, docker: true, hostAdmin: true },
+      hasComposer: true,
+      tools: {
+        ...base.tools,
+        composer: { id: "composer", label: "Composer", available: false },
       },
-    );
+    });
 
     expect(
       data.preflight.checks.find((item) => item.id === "composer")?.fix,
@@ -625,8 +625,8 @@ describe("normalizeOperationsData", () => {
       { panelAdmin: true },
     );
 
-    expect(data.permissions.manage).toBe(true);
-    expect(data.permissions.hostAdmin).toBe(false);
+    expect(data.permissions?.manage).toBe(true);
+    expect(data.permissions?.hostAdmin).toBe(false);
   });
 
   it("preserves host administration only when the broker grants it", () => {
@@ -635,6 +635,6 @@ describe("normalizeOperationsData", () => {
       permissions: { manage: true, docker: true, hostAdmin: true },
     });
 
-    expect(data.permissions.hostAdmin).toBe(true);
+    expect(data.permissions?.hostAdmin).toBe(true);
   });
 });

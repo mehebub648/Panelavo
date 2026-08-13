@@ -1,88 +1,32 @@
 import type { NextRequest } from "next/server";
-import { z } from "zod";
-import { getCloudPanelClient } from "@/server/cloudpanel";
-import { AppError } from "@/server/cloudpanel/errors";
+import { requireUser } from "@/server/auth/require-user";
+import { panelActorFromSession } from "@/server/auth/site-access";
 import { fail, ok } from "@/server/http";
+import { getRequestServerPublicIp } from "@/server/network/server-ip";
 import { audit } from "@/server/security/log";
 import { assertWriteRequest } from "@/server/security/request";
-import { getRequestServerPublicIp } from "@/server/network/server-ip";
 import {
-  assertDomainsPointToServer,
-  resolveDnsStatus,
-} from "@/server/network/dns";
-import { autoDeleteDns } from "@/server/network/auto-dns";
-import {
-  certificateAlreadyCovers,
-  issueSiteSsl,
-  planSiteSsl,
-} from "@/server/sites/ensure-ssl";
-import {
-  getSiteMeta,
-  setSiteMeta,
-  type SiteMeta,
-} from "@/server/sites/site-meta";
-import { domainValue } from "@/schemas/sites";
-import { certAlternativeNames } from "@/lib/domains";
-import {
-  requireAccessibleSite,
-  requireWritableSite,
-} from "@/server/auth/site-access";
+  getSiteDomainsForActor,
+  manageSiteDomainsForActor,
+  siteDomainActionSchema,
+} from "@/server/sites/site-domain-service";
 
 type Context = { params: Promise<{ domain: string }> };
 
 export async function GET(request: NextRequest, context: Context) {
   try {
     const { domain } = await context.params;
-    const decodedDomain = decodeURIComponent(domain);
-    await requireAccessibleSite(decodedDomain);
-    const serverIp = await getRequestServerPublicIp(request);
-    const meta = await getSiteMeta(decodedDomain);
-    const dns = await resolveDnsStatus(
-      [decodedDomain, ...(meta?.aliases ?? [])],
-      serverIp,
+    const session = await requireUser();
+    return ok(
+      await getSiteDomainsForActor(
+        panelActorFromSession(session),
+        decodeURIComponent(domain),
+        await getRequestServerPublicIp(request),
+      ),
     );
-    return ok({ meta, serverIp, dns });
   } catch (error) {
     return fail(error);
   }
-}
-
-const actionSchema = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("add-alias"), domain: domainValue }).strict(),
-  z.object({ action: z.literal("remove-alias"), domain: domainValue }).strict(),
-  z
-    .object({
-      action: z.literal("set-block"),
-      block: z.enum(["none", "error", "redirect"]),
-      redirectTo: domainValue.optional(),
-    })
-    .strict(),
-  z
-    .object({
-      action: z.literal("issue-ssl"),
-      domains: z.array(domainValue).max(11),
-    })
-    .strict(),
-  z.object({ action: z.literal("ensure-ssl") }).strict(),
-]);
-
-async function syncVhost(
-  session: Awaited<ReturnType<typeof requireAccessibleSite>>["session"],
-  domain: string,
-  meta: SiteMeta,
-) {
-  await getCloudPanelClient().manageSiteSection(
-    session.record.cloudPanel,
-    domain,
-    "domains",
-    {
-      action: "sync",
-      systemDomain: domain,
-      aliases: meta.aliases,
-      block: meta.aliases.length ? meta.block : "none",
-      redirectTo: meta.redirectTo,
-    },
-  );
 }
 
 export async function POST(request: NextRequest, context: Context) {
@@ -90,160 +34,20 @@ export async function POST(request: NextRequest, context: Context) {
     assertWriteRequest(request);
     const { domain } = await context.params;
     const decodedDomain = decodeURIComponent(domain);
-    const { session } = await requireWritableSite(decodedDomain);
-    const input = actionSchema.parse(await request.json());
-    const meta = await getSiteMeta(decodedDomain);
-    if (!meta)
-      throw new AppError(
-        "INVALID_REQUEST",
-        "This website was created outside the panel and has no domain metadata.",
-        409,
-      );
-    const serverIp = await getRequestServerPublicIp(request);
-    const warnings: string[] = [];
-
-    if (input.action === "add-alias") {
-      if (input.domain === decodedDomain)
-        throw new AppError(
-          "INVALID_REQUEST",
-          "The system domain is already served.",
-          400,
-        );
-      if (!meta.aliases.includes(input.domain)) meta.aliases.push(input.domain);
-      // The vhost is the part that must not silently fail; update meta only
-      // after the web server accepted the new alias.
-      await syncVhost(session, decodedDomain, meta);
-      await setSiteMeta(decodedDomain, meta);
-
-      // DNS + SSL automation: point what a connected Cloudflare token can,
-      // verify, and grow the certificate with every alias that points here.
-      // Unpointed names surface as warnings; issuance runs in the background.
-      const plan = await planSiteSsl({
-        userId: session.user.id,
-        systemDomain: decodedDomain,
-        aliases: meta.aliases,
-        serverIp,
-        autoPoint: true,
-      });
-      warnings.push(...plan.warnings);
-      void issueSiteSsl(
-        session.record.cloudPanel,
-        decodedDomain,
-        plan.san,
-      ).catch((error: unknown) => {
-        console.error(
-          `Let's Encrypt issuance failed for ${decodedDomain}:`,
-          error,
-        );
-      });
-    } else if (input.action === "remove-alias") {
-      meta.aliases = meta.aliases.filter((alias) => alias !== input.domain);
-      if (meta.redirectTo === input.domain) {
-        meta.redirectTo = meta.aliases[0];
-        if (meta.block === "redirect" && !meta.redirectTo) meta.block = "none";
-      }
-      await syncVhost(session, decodedDomain, meta);
-      await setSiteMeta(decodedDomain, meta);
-
-      // Background DNS cleanup
-      void autoDeleteDns(session.user.id, input.domain, serverIp).catch(
-        (e: unknown) => {
-          console.error("Auto DNS delete failed for removed alias:", e);
-        },
-      );
-    } else if (input.action === "set-block") {
-      if (input.block !== "none" && !meta.aliases.length)
-        throw new AppError(
-          "INVALID_REQUEST",
-          "Add at least one of your own domains before blocking the system domain.",
-          400,
-        );
-      meta.block = input.block;
-      meta.redirectTo =
-        input.block === "redirect"
-          ? input.redirectTo && meta.aliases.includes(input.redirectTo)
-            ? input.redirectTo
-            : meta.aliases[0]
-          : undefined;
-      await syncVhost(session, decodedDomain, meta);
-      await setSiteMeta(decodedDomain, meta);
-    } else if (input.action === "issue-ssl") {
-      const allowed = new Set([decodedDomain, ...meta.aliases]);
-      const requested = input.domains.filter((name) => allowed.has(name));
-      if (!requested.length)
-        throw new AppError(
-          "INVALID_REQUEST",
-          "Select at least one domain of this website.",
-          400,
-        );
-      // Primary must be the system domain (the vhost/certificate name);
-      // everything else, plus conventional www companions, goes in the SAN.
-      const san = Array.from(
-        new Set(
-          requested
-            .filter((name) => name !== decodedDomain)
-            .flatMap((name) => [name, ...certAlternativeNames(name)]),
-        ),
-      );
-      await assertDomainsPointToServer(
-        Array.from(new Set([decodedDomain, ...san])),
-        serverIp,
-        (status) =>
-          `${status.name} must point to this server (${serverIp}) before a certificate can be issued.`,
-      );
-      await getCloudPanelClient().manageSiteSection(
-        session.record.cloudPanel,
-        decodedDomain,
-        "certificates",
-        san.length
-          ? { action: "lets-encrypt", subjectAlternativeName: san.join(",") }
-          : { action: "lets-encrypt" },
-      );
-    } else if (input.action === "ensure-ssl") {
-      // "Recheck DNS & secure": re-point what we can, re-verify every alias,
-      // and (re-)issue the certificate so it covers the system domain plus all
-      // aliases that now point here. Skipped when the installed certificate
-      // already covers that exact set — re-issuing identical certificates only
-      // burns Let's Encrypt's duplicate rate limit.
-      const plan = await planSiteSsl({
-        userId: session.user.id,
-        systemDomain: decodedDomain,
-        aliases: meta.aliases,
-        serverIp,
-        autoPoint: true,
-      });
-      warnings.push(...plan.warnings);
-      const desired = [decodedDomain, ...plan.san];
-      if (
-        await certificateAlreadyCovers(
-          session.record.cloudPanel,
-          decodedDomain,
-          desired,
-        )
-      ) {
-        warnings.push(
-          "The installed certificate already covers every domain that points here.",
-        );
-      } else {
-        await issueSiteSsl(session.record.cloudPanel, decodedDomain, plan.san);
-      }
-    }
-
+    const session = await requireUser();
+    const submitted: unknown = await request.json();
+    const data = await manageSiteDomainsForActor(
+      panelActorFromSession(session),
+      decodedDomain,
+      submitted,
+      await getRequestServerPublicIp(request),
+    );
     audit("sites.domains", "success", {
       user: session.user.username,
       domain: decodedDomain,
-      action: input.action,
+      action: siteDomainActionSchema.parse(submitted).action,
     });
-    const dns = await resolveDnsStatus(
-      [decodedDomain, ...meta.aliases],
-      serverIp,
-    );
-    return ok({
-      meta: await getSiteMeta(decodedDomain),
-      serverIp,
-      dns,
-      warnings,
-    });
+    return ok(data);
   } catch (error) {
     audit("sites.domains", "failure", {});
     return fail(error);

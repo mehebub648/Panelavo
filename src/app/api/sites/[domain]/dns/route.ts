@@ -1,52 +1,27 @@
-import { Resolver } from "node:dns/promises";
 import type { NextRequest } from "next/server";
+import { requireUser } from "@/server/auth/require-user";
+import { panelActorFromSession } from "@/server/auth/site-access";
 import { fail, ok } from "@/server/http";
-import { getZones } from "@/server/cloudflare/store";
-import { pointDns, pointDnsError } from "@/server/cloudflare/point-dns";
 import { getRequestServerPublicIp } from "@/server/network/server-ip";
 import { assertWriteRequest } from "@/server/security/request";
-import { requireAccessibleDomainTarget } from "@/server/auth/site-access";
+import {
+  getSiteDnsForActor,
+  pointSiteDnsForActor,
+} from "@/server/sites/site-domain-service";
 
 type Context = { params: Promise<{ domain: string }> };
 
 export async function GET(request: NextRequest, context: Context) {
   try {
     const { domain } = await context.params;
-    const decodedDomain = decodeURIComponent(domain);
-    const { session } = await requireAccessibleDomainTarget(decodedDomain);
-
-    const serverIp = await getRequestServerPublicIp(request);
-
-    let ip = null;
-    let pointed = false;
-    try {
-      const fastResolver = new Resolver();
-      fastResolver.setServers(["1.1.1.1", "1.0.0.1", "8.8.8.8"]);
-      const records = await fastResolver.resolve4(decodedDomain);
-      ip = records[0];
-      pointed = ip === serverIp;
-    } catch {
-      // DNS resolution failed
-      pointed = false;
-    }
-
-    let matchZone = null;
-    try {
-      const { zones } = await getZones(session.user.id);
-      matchZone = zones.find(
-        (z) => decodedDomain === z.name || decodedDomain.endsWith("." + z.name),
-      );
-    } catch {
-      // ignore if cloudflare is not setup
-    }
-
-    return ok({
-      pointed,
-      ip,
-      serverIp,
-      zoneId: matchZone?.id || null,
-      credentialId: matchZone?.credentialId || null,
-    });
+    const session = await requireUser();
+    return ok(
+      await getSiteDnsForActor(
+        panelActorFromSession(session),
+        decodeURIComponent(domain),
+        await getRequestServerPublicIp(request),
+      ),
+    );
   } catch (error) {
     return fail(error);
   }
@@ -56,34 +31,15 @@ export async function POST(request: NextRequest, context: Context) {
   try {
     assertWriteRequest(request);
     const { domain } = await context.params;
-    const decodedDomain = decodeURIComponent(domain);
-    const { session } = await requireAccessibleDomainTarget(decodedDomain, {
-      write: true,
-    });
-    const raw = await request.json();
-
-    const serverIp = await getRequestServerPublicIp(request);
-
-    if (!raw.credentialId || !raw.zoneId) {
-      throw new Error("Missing credentialId or zoneId");
-    }
-
-    const result = await pointDns({
-      userId: session.user.id,
-      domain: decodedDomain,
-      serverIp,
-      credentialId: String(raw.credentialId),
-      zoneId: String(raw.zoneId),
-      replace: raw.replace === true,
-      proxied: raw.proxied === true,
-    });
-    if (!result.primaryOk) throw pointDnsError(result);
-
-    const records = result.outcomes.flatMap((outcome) =>
-      outcome.record ? [outcome.record] : [],
+    const session = await requireUser();
+    return ok(
+      await pointSiteDnsForActor(
+        panelActorFromSession(session),
+        decodeURIComponent(domain),
+        await request.json(),
+        await getRequestServerPublicIp(request),
+      ),
     );
-
-    return ok({ records, record: records[0], changed: result.changed });
   } catch (error) {
     return fail(error);
   }

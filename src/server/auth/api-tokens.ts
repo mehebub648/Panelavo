@@ -8,6 +8,7 @@ import { jsonStore } from "@/server/storage/json-store";
 import { appSecret } from "@/server/auth/session";
 import { getCloudPanelClient } from "@/server/cloudpanel";
 import { AppError } from "@/server/cloudpanel/errors";
+import { decorateUser } from "@/server/auth/panel-roles";
 
 export type ApiTokenScope = "sites:read" | "sites:write";
 type TokenRecord = {
@@ -139,7 +140,9 @@ export async function authenticateApiToken(
     usernameHint: record.username,
     cliAuthenticated: true,
   } as const;
-  const user = await getCloudPanelClient().getCurrentUser(cloudPanel);
+  const user = await decorateUser(
+    await getCloudPanelClient().getCurrentUser(cloudPanel),
+  );
   record.lastUsedAt = new Date().toISOString();
   await store.save(value);
   return { id: record.id, user, cloudPanel, scopes: record.scopes };

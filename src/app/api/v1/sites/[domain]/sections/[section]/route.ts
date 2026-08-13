@@ -1,17 +1,25 @@
 import type { NextRequest } from "next/server";
 import { authenticateApiToken } from "@/server/auth/api-tokens";
-import { getCloudPanelClient } from "@/server/cloudpanel";
 import { AppError } from "@/server/cloudpanel/errors";
 import { fail, ok } from "@/server/http";
 import { audit } from "@/server/security/log";
 import { rateLimit } from "@/server/security/request";
+import type { PanelActor } from "@/server/auth/site-access";
 import {
-  backupRequestSchema,
-  envRequestSchema,
-  gitRequestSchema,
-  operationsRequestSchema,
-} from "@/schemas/operations";
-import { getDeployHooks } from "@/server/deploy/hooks";
+  getSiteSectionForActor,
+  manageSiteSectionForActor,
+} from "@/server/sites/site-section-service";
+
+function panelActor(
+  actor: Awaited<ReturnType<typeof authenticateApiToken>>,
+): PanelActor {
+  return {
+    user: actor.user,
+    cloudPanel: actor.cloudPanel,
+    authentication: "api-token",
+    credentialId: actor.id,
+  };
+}
 
 export async function GET(
   request: NextRequest,
@@ -31,8 +39,8 @@ export async function GET(
     );
     rateLimit(`api-token:${actor.id}`, 120, 60_000);
     return ok(
-      await getCloudPanelClient().getSiteSection(
-        actor.cloudPanel,
+      await getSiteSectionForActor(
+        panelActor(actor),
         decodeURIComponent(domain),
         section,
       ),
@@ -56,33 +64,12 @@ export async function POST(
         "The automation API does not expose Terminal.",
         403,
       );
-    const submitted = await request.json();
-    const input =
-      section === "git"
-        ? gitRequestSchema.parse(submitted)
-        : section === "actions"
-          ? operationsRequestSchema.parse(submitted)
-          : section === "env"
-            ? envRequestSchema.parse(submitted)
-            : section === "backups"
-              ? backupRequestSchema.parse(submitted)
-              : submitted;
     const decoded = decodeURIComponent(domain);
-    if (section === "git" && input.action === "pull")
-      await getCloudPanelClient().getSiteSection(
-        actor.cloudPanel,
-        decoded,
-        "git",
-      );
-    const operation =
-      section === "git" && input.action === "pull"
-        ? { ...input, deployOperations: await getDeployHooks(decoded) }
-        : input;
-    const data = await getCloudPanelClient().manageSiteSection(
-      actor.cloudPanel,
+    const data = await manageSiteSectionForActor(
+      panelActor(actor),
       decoded,
       section,
-      operation,
+      await request.json(),
     );
     await audit("api.site_section.mutated", "success", {
       actor: actor.user,

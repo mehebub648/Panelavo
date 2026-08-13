@@ -10,17 +10,20 @@ import {
 import { Brand } from "@/components/brand";
 import { LoginForm } from "@/components/auth/login-form";
 import { getSession } from "@/server/auth/session";
+import { normalizeMcpAuthorizeReturnTo } from "@/server/mcp/oauth";
 
 export const metadata: Metadata = { title: "Sign in" };
 
 export default async function LoginPage({
   searchParams,
 }: {
-  searchParams: Promise<{ reason?: string }>;
+  searchParams: Promise<{ reason?: string; returnTo?: string | string[] }>;
 }) {
   const session = await getSession({ allowPending: true });
-  const reason = (await searchParams).reason;
-  if (session?.record.user) redirect("/sites");
+  const query = await searchParams;
+  const reason = query.reason;
+  const returnTo = normalizeMcpAuthorizeReturnTo(query.returnTo);
+  if (session?.record.user) redirect(returnTo ?? "/sites");
   return (
     <main className="min-h-screen bg-white lg:grid lg:grid-cols-[1.04fr_.96fr]">
       <section className="relative hidden overflow-hidden bg-[#0d3e60] px-16 py-12 text-white lg:flex lg:flex-col">
@@ -46,8 +49,8 @@ export default async function LoginPage({
             Cleaner to manage.
           </h1>
           <p className="mt-6 max-w-lg text-lg leading-8 text-slate-200">
-            panelavo gives day-to-day website and server work a focused,
-            secure workspace without duplicating your accounts.
+            panelavo gives day-to-day website and server work a focused, secure
+            workspace without duplicating your accounts.
           </p>
           <div className="mt-12 grid grid-cols-2 gap-4">
             {[
@@ -66,7 +69,9 @@ export default async function LoginPage({
             ))}
           </div>
         </div>
-        <p className="relative text-xs text-slate-400">Your infrastructure stays under your control.</p>
+        <p className="relative text-xs text-slate-400">
+          Your infrastructure stays under your control.
+        </p>
       </section>
       <section className="flex min-h-screen items-center justify-center bg-[#fbfcfe] px-6 py-12">
         <div className="w-full max-w-[430px]">
@@ -93,6 +98,7 @@ export default async function LoginPage({
           )}
           <LoginForm
             initialTwoFactor={Boolean(session?.record.twoFactorPending)}
+            returnTo={returnTo}
           />
         </div>
       </section>

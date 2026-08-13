@@ -1,24 +1,24 @@
 import type { NextRequest } from "next/server";
-import { backupScheduleSchema, getBackupSchedule, saveBackupSchedule } from "@/server/backups/schedule";
+import { requireUser } from "@/server/auth/require-user";
+import { panelActorFromSession } from "@/server/auth/site-access";
 import { fail, ok } from "@/server/http";
 import { assertWriteRequest } from "@/server/security/request";
 import {
-  requireAccessibleSite,
-  requireWritableSite,
-} from "@/server/auth/site-access";
-
-async function authorizedDomain(encodedDomain: string) {
-  const domain = decodeURIComponent(encodedDomain);
-  return { ...(await requireAccessibleSite(domain)), domain };
-}
+  getSiteBackupAutomationForActor,
+  saveSiteBackupScheduleForActor,
+} from "@/server/sites/site-automation-service";
 
 export async function GET(
   _request: NextRequest,
   { params }: { params: Promise<{ domain: string }> },
 ) {
   try {
-    const { domain } = await authorizedDomain((await params).domain);
-    return ok(await getBackupSchedule(domain));
+    const session = await requireUser();
+    const data = await getSiteBackupAutomationForActor(
+      panelActorFromSession(session),
+      decodeURIComponent((await params).domain),
+    );
+    return ok(data.schedule);
   } catch (error) {
     return fail(error);
   }
@@ -31,11 +31,12 @@ export async function PUT(
   try {
     assertWriteRequest(request);
     const domain = decodeURIComponent((await params).domain);
-    await requireWritableSite(domain);
+    const session = await requireUser();
     return ok(
-      await saveBackupSchedule(
+      await saveSiteBackupScheduleForActor(
+        panelActorFromSession(session),
         domain,
-        backupScheduleSchema.parse(await request.json()),
+        await request.json(),
       ),
     );
   } catch (error) {

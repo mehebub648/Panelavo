@@ -14,7 +14,7 @@ the panel's site user from the application directory
 
 ## Prerequisites (one time)
 
-1. **Node / pnpm on PATH.** PM2's daemon uses a minimal environment, so
+1. **Node 20+ / pnpm on PATH.** PM2's daemon uses a minimal environment, so
    `ecosystem.config.js` calls Next's binary directly and does not need pnpm.
    You only need pnpm for `install` / `build`. Node.js releases do not always
    bundle Corepack, so the portable command is:
@@ -26,13 +26,13 @@ the panel's site user from the application directory
 2. **Environment.** Copy `.env.example` to `.env.local` and fill it in
    (setup.sh generates one automatically). For production make sure:
 
-   | Variable                                  | Notes                                                                                            |
-   | ----------------------------------------- | ------------------------------------------------------------------------------------------------ |
-   | `SESSION_SECRET`                          | **≥ 32 chars.** Required in production or the app refuses to start.                              |
-   | `CREDENTIALS_ENCRYPTION_KEY`              | Separate ≥ 32-char secret for encrypting Cloudflare tokens.                                      |
-   | `PANEL_ADDRESS_MODE`                      | `sslip` (recommended/default) or `custom`; inferred from the base domain for existing installs.  |
-   | `PANEL_BASE_DOMAIN`                       | Custom base domain, or `sslip.io` for the recommended mode.                                      |
-   | `PANEL_UPDATE_REPOSITORY`                 | Optional public HTTPS `.git` updater source; setup can infer a compatible checkout origin.       |
+   | Variable                     | Notes                                                                                           |
+   | ---------------------------- | ----------------------------------------------------------------------------------------------- |
+   | `SESSION_SECRET`             | **≥ 32 chars.** Required in production or the app refuses to start.                             |
+   | `CREDENTIALS_ENCRYPTION_KEY` | Separate ≥ 32-char secret for encrypting Cloudflare tokens.                                     |
+   | `PANEL_ADDRESS_MODE`         | `sslip` (recommended/default) or `custom`; inferred from the base domain for existing installs. |
+   | `PANEL_BASE_DOMAIN`          | Custom base domain, or `sslip.io` for the recommended mode.                                     |
+   | `PANEL_UPDATE_REPOSITORY`    | Optional public HTTPS `.git` updater source; setup can infer a compatible checkout origin.      |
 
    All host-specific values are detected dynamically — you do **not** need to
    set `APP_BASE_URL` or `SERVER_PUBLIC_IP`:
@@ -83,6 +83,8 @@ pm2 startup              # prints a one-time `sudo ...` command — run it once
 
 The panel is now reachable on `https://<panel-domain>` (proxied to the private
 `127.0.0.1:10443` listener). Never publish that listener directly.
+
+The same public HTTPS vhost also serves the remote MCP endpoint at `https://<panel-domain>/mcp` and its same-origin OAuth routes. No additional listener, firewall rule, OAuth secret, or environment variable is required. The canonical issuer/resource comes from the configured panel self-domain, so MCP is deliberately unavailable through an alternate host or insecure production request. Keep Nginx's original `Host` and trusted `X-Forwarded-Proto` behavior; the existing long proxy timeout also bounds synchronous MCP Operations and Backups. After upgrading from a version without MCP, run the frozen dependency install and production build before reloading Panelavo.
 
 The file manager accepts files up to 64 MiB. Run `sudo bash setup.sh` after upgrading so the panel vhost receives its required `client_max_body_size 96m` directive. Setup validates Nginx and restores the previous vhost if validation fails.
 

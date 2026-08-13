@@ -104,6 +104,24 @@ After the CLI bridge accepts credentials and MFA when enabled, the browser recei
 
 Profile also issues scoped API tokens for automation. Token secrets are shown once and only an HMAC digest is stored; expiry, revocation, per-token throttling, and current CloudPanel account/role revalidation apply on every use. Send `Authorization: Bearer <token>` to `GET /api/v1/sites`, `GET /api/v1/sites/<domain>/sections/<section>`, or `POST /api/v1/sites/<domain>/sections/<section>`. Read calls require `sites:read`; mutations require `sites:write` and still pass through the same schemas, site assignments, server-owned operation plans, and broker authorization as the browser UI. The versioned API deliberately does not expose Terminal's free-form command surface.
 
+### AI assistant (MCP) access
+
+Every signed-in user has a nontechnical **AI access** page at `/ai-access`. It shows the user's current website access, the exact public MCP address, guided setup for the Codex desktop app, CLI, and IDE, starter prompts, and connected assistants that can be disconnected immediately. The remote Streamable HTTP endpoint is `https://<panel-domain>/mcp`; OAuth discovery, dynamic client registration, PKCE sign-in, token refresh, and revocation are served from the same HTTPS origin.
+
+An MCP connection is not a second administrator account. Its single `panelavo:access` OAuth scope means “act as this Panelavo user”; every request re-fetches the live CloudPanel account by both stable user id and username, and every site tool re-resolves the user's current visible site collection. Role downgrades, assignment removal, account disable/delete, or connection revocation therefore take effect on the next request. Password changes and MFA enable/disable revoke every MCP connection for that account. Authorization codes and bearer credentials are stored only as HMAC digests in the private `.data` directory; access tokens are short-lived and refresh tokens rotate with replay-family revocation.
+
+The available tools follow the live role: users can inspect assigned websites; site writers can create/update sites, manage supported site sections, domains/DNS/SSL, linked services, uptime checks, deployment hooks, scheduled and off-site backups, deployments, allow-listed Operations, the site-user Terminal, and deletion; managers can also inspect server resources; Super Admins can perform host-level website repairs only when the bridge confirms their live CloudPanel role. Sensitive changes ask the signed-in user for a separate, short-lived confirmation bound to that exact tool and its arguments; deletion also requires the exact domain. Account security, Panelavo account administration, panel settings, and the browser-only one-time phpMyAdmin sign-in remain UI-only.
+
+Codex CLI setup is:
+
+```bash
+codex mcp add panelavo --url https://<panel-domain>/mcp
+codex mcp login panelavo
+codex mcp list
+```
+
+The browser UI and MCP share actor-aware services for core sites, sections, domains, linked services, and site automation; the scoped `/api/v1` surface shares the core section service. Those boundaries retain live assignments, schema validation, linked-service policy, exact server-owned plans, application-root containment, the unprivileged site-user boundary, operation locks, and root-broker checks.
+
 Create permission is derived from CloudPanel's Admin and Site Manager roles. Unknown roles do not receive elevated access.
 
 ### Site list

@@ -7,6 +7,7 @@ import { getCloudPanelClient } from "@/server/cloudpanel";
 import { AppError } from "@/server/cloudpanel/errors";
 import { assertWriteRequest, rateLimit } from "@/server/security/request";
 import { fail, ok } from "@/server/http";
+import { revokeAllMcpConnections } from "@/server/mcp/oauth";
 
 const PANEL_ROLES: PanelRole[] = ["super-admin", "manager", "admin", "user"];
 
@@ -14,8 +15,14 @@ export async function GET() {
   try {
     const session = await requireUser();
     if (session.user.panelRole !== "super-admin")
-      throw new AppError("FORBIDDEN", "Users are available to administrators only.", 403);
-    return ok({ users: await getCloudPanelClient().listUsers(session.record.cloudPanel) });
+      throw new AppError(
+        "FORBIDDEN",
+        "Users are available to administrators only.",
+        403,
+      );
+    return ok({
+      users: await getCloudPanelClient().listUsers(session.record.cloudPanel),
+    });
   } catch (error) {
     return fail(error);
   }
@@ -26,7 +33,11 @@ export async function POST(request: NextRequest) {
     assertWriteRequest(request);
     const session = await requireUser();
     if (session.user.panelRole !== "super-admin")
-      throw new AppError("FORBIDDEN", "Users are available to administrators only.", 403);
+      throw new AppError(
+        "FORBIDDEN",
+        "Users are available to administrators only.",
+        403,
+      );
     rateLimit(`users:${session.user.id}`, 10, 60_000);
     const body = (await request.json()) as Record<string, unknown>;
     const action = String(body.action ?? "");
@@ -42,22 +53,37 @@ export async function POST(request: NextRequest) {
         throw new AppError("INVALID_REQUEST", "Enter a valid username.", 400);
       const email = String(body.email ?? "").trim();
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
-        throw new AppError("INVALID_REQUEST", "Enter a valid email address.", 400);
+        throw new AppError(
+          "INVALID_REQUEST",
+          "Enter a valid email address.",
+          400,
+        );
       const token = createInviteToken({
         username,
         email,
-        firstName: String(body.firstName ?? "").trim().slice(0, 64),
-        lastName: String(body.lastName ?? "").trim().slice(0, 64),
+        firstName: String(body.firstName ?? "")
+          .trim()
+          .slice(0, 64),
+        lastName: String(body.lastName ?? "")
+          .trim()
+          .slice(0, 64),
         role,
         sites: String(body.sites ?? "")
           .split(",")
           .map((site) => site.trim())
           .filter(Boolean),
-        timezone: /^[A-Za-z0-9_+\-/]{1,64}$/.test(String(body.timezone ?? "")) ? String(body.timezone) : "UTC",
+        timezone: /^[A-Za-z0-9_+\-/]{1,64}$/.test(String(body.timezone ?? ""))
+          ? String(body.timezone)
+          : "UTC",
         invitedBy: session.user.username,
       });
-      const proto = request.headers.get("x-forwarded-proto")?.split(",")[0].trim() || request.nextUrl.protocol.replace(":", "");
-      const host = request.headers.get("x-forwarded-host")?.split(",")[0].trim() || request.headers.get("host") || request.nextUrl.host;
+      const proto =
+        request.headers.get("x-forwarded-proto")?.split(",")[0].trim() ||
+        request.nextUrl.protocol.replace(":", "");
+      const host =
+        request.headers.get("x-forwarded-host")?.split(",")[0].trim() ||
+        request.headers.get("host") ||
+        request.nextUrl.host;
       return ok({ inviteUrl: `${proto}://${host}/invite/${token}` });
     }
 
@@ -71,9 +97,20 @@ export async function POST(request: NextRequest) {
         throw new AppError("INVALID_REQUEST", "Unknown role.", 400);
       body.role = cloudRoleFor(panelRole);
     }
-    await getCloudPanelClient().manageUser(session.record.cloudPanel, body);
+    const client = getCloudPanelClient();
+    const credentialResetTarget = ["reset-password", "delete"].includes(action)
+      ? (await client.listUsers(session.record.cloudPanel)).find(
+          (candidate) => candidate.username.toLowerCase() === username,
+        )
+      : undefined;
+    await client.manageUser(session.record.cloudPanel, body);
     if (panelRole) await setPanelAdmin(username, panelRole === "admin");
     if (action === "delete") await setPanelAdmin(username, false);
+    if (credentialResetTarget)
+      await revokeAllMcpConnections(
+        credentialResetTarget.id,
+        credentialResetTarget.username,
+      );
     return ok({});
   } catch (error) {
     return fail(error);
