@@ -1774,7 +1774,7 @@ export function normalizeOperationsData(
   const permissions = {
     manage: Boolean(raw.permissions?.manage || options.panelAdmin),
     docker: Boolean(raw.permissions?.docker),
-    hostAdmin: Boolean(options.panelAdmin),
+    hostAdmin: Boolean(raw.permissions?.hostAdmin),
   };
   const composeFailure = composeConfigFailure(raw.compose?.detail);
   const normalizedRaw = {

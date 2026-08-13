@@ -1929,6 +1929,7 @@ function operationsState(Site $site, User $user): array
         'permissions' => [
             'manage' => in_array($user->getRole(), [User::ROLE_ADMIN, User::ROLE_SITE_MANAGER], true),
             'docker' => $user->getRole() === User::ROLE_ADMIN,
+            'hostAdmin' => $user->getRole() === User::ROLE_ADMIN,
         ],
         '_rootlessEnv' => rootlessDockerEnvironment($site),
         'ecosystemFile' => $ecosystem,
@@ -4818,7 +4819,7 @@ try {
                     // shared APT/systemd host state and stays Super Admin-only,
                     // serialized host-wide.
                     $selfService = $fix === 'initialize-rootless-runtime';
-                    if (!$selfService && ($input['panelAdmin'] ?? false) !== true) respond(['ok' => false, 'code' => 'FORBIDDEN']);
+                    if (!$selfService && $user->getRole() !== User::ROLE_ADMIN) respond(['ok' => false, 'code' => 'FORBIDDEN']);
                     $lockPath = $selfService
                         ? '/var/lock/panelavo-operations-' . $site->getUser() . '.lock'
                         : '/var/lock/panelavo-host-fix.lock';
@@ -4847,7 +4848,7 @@ try {
                 if (!in_array($action, ['run', 'deploy'], true)) respond(['ok' => false, 'code' => 'INVALID_ACTION']);
                 $migrationCommands = ['prepare-rootless-migration', 'cutover-rootless-migration', 'recover-rootless-migration'];
                 if ($action === 'run' && in_array((string) ($operation['command'] ?? ''), $migrationCommands, true)) {
-                    if (($input['panelAdmin'] ?? false) !== true) respond(['ok' => false, 'code' => 'FORBIDDEN']);
+                    if ($user->getRole() !== User::ROLE_ADMIN) respond(['ok' => false, 'code' => 'FORBIDDEN']);
                     $lock = @fopen('/var/lock/panelavo-operations-' . $site->getUser() . '.lock', 'c');
                     if (!$lock || !flock($lock, LOCK_EX | LOCK_NB)) respond(['ok' => false, 'code' => 'OPERATION_BUSY']);
                     $startedAt = gmdate(DATE_ATOM);

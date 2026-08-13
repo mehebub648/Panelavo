@@ -46,7 +46,7 @@ describe("normalizeOperationsData", () => {
       {
         ...base,
         type: "reverse-proxy",
-        permissions: { manage: true, docker: true },
+        permissions: { manage: true, docker: true, hostAdmin: true },
         hasCompose: true,
         hasPackageJson: true,
         packageManager: { id: "npm", label: "npm", available: true },
@@ -58,7 +58,7 @@ describe("normalizeOperationsData", () => {
           daemonAvailable: false,
         },
       },
-      { typeOverride: "docker", panelAdmin: true },
+      { typeOverride: "docker" },
     );
 
     expect(data.architecture.primary.id).toBe("compose");
@@ -180,9 +180,10 @@ describe("normalizeOperationsData", () => {
     const superAdmin = normalizeOperationsData(
       {
         ...raw,
+        permissions: { ...raw.permissions, hostAdmin: true },
         migration: { ...raw.migration, allServicesPrepared: true },
       },
-      { typeOverride: "docker", panelAdmin: true },
+      { typeOverride: "docker" },
     );
     expect(
       superAdmin.groups
@@ -195,7 +196,7 @@ describe("normalizeOperationsData", () => {
     const data = normalizeOperationsData(
       {
         ...base,
-        permissions: { manage: true, docker: true },
+        permissions: { manage: true, docker: true, hostAdmin: true },
         hasCompose: true,
         compose: {
           file: "compose.yaml",
@@ -207,7 +208,7 @@ describe("normalizeOperationsData", () => {
           detail: "HEALTHCHECK_RETRIES is not set: invalid syntax",
         },
       },
-      { typeOverride: "docker", panelAdmin: true },
+      { typeOverride: "docker" },
     );
 
     expect(
@@ -231,7 +232,7 @@ describe("normalizeOperationsData", () => {
     const data = normalizeOperationsData(
       {
         ...base,
-        permissions: { manage: true, docker: true },
+        permissions: { manage: true, docker: true, hostAdmin: true },
         hasCompose: true,
         compose: {
           file: "compose.yaml",
@@ -260,7 +261,7 @@ describe("normalizeOperationsData", () => {
     const data = normalizeOperationsData(
       {
         ...base,
-        permissions: { manage: true, docker: true },
+        permissions: { manage: true, docker: true, hostAdmin: true },
         hasCompose: true,
         compose: {
           file: "compose.yaml",
@@ -447,7 +448,7 @@ describe("normalizeOperationsData", () => {
       {
         ...base,
         type: "reverse-proxy",
-        permissions: { manage: true, docker: true },
+        permissions: { manage: true, docker: true, hostAdmin: true },
         hasCompose: true,
         compose: {
           file: "compose.yaml",
@@ -456,7 +457,7 @@ describe("normalizeOperationsData", () => {
           daemonAvailable: false,
         },
       },
-      { typeOverride: "docker", panelAdmin: true },
+      { typeOverride: "docker" },
     );
 
     const cli = data.preflight.checks.find((item) => item.id === "docker-cli");
@@ -555,14 +556,13 @@ describe("normalizeOperationsData", () => {
       {
         ...base,
         type: "php",
-        permissions: { manage: true, docker: true },
+        permissions: { manage: true, docker: true, hostAdmin: true },
         hasComposer: true,
         tools: {
           ...base.tools,
           composer: { id: "composer", label: "Composer", available: false },
         },
       },
-      { panelAdmin: true },
     );
 
     expect(
@@ -614,5 +614,27 @@ describe("normalizeOperationsData", () => {
         .flatMap((group) => group.actions)
         .every((action) => action.status === "unauthorized"),
     ).toBe(true);
+  });
+
+  it("does not treat an assigned panel admin as a host administrator", () => {
+    const data = normalizeOperationsData(
+      {
+        ...base,
+        permissions: { manage: false, docker: false, hostAdmin: false },
+      },
+      { panelAdmin: true },
+    );
+
+    expect(data.permissions.manage).toBe(true);
+    expect(data.permissions.hostAdmin).toBe(false);
+  });
+
+  it("preserves host administration only when the broker grants it", () => {
+    const data = normalizeOperationsData({
+      ...base,
+      permissions: { manage: true, docker: true, hostAdmin: true },
+    });
+
+    expect(data.permissions.hostAdmin).toBe(true);
   });
 });
