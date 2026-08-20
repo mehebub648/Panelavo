@@ -433,8 +433,8 @@ DB_MANAGER_ROOT="/home/${DB_MANAGER_USER}/htdocs/${DB_MANAGER_DOMAIN}"
 # Prefer the newest PHP no later than 8.4: phpMyAdmin's support for the
 # newest PHP series lags, and a too-new runtime only produces deprecation
 # noise. Fall back to the newest installed version if nothing older exists.
-PHP_SITE_VERSION="$(ls -1 /etc/php 2>/dev/null | grep -E '^[0-9]+\.[0-9]+$' | sort -V | awk -v max=8.4 'BEGIN{split(max,m,".")} {split($0,v,"."); if (v[1]<m[1] || (v[1]==m[1] && v[2]<=m[2])) last=$0} END{print last}' || true)"
-[ -n "${PHP_SITE_VERSION}" ] || PHP_SITE_VERSION="$(ls -1 /etc/php 2>/dev/null | grep -E '^[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)"
+PHP_SITE_VERSION="$(find /etc/php -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | grep -E '^[0-9]+\.[0-9]+$' | sort -V | awk -v max=8.4 'BEGIN{split(max,m,".")} {split($0,v,"."); if (v[1]<m[1] || (v[1]==m[1] && v[2]<=m[2])) last=$0} END{print last}' || true)"
+[ -n "${PHP_SITE_VERSION}" ] || PHP_SITE_VERSION="$(find /etc/php -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | grep -E '^[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)"
 if [ -z "${PHP_SITE_VERSION}" ]; then
   warn "No CloudPanel PHP runtime found under /etc/php — skipping the phpMyAdmin database manager."
 else
