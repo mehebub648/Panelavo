@@ -8,8 +8,10 @@ import {
   ExternalLink,
   KeyRound,
   Laptop,
+  LoaderCircle,
   MonitorCog,
   Plug,
+  Plus,
   ShieldCheck,
   Sparkles,
   TerminalSquare,
@@ -21,18 +23,21 @@ import type { PublicMcpConnection } from "@/server/mcp/oauth";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { CopyValue } from "@/components/ui/copy-value";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 
-type Guide = "desktop" | "cli" | "ide";
+type Guide = "windows" | "unix" | "manual";
 
 const guides: Array<{
   id: Guide;
   label: string;
   icon: typeof Laptop;
 }> = [
-  { id: "desktop", label: "Desktop app", icon: Laptop },
-  { id: "cli", label: "Command line", icon: TerminalSquare },
-  { id: "ide", label: "IDE", icon: MonitorCog },
+  { id: "windows", label: "Windows", icon: MonitorCog },
+  { id: "unix", label: "macOS / Linux", icon: TerminalSquare },
+  { id: "manual", label: "Other MCP apps", icon: Laptop },
 ];
 
 export function mcpAccessSummary(role: PanelRole | undefined) {
@@ -99,66 +104,62 @@ function CopyBlock({ value, label }: { value: string; label?: string }) {
   );
 }
 
-function SetupSteps({ guide, endpoint }: { guide: Guide; endpoint: string }) {
-  if (guide === "cli") {
-    const commands = `codex mcp add panelavo --url ${endpoint}\ncodex mcp login panelavo\ncodex mcp list`;
+function SetupSteps({
+  guide,
+  endpoint,
+  token,
+}: {
+  guide: Guide;
+  endpoint: string;
+  token: string | null;
+}) {
+  const secret = token ?? "<TOKEN_FROM_STEP_1>";
+  if (guide === "windows") {
+    const commands = `[Environment]::SetEnvironmentVariable("PANELAVO_MCP_TOKEN", "${secret}", "User")\n$env:PANELAVO_MCP_TOKEN = "${secret}"\ncodex mcp add panelavo --url ${endpoint} --bearer-token-env-var PANELAVO_MCP_TOKEN\ncodex mcp list`;
     return (
       <ol className="space-y-5">
-        <NumberedStep number={1} title="Add Panelavo">
-          Open a command line and run these commands one at a time.
-          <CopyBlock value={commands} label="Copy commands" />
-        </NumberedStep>
-        <NumberedStep number={2} title="Sign in">
-          The login command opens Panelavo. Sign in with your usual account and
-          approve the connection.
+        <NumberedStep number={2} title="Run the ready-made setup">
+          Open PowerShell and run these commands. They save the token for your
+          Windows account and add Panelavo to Codex.
+          <CopyBlock value={commands} label="PowerShell commands" />
         </NumberedStep>
         <NumberedStep number={3} title="Check the connection">
-          Open Codex and type <code>/mcp</code> to see Panelavo. On Windows, use
-          <code> codex.cmd</code> instead if PowerShell says scripts are
-          disabled.
+          Restart Codex, then type <code>/mcp</code>. Use <code>codex.cmd</code>
+          instead if PowerShell says scripts are disabled.
         </NumberedStep>
       </ol>
     );
   }
 
-  const desktop = guide === "desktop";
+  if (guide === "unix") {
+    const commands = `export PANELAVO_MCP_TOKEN='${secret}'\ncodex mcp add panelavo --url ${endpoint} --bearer-token-env-var PANELAVO_MCP_TOKEN\ncodex mcp list`;
+    return (
+      <ol className="space-y-5">
+        <NumberedStep number={2} title="Add the token and server">
+          Open a terminal and run these commands. Add the environment variable
+          to your normal secure shell setup if you want it available after a
+          restart.
+          <CopyBlock value={commands} label="Terminal commands" />
+        </NumberedStep>
+        <NumberedStep number={3} title="Check the connection">
+          Restart Codex, then type <code>/mcp</code> and check that Panelavo is
+          connected.
+        </NumberedStep>
+      </ol>
+    );
+  }
+
   return (
     <ol className="space-y-5">
-      <NumberedStep
-        number={1}
-        title={desktop ? "Open MCP settings" : "Open the MCP server list"}
-      >
-        {desktop ? (
-          <>
-            Open <b>Settings</b>, select <b>MCP servers</b>, then choose
-            <b> Add server</b>.
-          </>
-        ) : (
-          <>
-            Open the gear menu, select <b>MCP servers</b>, then choose
-            <b> Add server</b>.
-          </>
-        )}
-      </NumberedStep>
-      <NumberedStep number={2} title="Add this Panelavo server">
-        Enter <b>Panelavo</b> as the name, choose <b>Streamable HTTP</b>, and
-        paste this address.
+      <NumberedStep number={2} title="Enter the MCP connection details">
+        Choose <b>Streamable HTTP</b> and use this server address.
         <CopyBlock value={endpoint} label="Server address" />
+        <CopyBlock value={secret} label="Bearer token" />
       </NumberedStep>
-      <NumberedStep number={3} title="Save and sign in">
-        Save the server, {desktop ? "restart the app" : "restart the extension"}
-        , then choose <b>Authenticate</b>. Sign in with your usual Panelavo
-        account and approve the connection.
-      </NumberedStep>
-      <NumberedStep number={4} title="Make sure it is ready">
-        {desktop ? (
-          <>
-            Type <code>/mcp</code> in a chat and check that Panelavo is
-            connected.
-          </>
-        ) : (
-          <>Open the MCP server list and check that Panelavo is connected.</>
-        )}
+      <NumberedStep number={3} title="Use bearer authentication">
+        If the app asks for a header, use <code>Authorization</code> with the
+        value <code>Bearer &lt;your token&gt;</code>. Save, restart the app if
+        requested, and test the connection.
       </NumberedStep>
     </ol>
   );
@@ -179,8 +180,15 @@ export function McpSetupGuide({
   endpoint: string;
   initialConnections: PublicMcpConnection[];
 }) {
-  const [guide, setGuide] = useState<Guide>("desktop");
+  const [guide, setGuide] = useState<Guide>("windows");
   const [connections, setConnections] = useState(initialConnections);
+  const [tokenName, setTokenName] = useState("My Codex");
+  const [tokenDays, setTokenDays] = useState("90");
+  const [createdToken, setCreatedToken] = useState<{
+    value: string;
+    connectionId: string;
+  } | null>(null);
+  const [creatingToken, setCreatingToken] = useState(false);
   const [disconnecting, setDisconnecting] =
     useState<PublicMcpConnection | null>(null);
   const [busy, setBusy] = useState(false);
@@ -192,6 +200,39 @@ export function McpSetupGuide({
     "Create an on-server backup of example.com, then deploy its recommended plan.",
     "Show the current runtime status for example.com without changing anything.",
   ];
+
+  async function createToken() {
+    setCreatingToken(true);
+    try {
+      const response = await fetch("/api/profile/mcp-connections", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: tokenName,
+          expiresInDays: Number(tokenDays),
+        }),
+      });
+      const result = await response.json();
+      if (!result.success)
+        throw new Error(
+          result.error?.message || "The access token could not be created.",
+        );
+      setCreatedToken({
+        value: result.data.token,
+        connectionId: result.data.connection.id,
+      });
+      setConnections((current) => [result.data.connection, ...current]);
+      toast.success("MCP access token created");
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "The access token could not be created.",
+      );
+    } finally {
+      setCreatingToken(false);
+    }
+  }
 
   function chooseFromKeyboard(
     event: React.KeyboardEvent<HTMLButtonElement>,
@@ -232,6 +273,8 @@ export function McpSetupGuide({
           ? result.data
           : current.filter((item) => item.id !== disconnecting.id),
       );
+      if (createdToken?.connectionId === disconnecting.id)
+        setCreatedToken(null);
       toast.success("AI assistant disconnected");
       setDisconnecting(null);
     } catch (error) {
@@ -319,15 +362,83 @@ export function McpSetupGuide({
       <section className="overflow-hidden rounded-2xl border border-white/60 bg-white/70 shadow-card backdrop-blur-md">
         <div className="border-b border-slate-200/70 px-5 py-4 sm:px-6">
           <h3 className="flex items-center gap-2 font-bold text-ink">
-            <Plug className="h-4 w-4 text-panel-600" /> Connect in a few minutes
+            <Plug className="h-4 w-4 text-panel-600" /> Quick MCP setup
           </h3>
           <p className="mt-1 text-sm text-slate-500">
-            Choose the setup method you prefer. Codex desktop, the command line,
-            and the IDE share the same Codex setup on this computer, so you
-            normally connect and approve it only once.
+            Create a token, then copy the setup for your computer. Codex
+            desktop, the command line, and the IDE share this connection.
           </p>
         </div>
-        <div className="p-5 sm:p-6">
+        <div className="space-y-6 p-5 sm:p-6">
+          <div className="rounded-2xl border border-panel-100 bg-panel-50/50 p-4 sm:p-5">
+            <div className="flex gap-3">
+              <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-panel-100 text-xs font-bold text-panel-700">
+                1
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold text-slate-800">
+                  Create your access token
+                </p>
+                <p className="mt-1 text-sm leading-6 text-slate-500">
+                  Give this connection a recognizable name. The token uses your
+                  live Panelavo access and can be revoked at any time.
+                </p>
+                <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_150px_auto] sm:items-end">
+                  <div>
+                    <Label htmlFor="mcp-token-name">Connection name</Label>
+                    <Input
+                      id="mcp-token-name"
+                      value={tokenName}
+                      onChange={(event) => setTokenName(event.target.value)}
+                      maxLength={80}
+                      placeholder="My Codex"
+                      className="mt-1.5 bg-white"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="mcp-token-expiry">Expires</Label>
+                    <Select
+                      id="mcp-token-expiry"
+                      value={tokenDays}
+                      onChange={(event) => setTokenDays(event.target.value)}
+                      className="mt-1.5 bg-white"
+                    >
+                      <option value="30">30 days</option>
+                      <option value="90">90 days</option>
+                      <option value="365">1 year</option>
+                    </Select>
+                  </div>
+                  <Button
+                    type="button"
+                    disabled={creatingToken || !tokenName.trim()}
+                    onClick={() => void createToken()}
+                  >
+                    {creatingToken ? (
+                      <LoaderCircle className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Plus className="h-4 w-4" />
+                    )}
+                    Generate token
+                  </Button>
+                </div>
+                {createdToken ? (
+                  <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4">
+                    <p className="text-sm font-semibold text-amber-900">
+                      Copy this token now. Panelavo will not show it again.
+                    </p>
+                    <p className="mt-1 text-xs leading-5 text-amber-800">
+                      Treat it like a password. Creating another token does not
+                      revoke this one.
+                    </p>
+                    <CopyBlock
+                      value={createdToken.value}
+                      label="Bearer token"
+                    />
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          </div>
           <div
             role="tablist"
             aria-label="AI assistant setup method"
@@ -364,7 +475,11 @@ export function McpSetupGuide({
             aria-labelledby={`setup-tab-${guide}`}
             className="mt-6 max-w-3xl"
           >
-            <SetupSteps guide={guide} endpoint={endpoint} />
+            <SetupSteps
+              guide={guide}
+              endpoint={endpoint}
+              token={createdToken?.value ?? null}
+            />
           </div>
         </div>
       </section>
@@ -398,7 +513,7 @@ export function McpSetupGuide({
           <div>
             <h3 className="font-bold text-ink">Connected assistants</h3>
             <p className="mt-0.5 text-sm text-slate-500">
-              Review or disconnect assistants signed in with your account.
+              Review or disconnect access tokens and browser-approved apps.
             </p>
           </div>
         </div>
@@ -417,8 +532,12 @@ export function McpSetupGuide({
                     </span>
                   </p>
                   <p className="mt-1 text-xs leading-5 text-slate-500">
-                    Connected {formatDate(connection.createdAt)} · Last used{" "}
-                    {formatDate(connection.lastUsedAt)}
+                    {connection.kind === "personal-token"
+                      ? "Access token"
+                      : "Browser sign-in"}{" "}
+                    · Connected {formatDate(connection.createdAt)} · Last used{" "}
+                    {formatDate(connection.lastUsedAt)} · Expires{" "}
+                    {formatDate(connection.expiresAt)}
                   </p>
                   <p className="text-xs leading-5 text-slate-400">
                     Current access: {access.title.toLowerCase()}
@@ -465,8 +584,21 @@ export function McpSetupGuide({
               <b className="text-slate-700">Connection:</b> Streamable HTTP
             </span>
             <span>
-              <b className="text-slate-700">Sign-in:</b> Panelavo OAuth
+              <b className="text-slate-700">Recommended:</b> Bearer access token
             </span>
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-slate-700">
+              Browser sign-in alternative
+            </p>
+            <p className="mt-1 text-sm leading-6 text-slate-500">
+              Clients that support MCP OAuth can connect without a manually
+              managed token. Add the server, then open Panelavo to approve it.
+            </p>
+            <CopyBlock
+              value={`codex mcp add panelavo --url ${endpoint}\ncodex mcp login panelavo`}
+              label="OAuth commands"
+            />
           </div>
           <a
             href="https://developers.openai.com/codex/mcp"

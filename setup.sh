@@ -751,6 +751,10 @@ if [ -f "${PANEL_VHOST}" ]; then
   sed -i '/^[[:space:]]*server[[:space:]]*{/a\    client_max_body_size 96m; # panelavo-upload-limit' "${PANEL_VHOST}"
   sed -i '/^[[:space:]]*server[[:space:]]*{/a\    proxy_send_timeout 1900s; # panelavo-long-request-timeout' "${PANEL_VHOST}"
   sed -i '/^[[:space:]]*server[[:space:]]*{/a\    proxy_read_timeout 1900s; # panelavo-long-request-timeout' "${PANEL_VHOST}"
+  # CloudPanel's broad well-known location serves files directly and otherwise
+  # prevents Next.js from answering MCP OAuth discovery. Keep ACME challenges
+  # local while allowing every non-ACME well-known path to reach location /.
+  sed -i -E 's|^([[:space:]]*)location[[:space:]]+~[[:space:]]+[^{}[:space:]]*well-known[[:space:]]*\{|\1location ~ ^/[.]well-known/acme-challenge/ { # panelavo-mcp-discovery|' "${PANEL_VHOST}"
   if nginx -t >/dev/null 2>&1; then
     systemctl reload nginx
     rm -f "${PANEL_VHOST_BACKUP}"

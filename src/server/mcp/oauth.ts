@@ -31,6 +31,7 @@ const CONSENT_LIFETIME_MS = 5 * 60 * 1000;
 const UNUSED_CLIENT_LIFETIME_MS = 24 * 60 * 60 * 1000;
 const MAX_CLIENTS = 500;
 const MAX_CONNECTIONS_PER_USER = 50;
+const MAX_PERSONAL_TOKENS_PER_USER = 20;
 const MAX_PENDING_CONSENTS_PER_USER = 20;
 const REFRESH_BURST_WINDOW_MS = 5 * 60 * 1000;
 const MAX_REFRESHES_PER_BURST = 12;
@@ -135,6 +136,20 @@ type RefreshFamilyRecord = {
   expiresAt: number;
 };
 
+type PersonalTokenRecord = {
+  id: string;
+  hash: string;
+  name: string;
+  username: string;
+  userId: string;
+  resource: string;
+  scopes: string[];
+  createdAt: number;
+  expiresAt: number;
+  lastUsedAt?: number;
+  revokedAt?: number;
+};
+
 type McpOAuthStore = {
   clients: ClientRecord[];
   authorizationRequests: AuthorizationRequestRecord[];
@@ -143,12 +158,14 @@ type McpOAuthStore = {
   accessTokens: AccessTokenRecord[];
   refreshTokens: RefreshTokenRecord[];
   refreshFamilies: RefreshFamilyRecord[];
+  personalTokens: PersonalTokenRecord[];
 };
 
 export type PublicMcpConnection = {
   id: string;
   clientId: string;
   clientName: string;
+  kind: "oauth" | "personal-token";
   createdAt: number;
   lastUsedAt?: number;
   expiresAt?: number;
@@ -200,6 +217,7 @@ function emptyStore(): McpOAuthStore {
     accessTokens: [],
     refreshTokens: [],
     refreshFamilies: [],
+    personalTokens: [],
   };
 }
 
@@ -306,6 +324,43 @@ function normalizedRefreshToken(
   };
 }
 
+function normalizedPersonalToken(
+  value: Record<string, unknown>,
+): PersonalTokenRecord | undefined {
+  if (
+    typeof value.id !== "string" ||
+    !UUID_PATTERN.test(value.id) ||
+    typeof value.hash !== "string" ||
+    !/^[A-Za-z0-9_-]{43}$/.test(value.hash) ||
+    typeof value.name !== "string" ||
+    !value.name ||
+    typeof value.username !== "string" ||
+    !value.username ||
+    typeof value.userId !== "string" ||
+    !value.userId ||
+    typeof value.resource !== "string" ||
+    !value.resource ||
+    !Array.isArray(value.scopes) ||
+    !value.scopes.every((scope) => typeof scope === "string") ||
+    !finiteNumber(value.createdAt) ||
+    !finiteNumber(value.expiresAt)
+  )
+    return undefined;
+  return {
+    id: value.id,
+    hash: value.hash,
+    name: value.name.slice(0, 80),
+    username: value.username,
+    userId: value.userId,
+    resource: value.resource,
+    scopes: [...value.scopes],
+    createdAt: value.createdAt,
+    expiresAt: value.expiresAt,
+    ...(finiteNumber(value.lastUsedAt) ? { lastUsedAt: value.lastUsedAt } : {}),
+    ...(finiteNumber(value.revokedAt) ? { revokedAt: value.revokedAt } : {}),
+  };
+}
+
 function normalizeStore(value: unknown): McpOAuthStore {
   if (!isRecord(value)) return emptyStore();
   const records = (key: keyof McpOAuthStore) =>
@@ -334,6 +389,9 @@ function normalizeStore(value: unknown): McpOAuthStore {
     accessTokens: records("accessTokens") as AccessTokenRecord[],
     refreshTokens: [...currentRefreshByFamily.values()],
     refreshFamilies,
+    personalTokens: records("personalTokens")
+      .map(normalizedPersonalToken)
+      .filter((token): token is PersonalTokenRecord => Boolean(token)),
   };
 }
 
@@ -395,6 +453,9 @@ function sweep(state: McpOAuthStore, now = Date.now()) {
   state.grants = state.grants.filter(
     (grant) => finiteNumber(grant.expiresAt) && grant.expiresAt > now,
   );
+  state.personalTokens = state.personalTokens.filter(
+    (token) => finiteNumber(token.expiresAt) && token.expiresAt > now,
+  );
 
   const referencedClients = new Set(
     state.grants.map((grant) => grant.clientId),
@@ -453,13 +514,14 @@ function safeEqual(left: string, right: string) {
   );
 }
 
-type OpaqueTokenKind = "consent" | "code" | "access" | "refresh";
+type OpaqueTokenKind = "consent" | "code" | "access" | "refresh" | "personal";
 
 const tokenPrefixes: Record<OpaqueTokenKind, string> = {
   consent: "pnl_mc",
   code: "pnl_mcode",
   access: "pnl_mat",
   refresh: "pnl_mrt",
+  personal: "pnl_mpat",
 };
 
 const UUID_PATTERN =
@@ -1538,6 +1600,7 @@ export async function revokeMcpOAuthToken(params: URLSearchParams) {
 }
 
 type TokenSnapshot = {
+  kind: "oauth" | "personal-token";
   id: string;
   hash: string;
   grantId: string;
@@ -1585,6 +1648,35 @@ export const mcpTokenVerifier: OAuthTokenVerifier = {
   async verifyAccessToken(value) {
     const now = Date.now();
     const snapshot = await readStore((state): TokenSnapshot | undefined => {
+      const personalToken = matchingToken(
+        state.personalTokens,
+        "personal",
+        value,
+      );
+      if (personalToken) {
+        if (
+          typeof personalToken.username !== "string" ||
+          typeof personalToken.userId !== "string" ||
+          typeof personalToken.resource !== "string" ||
+          !Array.isArray(personalToken.scopes) ||
+          !personalToken.scopes.every((scope) => typeof scope === "string") ||
+          personalToken.revokedAt ||
+          personalToken.expiresAt <= now
+        )
+          return undefined;
+        return {
+          kind: "personal-token",
+          id: personalToken.id,
+          hash: personalToken.hash,
+          grantId: personalToken.id,
+          clientId: `pnl_personal_${personalToken.id}`,
+          username: personalToken.username,
+          userId: personalToken.userId,
+          resource: personalToken.resource,
+          scopes: [...personalToken.scopes],
+          expiresAt: personalToken.expiresAt,
+        };
+      }
       const token = matchingToken(state.accessTokens, "access", value);
       const grant = token
         ? state.grants.find((candidate) => candidate.id === token.grantId)
@@ -1605,6 +1697,7 @@ export const mcpTokenVerifier: OAuthTokenVerifier = {
       )
         return undefined;
       return {
+        kind: "oauth",
         id: token.id,
         hash: token.hash,
         grantId: token.grantId,
@@ -1626,6 +1719,19 @@ export const mcpTokenVerifier: OAuthTokenVerifier = {
 
     const actor = await resolveLiveMcpActor(snapshot);
     const confirmed = await mutateStore((state) => {
+      if (snapshot.kind === "personal-token") {
+        const token = state.personalTokens.find(
+          (candidate) =>
+            candidate.id === snapshot.id &&
+            typeof candidate.hash === "string" &&
+            safeEqual(candidate.hash, snapshot.hash),
+        );
+        if (!token || token.revokedAt || token.expiresAt <= Date.now())
+          return false;
+        token.lastUsedAt = Date.now();
+        token.username = actor.user.username;
+        return true;
+      }
       const token = state.accessTokens.find(
         (candidate) =>
           candidate.id === snapshot.id &&
@@ -1719,8 +1825,8 @@ export async function listMcpConnections(
   const stableUserId = String(userId);
   const normalized = username.toLowerCase();
   const now = Date.now();
-  return readStore((state) =>
-    state.grants
+  return readStore((state) => {
+    const oauthConnections = state.grants
       .filter(
         (grant) =>
           typeof grant.username === "string" &&
@@ -1733,16 +1839,85 @@ export async function listMcpConnections(
         id: grant.id,
         clientId: grant.clientId,
         clientName: grant.clientName,
+        kind: "oauth" as const,
         createdAt: grant.createdAt,
         lastUsedAt: grant.lastUsedAt,
         expiresAt: grant.expiresAt,
-      }))
-      .sort(
-        (left, right) =>
-          (right.lastUsedAt ?? right.createdAt) -
-          (left.lastUsedAt ?? left.createdAt),
-      ),
-  );
+      }));
+    const personalTokens = state.personalTokens
+      .filter(
+        (token) =>
+          token.userId === stableUserId &&
+          token.username.toLowerCase() === normalized &&
+          !token.revokedAt &&
+          token.expiresAt > now,
+      )
+      .map((token) => ({
+        id: token.id,
+        clientId: `pnl_personal_${token.id}`,
+        clientName: token.name,
+        kind: "personal-token" as const,
+        createdAt: token.createdAt,
+        lastUsedAt: token.lastUsedAt,
+        expiresAt: token.expiresAt,
+      }));
+    return [...oauthConnections, ...personalTokens].sort(
+      (left, right) =>
+        (right.lastUsedAt ?? right.createdAt) -
+        (left.lastUsedAt ?? left.createdAt),
+    );
+  });
+}
+
+export async function createMcpPersonalToken(
+  userId: string,
+  username: string,
+  input: { name: string; expiresInDays: 30 | 90 | 365 },
+  urls: McpPublicUrls,
+) {
+  const stableUserId = String(userId);
+  const normalized = username.toLowerCase();
+  const now = Date.now();
+  const created = createOpaqueToken("personal");
+  const record = await mutateStore((state) => {
+    const active = state.personalTokens.filter(
+      (token) =>
+        token.userId === stableUserId &&
+        token.username.toLowerCase() === normalized &&
+        !token.revokedAt &&
+        token.expiresAt > now,
+    );
+    if (active.length >= MAX_PERSONAL_TOKENS_PER_USER)
+      throw new McpOAuthError(
+        OAuthErrorCode.InvalidRequest,
+        "Revoke an existing MCP access token before creating another.",
+        409,
+      );
+    const token: PersonalTokenRecord = {
+      id: created.id,
+      hash: created.hash,
+      name: input.name.trim().slice(0, 80),
+      username,
+      userId: stableUserId,
+      resource: urls.resource,
+      scopes: [MCP_SCOPE],
+      createdAt: now,
+      expiresAt: now + input.expiresInDays * 86_400_000,
+    };
+    state.personalTokens.push(token);
+    return token;
+  });
+  return {
+    token: created.value,
+    connection: {
+      id: record.id,
+      clientId: `pnl_personal_${record.id}`,
+      clientName: record.name,
+      kind: "personal-token" as const,
+      createdAt: record.createdAt,
+      expiresAt: record.expiresAt,
+    } satisfies PublicMcpConnection,
+  };
 }
 
 export async function revokeMcpConnection(
@@ -1754,6 +1929,14 @@ export async function revokeMcpConnection(
   const normalized = username.toLowerCase();
   const now = Date.now();
   await mutateStore((state) => {
+    state.personalTokens = state.personalTokens.filter(
+      (candidate) =>
+        !(
+          candidate.id === id &&
+          candidate.userId === stableUserId &&
+          candidate.username.toLowerCase() === normalized
+        ),
+    );
     const grant = state.grants.find(
       (candidate) =>
         candidate.id === id &&
@@ -1778,6 +1961,11 @@ export async function revokeAllMcpConnections(
   const normalized = username.toLowerCase();
   const now = Date.now();
   await mutateStore((state) => {
+    state.personalTokens = state.personalTokens.filter(
+      (token) =>
+        token.userId !== stableUserId ||
+        token.username.toLowerCase() !== normalized,
+    );
     state.authorizationRequests = state.authorizationRequests.filter(
       (request) =>
         request.userId !== stableUserId ||

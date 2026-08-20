@@ -25,6 +25,7 @@ import {
   clearMcpOAuthStoreForTests,
   completeMcpAuthorization,
   createMcpConsent,
+  createMcpPersonalToken,
   exchangeMcpOAuthToken,
   listMcpConnections,
   mcpTokenVerifier,
@@ -39,7 +40,7 @@ import { getMcpPublicUrlsFromHeaders } from "./public-url";
 const verifier = "v".repeat(64);
 const challenge = createHash("sha256").update(verifier).digest("base64url");
 
-describe("MCP OAuth", () => {
+describe("MCP authentication", () => {
   let directory: string;
   const urls = getMcpPublicUrlsFromHeaders(
     new Headers({ host: "localhost:10443" }),
@@ -128,6 +129,45 @@ describe("MCP OAuth", () => {
     expect(stored).not.toContain(code);
     expect(stored).not.toContain(tokens.access_token);
     expect(stored).not.toContain(tokens.refresh_token);
+  });
+
+  it("issues a revocable personal MCP token without storing its secret", async () => {
+    const created = await createMcpPersonalToken(
+      "42",
+      "alice",
+      { name: "Alice laptop", expiresInDays: 90 },
+      urls,
+    );
+
+    expect(created.token).toMatch(/^pnl_mpat\./);
+    expect(
+      await readFile(join(directory, "mcp-oauth.json"), "utf8"),
+    ).not.toContain(created.token);
+    await expect(listMcpConnections("42", "alice")).resolves.toMatchObject([
+      {
+        id: created.connection.id,
+        clientName: "Alice laptop",
+        kind: "personal-token",
+      },
+    ]);
+
+    await expect(
+      mcpTokenVerifier.verifyAccessToken(created.token),
+    ).resolves.toMatchObject({
+      clientId: created.connection.clientId,
+      scopes: ["panelavo:access"],
+      extra: {
+        panelavoActor: {
+          authentication: "mcp",
+          credentialId: created.connection.id,
+        },
+      },
+    });
+
+    await revokeMcpConnection("42", "alice", created.connection.id);
+    await expect(
+      mcpTokenVerifier.verifyAccessToken(created.token),
+    ).rejects.toMatchObject({ code: "invalid_token" });
   });
 
   it("replaces a repeated pending approval for the same user and client", async () => {
