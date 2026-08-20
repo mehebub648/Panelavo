@@ -29,7 +29,7 @@ use App\Site\Updater\StaticSite as StaticSiteUpdater;
 use Symfony\Component\Dotenv\Dotenv;
 
 const CLOUDPANEL_ROOT = '/home/clp/htdocs/app/files';
-const PANELAVO_BROKER_PROTOCOL_VERSION = 13;
+const PANELAVO_BROKER_PROTOCOL_VERSION = 14;
 const PANELAVO_BROKER_MAX_INPUT_BYTES = 100663296;
 const PANELAVO_ROOTLESS_MIGRATION_ROOT = '/var/lib/panelavo/rootless-migrations';
 const PANELAVO_ROOTLESS_MIGRATION_TTL = 86400;
@@ -5574,11 +5574,11 @@ try {
                     if (!preg_match('/^[0-7]{3,4}$/', $mode) || !chmod($path, octdec($mode))) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
                 } elseif ($action === 'compress' && file_exists($path)) {
                     $archiveName = (string) ($operation['archiveName'] ?? ($name . '.zip'));
-                    if (!preg_match('/^.+\.(zip|7z|rar)$/i', $archiveName) || basename($archiveName) !== $archiveName) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                    if (!preg_match('/^.+\.(zip|7z|rar|tar\.gz|tgz)$/i', $archiveName) || basename($archiveName) !== $archiveName) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
                     $destination = safeFileManagerPath($base, ($relative ? $relative . '/' : '') . $archiveName, false);
                     if (file_exists($destination)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
                     
-                    $ext = strtolower(pathinfo($archiveName, PATHINFO_EXTENSION));
+                    $ext = preg_match('/\.(tar\.gz|tgz)$/i', $archiveName) ? 'tar.gz' : strtolower(pathinfo($archiveName, PATHINFO_EXTENSION));
                     $command = [];
                     if ($ext === 'zip') {
                         $command = ['/usr/bin/sudo', '-u', $site->getUser(), '/usr/bin/zip', '-r', '-q', $destination, $name];
@@ -5586,6 +5586,8 @@ try {
                         $command = ['/usr/bin/sudo', '-u', $site->getUser(), '/usr/bin/7z', 'a', $destination, $name];
                     } elseif ($ext === 'rar') {
                         $command = ['/usr/bin/sudo', '-u', $site->getUser(), '/usr/bin/rar', 'a', $destination, $name];
+                    } elseif ($ext === 'tar.gz') {
+                        $command = ['/usr/bin/sudo', '-u', $site->getUser(), '/usr/bin/tar', 'czf', $destination, '--', $name];
                     }
                     $process = proc_open($command, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, dirname($path), ['HOME' => '/home/' . $site->getUser(), 'PATH' => '/usr/local/bin:/usr/bin:/bin']);
                     if (!is_resource($process)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
@@ -5593,8 +5595,8 @@ try {
                     if (proc_close($process) !== 0) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
 
                 } elseif ($action === 'extract' && is_file($path)) {
-                    $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
-                    if (!preg_match('/^(zip|7z|rar)$/i', $ext)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                    $ext = preg_match('/\.(tar\.gz|tgz)$/i', $name) ? 'tar.gz' : strtolower(pathinfo($name, PATHINFO_EXTENSION));
+                    if (!preg_match('/^(zip|7z|rar|tar\.gz)$/i', $ext)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
                     
                     // The destination folder is created (site-user-owned) when
                     // it does not exist yet.
@@ -5608,6 +5610,25 @@ try {
                         $command = ['/usr/bin/sudo', '-u', $site->getUser(), '/usr/bin/7z', 'x', '-y', '-o' . $targetDirectory, $path];
                     } elseif ($ext === 'rar') {
                         $command = ['/usr/bin/sudo', '-u', $site->getUser(), '/usr/bin/unrar', 'x', '-y', $path, $targetDirectory . '/'];
+                    } elseif ($ext === 'tar.gz') {
+                        // Inspect tar paths and entry types before extraction.
+                        // Absolute/parent paths and links are rejected so an
+                        // uploaded archive cannot escape the selected folder.
+                        $names = runSiteCommand($site, ['/usr/bin/tar', 'tzf', $path], 300);
+                        $listing = runSiteCommand($site, ['/usr/bin/tar', 'tvzf', $path], 300);
+                        if ($names['code'] !== 0 || $listing['code'] !== 0) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                        foreach (preg_split('/\R/', trim($names['stdout'])) ?: [] as $entry) {
+                            if ($entry === '') continue;
+                            $normalized = str_replace('\\', '/', $entry);
+                            if (str_starts_with($normalized, '/') || str_contains($normalized, "\0")) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                            foreach (explode('/', trim($normalized, '/')) as $part) {
+                                if ($part === '..') respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                            }
+                        }
+                        foreach (preg_split('/\R/', trim($listing['stdout'])) ?: [] as $entry) {
+                            if ($entry !== '' && !in_array($entry[0], ['-', 'd'], true)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                        }
+                        $command = ['/usr/bin/sudo', '-u', $site->getUser(), '/usr/bin/tar', 'xzf', $path, '--no-same-owner', '--no-same-permissions', '-C', $targetDirectory];
                     }
                     $process = proc_open($command, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, dirname($path), ['HOME' => '/home/' . $site->getUser(), 'PATH' => '/usr/local/bin:/usr/bin:/bin']);
                     if (!is_resource($process)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);

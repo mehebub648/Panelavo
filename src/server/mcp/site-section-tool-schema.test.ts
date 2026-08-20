@@ -299,11 +299,17 @@ describe("MCP site-section tool schema", () => {
       name: "file.txt",
       mode: "999",
     });
-    rejects("file-manager", {
+    parses("file-manager", {
       action: "compress",
       path: "htdocs/app",
       name: "storage",
       archiveName: "storage.tar.gz",
+    });
+    rejects("file-manager", {
+      action: "extract",
+      path: "htdocs/app",
+      name: "storage.tar",
+      extractTo: "htdocs/app",
     });
   });
 

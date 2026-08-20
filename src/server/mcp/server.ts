@@ -16,6 +16,11 @@ import {
   createMcpConfirmationManager,
   type McpConfirmationRequest,
 } from "@/server/mcp/confirmation";
+import {
+  beginArtifactUpload,
+  deleteArtifactUpload,
+  getArtifactUpload,
+} from "@/server/mcp/artifacts";
 import { siteSectionToolSchema } from "@/server/mcp/site-section-tool-schema";
 import { audit, auditContext } from "@/server/security/log";
 import { rateLimit } from "@/server/security/request";
@@ -53,6 +58,7 @@ import {
   listManagedSites,
   updateManagedSite,
 } from "@/server/sites/site-service";
+import { getPanelSelfDomain } from "@/server/sites/panel-self";
 
 const domainSchema = z
   .string()
@@ -196,6 +202,27 @@ const updateSiteToolSchema = z.object({
   appPort: z.number().int().min(1024).max(65535).optional(),
   reverseProxyUrl: z.string().max(2048).optional(),
   label: z.string().max(80).optional(),
+});
+
+const artifactIdSchema = z
+  .string()
+  .uuid()
+  .describe("The artifact upload ID returned by Panelavo.");
+
+const beginArtifactUploadToolSchema = z.object({
+  domain: domainSchema,
+  name: z
+    .string()
+    .min(1)
+    .max(255)
+    .regex(/^[^/\\\x00]+$/)
+    .describe("The archive or artifact filename, without a directory path."),
+  expectedBytes: z.number().int().min(1).max(2 * 1024 * 1024 * 1024),
+  expectedSha256: z
+    .string()
+    .regex(/^[a-fA-F0-9]{64}$/)
+    .describe("The lowercase or uppercase SHA-256 digest of the complete file."),
+  mediaType: z.string().max(200).optional(),
 });
 
 function result(value: unknown) {
@@ -575,6 +602,107 @@ export function createPanelavoMcpServer(actor: PanelActor) {
   }
 
   if (canWrite) {
+    server.registerTool(
+      "panelavo_begin_artifact_upload",
+      {
+        title: "Begin a resumable artifact upload",
+        description:
+          "Create a 24-hour binary upload session for a writable website. Upload raw chunks to the returned HTTPS URL with Content-Range; Panelavo resumes from the reported offset and accepts the artifact only after its complete SHA-256 checksum matches. This avoids base64 and supports files up to 2 GiB.",
+        inputSchema: beginArtifactUploadToolSchema,
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: false,
+          idempotentHint: false,
+          openWorldHint: false,
+        },
+      },
+      async ({ domain, ...input }) =>
+        runTool(
+          actor,
+          "panelavo_begin_artifact_upload",
+          { type: "site", id: domain },
+          { bytes: input.expectedBytes },
+          async () => {
+            await writableSiteForActor(actor, domain);
+            const upload = await beginArtifactUpload(actor, {
+              domain,
+              ...input,
+            });
+            const self = getPanelSelfDomain();
+            return {
+              ...upload,
+              uploadUrl: self
+                ? `https://${self}${upload.uploadPath}`
+                : upload.uploadPath,
+              protocol:
+                "PUT raw binary chunks with Content-Range: bytes <start>-<end>/<total>; use HEAD or this status tool to resume from Upload-Offset.",
+            };
+          },
+        ),
+    );
+
+    server.registerTool(
+      "panelavo_get_artifact_upload",
+      {
+        title: "Inspect an artifact upload",
+        description:
+          "Return the accepted byte offset, checksum status, expiry, and resumable upload URL for an MCP artifact.",
+        inputSchema: z.object({ artifactId: artifactIdSchema }),
+        annotations: {
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
+      },
+      async ({ artifactId }) =>
+        runTool(
+          actor,
+          "panelavo_get_artifact_upload",
+          { type: "artifact", id: artifactId },
+          {},
+          async () => {
+            const upload = await getArtifactUpload(actor, artifactId);
+            await writableSiteForActor(actor, upload.domain);
+            const self = getPanelSelfDomain();
+            return {
+              ...upload,
+              uploadUrl: self
+                ? `https://${self}${upload.uploadPath}`
+                : upload.uploadPath,
+            };
+          },
+        ),
+    );
+
+    server.registerTool(
+      "panelavo_delete_artifact_upload",
+      {
+        title: "Delete an artifact upload",
+        description:
+          "Delete one temporary MCP artifact without changing website files or releases.",
+        inputSchema: z.object({ artifactId: artifactIdSchema }),
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: true,
+          idempotentHint: false,
+          openWorldHint: false,
+        },
+      },
+      async ({ artifactId }) =>
+        runTool(
+          actor,
+          "panelavo_delete_artifact_upload",
+          { type: "artifact", id: artifactId },
+          {},
+          async () => {
+            const upload = await getArtifactUpload(actor, artifactId);
+            await writableSiteForActor(actor, upload.domain);
+            return deleteArtifactUpload(actor, artifactId);
+          },
+        ),
+    );
+
     server.registerTool(
       "panelavo_get_site_automation",
       {

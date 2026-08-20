@@ -268,13 +268,13 @@ const fileContentSchema = z
   );
 
 const archiveNameSchema = filenameSchema.refine(
-  (value) => /\.(zip|7z|rar)$/i.test(value),
-  "Archive names must end in .zip, .7z, or .rar.",
+  (value) => /\.(zip|7z|rar|tar\.gz|tgz)$/i.test(value),
+  "Archive names must end in .zip, .7z, .rar, .tar.gz, or .tgz.",
 );
 
 const existingArchiveNameSchema = filenameSchema.refine(
-  (value) => /\.(zip|7z|rar)$/i.test(value),
-  "Only .zip, .7z, or .rar archives can be extracted.",
+  (value) => /\.(zip|7z|rar|tar\.gz|tgz)$/i.test(value),
+  "Only .zip, .7z, .rar, .tar.gz, or .tgz archives can be extracted.",
 );
 
 const fileManagerOperationSchema = z.discriminatedUnion("action", [

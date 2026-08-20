@@ -72,15 +72,18 @@ const CREATE_TOOLS = [
 ];
 
 const WRITE_TOOLS = [
+  "panelavo_begin_artifact_upload",
   "panelavo_configure_backup_schedule",
   "panelavo_configure_deploy_hooks",
   "panelavo_configure_offsite_backup",
   "panelavo_configure_site_uptime",
   "panelavo_create_backup",
   "panelavo_create_linked_service",
+  "panelavo_delete_artifact_upload",
   "panelavo_delete_site",
   "panelavo_deploy_site",
   "panelavo_execute_terminal_command",
+  "panelavo_get_artifact_upload",
   "panelavo_get_site_automation",
   "panelavo_manage_offsite_backup",
   "panelavo_manage_site_domains",

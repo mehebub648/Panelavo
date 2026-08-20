@@ -114,6 +114,8 @@ An MCP connection is not a second administrator account. Its single `panelavo:ac
 
 The available tools follow the live role: users can inspect assigned websites; site writers can create/update sites, manage supported site sections, domains/DNS/SSL, linked services, uptime checks, deployment hooks, scheduled and off-site backups, deployments, allow-listed Operations, the site-user Terminal, and deletion; managers can also inspect server resources; Super Admins can perform host-level website repairs only when the bridge confirms their live CloudPanel role. Sensitive changes ask the signed-in user for a separate, short-lived confirmation bound to that exact tool and its arguments; deletion also requires the exact domain. Account security, Panelavo account administration, panel settings, and the browser-only one-time phpMyAdmin sign-in remain UI-only.
 
+For large non-Git releases, MCP can create a 24-hour artifact upload bound to the current MCP credential, live CloudPanel user, and writable website. The client streams raw binary chunks (up to 32 MiB each) to the returned HTTPS URL with `Content-Range`, resumes from `Upload-Offset`, and declares the complete size plus SHA-256 before sending data. Panelavo accepts files up to 2 GiB and marks an artifact complete only after the final checksum matches; failed, expired, and explicitly deleted artifacts never reach a website. Active artifacts are capped per account to prevent the panel store from becoming an unbounded upload area.
+
 Codex CLI setup is:
 
 ```bash
@@ -223,7 +225,7 @@ Each website has a Terminal tab that executes one command line at a time strictl
 
 ### File uploads
 
-The file manager accepts individual files up to 64 MiB. Because uploads are base64-encoded JSON, `setup.sh` idempotently configures the panel's Nginx vhost with a 96 MiB request-body allowance and validates the configuration before reloading Nginx. Archive extraction accepts a destination folder that does not exist yet; Panelavo creates it inside the site home, owned by the site user.
+The file manager accepts individual files up to 64 MiB. Because these interactive uploads are base64-encoded JSON, `setup.sh` idempotently configures the panel's Nginx vhost with a 96 MiB request-body allowance and validates the configuration before reloading Nginx. Large MCP artifacts instead use resumable raw chunks, and setup disables Nginx request buffering so a chunk is not copied to proxy temporary storage before Panelavo receives it. Archive compression and extraction support ZIP, 7z, RAR, tar.gz, and tgz. Extraction accepts a destination folder that does not exist yet; Panelavo creates it inside the site home, owned by the site user. Tar archives are listed before extraction and reject absolute paths, parent traversal, symlinks, hard links, and special entries.
 
 ### Panel updates
 

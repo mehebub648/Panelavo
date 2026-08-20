@@ -739,6 +739,9 @@ fi
 
 # File-manager uploads are base64-encoded JSON, so the proxy allowance must be
 # larger than the 64 MiB decoded-file limit enforced by the browser and bridge.
+# MCP artifacts use bounded raw chunks; disable proxy request buffering so
+# those chunks stream to Panelavo instead of being duplicated in Nginx temp
+# storage first.
 # Backups and Operations are synchronous and may legitimately run for up to 30
 # minutes, so keep the public proxy open slightly longer than the application.
 PANEL_VHOST="/etc/nginx/sites-enabled/${PANEL_DOMAIN}.conf"
@@ -747,8 +750,10 @@ if [ -f "${PANEL_VHOST}" ]; then
   PANEL_VHOST_BACKUP="$(mktemp)"
   cp "${PANEL_VHOST}" "${PANEL_VHOST_BACKUP}"
   sed -i '/# panelavo-upload-limit$/d' "${PANEL_VHOST}"
+  sed -i '/# panelavo-artifact-streaming$/d' "${PANEL_VHOST}"
   sed -i '/# panelavo-long-request-timeout$/d' "${PANEL_VHOST}"
   sed -i '/^[[:space:]]*server[[:space:]]*{/a\    client_max_body_size 96m; # panelavo-upload-limit' "${PANEL_VHOST}"
+  sed -i '/^[[:space:]]*server[[:space:]]*{/a\    proxy_request_buffering off; # panelavo-artifact-streaming' "${PANEL_VHOST}"
   sed -i '/^[[:space:]]*server[[:space:]]*{/a\    proxy_send_timeout 1900s; # panelavo-long-request-timeout' "${PANEL_VHOST}"
   sed -i '/^[[:space:]]*server[[:space:]]*{/a\    proxy_read_timeout 1900s; # panelavo-long-request-timeout' "${PANEL_VHOST}"
   # CloudPanel's broad well-known location serves files directly and otherwise
