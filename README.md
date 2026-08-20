@@ -71,7 +71,7 @@ The "Admin" tier is stored as a CloudPanel `user` plus an entry in `.data/panel-
 
 ## Stack
 
-Next.js App Router, strict TypeScript, Tailwind CSS, shadcn-style local UI components, Lucide, Zod, pnpm, ESLint, Prettier, and Vitest.
+Next.js App Router, strict TypeScript, Tailwind CSS, shadcn-style local UI components, Lucide, Zod, pnpm, ESLint, Prettier, and Vitest. Local development requires Node.js 20.9 or newer.
 
 ## Local development
 
@@ -271,6 +271,7 @@ npx pnpm@10.12.1 dev
 npx pnpm@10.12.1 typecheck
 npx pnpm@10.12.1 lint
 npx pnpm@10.12.1 test
+npx pnpm@10.12.1 audit
 npx pnpm@10.12.1 build
 npx pnpm@10.12.1 start
 ```
