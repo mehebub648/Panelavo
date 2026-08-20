@@ -29,7 +29,7 @@ use App\Site\Updater\StaticSite as StaticSiteUpdater;
 use Symfony\Component\Dotenv\Dotenv;
 
 const CLOUDPANEL_ROOT = '/home/clp/htdocs/app/files';
-const PANELAVO_BROKER_PROTOCOL_VERSION = 11;
+const PANELAVO_BROKER_PROTOCOL_VERSION = 12;
 const PANELAVO_BROKER_MAX_INPUT_BYTES = 100663296;
 const PANELAVO_ROOTLESS_MIGRATION_ROOT = '/var/lib/panelavo/rootless-migrations';
 const PANELAVO_ROOTLESS_MIGRATION_TTL = 86400;
@@ -3543,6 +3543,223 @@ function resourceCommand(array $args, int $seconds = 3): array
     return ['code' => proc_close($process), 'stdout' => $stdout ?: '', 'stderr' => $stderr ?: ''];
 }
 
+function resourceFilesystemUsage(): array
+{
+    $df = is_executable('/usr/bin/df') ? '/usr/bin/df' : '/bin/df';
+    $result = resourceCommand([$df, '-B1', '--output=size,used,avail,target', '/'], 3);
+    $lines = array_values(array_filter(preg_split('/\R/', trim($result['stdout'])) ?: []));
+    $line = $lines ? end($lines) : '';
+    if (is_string($line) && preg_match('/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/', $line, $match)) {
+        $total = (int) $match[1];
+        $used = (int) $match[2];
+        $available = (int) $match[3];
+        return [
+            'totalBytes' => $total,
+            'usedBytes' => $used,
+            'availableBytes' => $available,
+            'reservedBytes' => max(0, $total - $used - $available),
+            'mount' => trim($match[4]),
+        ];
+    }
+    $total = (int) disk_total_space('/');
+    $available = (int) disk_free_space('/');
+    return [
+        'totalBytes' => $total,
+        'usedBytes' => max(0, $total - $available),
+        'availableBytes' => $available,
+        'reservedBytes' => 0,
+        'mount' => '/',
+    ];
+}
+
+function resourceDirectoryUsage(array $paths, int $seconds = 240): array
+{
+    $du = is_executable('/usr/bin/du') ? '/usr/bin/du' : '/bin/du';
+    $timeout = is_executable('/usr/bin/timeout') ? '/usr/bin/timeout' : '/bin/timeout';
+    $paths = array_values(array_unique(array_filter($paths, static fn($path) => is_string($path) && (is_dir($path) || is_file($path)))));
+    $processes = [];
+    foreach (array_slice($paths, 0, 32) as $path) {
+        $command = [$timeout, '--signal=KILL', (string) $seconds];
+        if (is_executable('/usr/bin/nice')) array_push($command, '/usr/bin/nice', '-n', '15');
+        if (is_executable('/usr/bin/ionice')) array_push($command, '/usr/bin/ionice', '-c', '3');
+        array_push($command, $du, '-x', '-B1', '-s', '--', $path);
+        $process = @proc_open(
+            $command,
+            [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', '/dev/null', 'a']],
+            $pipes,
+        );
+        if (is_resource($process)) $processes[$path] = ['process' => $process, 'stdout' => $pipes[1]];
+    }
+    $usage = [];
+    foreach ($processes as $path => $running) {
+        $stdout = stream_get_contents($running['stdout']);
+        fclose($running['stdout']);
+        proc_close($running['process']);
+        if (is_string($stdout) && preg_match('/^(\d+)\s+/', trim($stdout), $match)) $usage[$path] = (int) $match[1];
+    }
+    return $usage;
+}
+
+function resourceRootPath(string $path): ?string
+{
+    if (!file_exists($path) || is_link($path)) return null;
+    $rootStat = @stat('/');
+    $pathStat = @stat($path);
+    if (!is_array($rootStat) || !is_array($pathStat) || ($rootStat['dev'] ?? null) !== ($pathStat['dev'] ?? null)) return null;
+    return $path;
+}
+
+function resourceRootlessDockerMetrics(string $user): array
+{
+    if (!preg_match('/^[A-Za-z0-9._-]{1,64}$/', $user)) return [];
+    $account = function_exists('posix_getpwnam') ? posix_getpwnam($user) : false;
+    $uid = is_array($account) ? (int) ($account['uid'] ?? 0) : 0;
+    $socket = $uid > 0 ? '/run/user/' . $uid . '/docker.sock' : '';
+    $docker = is_executable('/usr/bin/docker') ? '/usr/bin/docker' : (is_executable('/usr/local/bin/docker') ? '/usr/local/bin/docker' : null);
+    if (!$docker || !$socket || !pathIsSocket($socket)) return [];
+    $home = '/home/' . $user;
+    $result = resourceCommand([
+        '/usr/bin/sudo', '-n', '-u', $user, '--',
+        '/usr/bin/env', '-i',
+        'PATH=/usr/local/bin:/usr/bin:/bin',
+        'HOME=' . $home,
+        'USER=' . $user,
+        'LOGNAME=' . $user,
+        'XDG_RUNTIME_DIR=/run/user/' . $uid,
+        'DOCKER_HOST=unix://' . $socket,
+        $docker, 'system', 'df', '--format', '{{json .}}',
+    ], 8);
+    $metrics = [];
+    foreach (preg_split('/\R/', trim($result['stdout'])) ?: [] as $line) {
+        $row = json_decode($line, true);
+        if (!is_array($row) || !is_string($row['Type'] ?? null) || !is_string($row['Size'] ?? null)) continue;
+        $metrics[] = [
+            'label' => (string) $row['Type'],
+            'value' => (string) $row['Size'],
+            'reclaimable' => is_string($row['Reclaimable'] ?? null) ? (string) $row['Reclaimable'] : null,
+        ];
+    }
+    return $metrics;
+}
+
+function serverStorage($manager, bool $refresh = false): array
+{
+    $directory = '/var/lib/panelavo';
+    if (!is_dir($directory)) @mkdir($directory, 0700, true);
+    $file = $directory . '/resource-storage.json';
+    $requestedAt = time();
+    $cache = is_file($file) ? json_decode((string) @file_get_contents($file), true) : null;
+    $ttl = !empty($cache['complete']) ? 1800 : 60;
+    if (!$refresh && is_array($cache) && isset($cache['generatedUnix'], $cache['data']) && time() - (int) $cache['generatedUnix'] < $ttl && is_array($cache['data'])) {
+        return $cache['data'];
+    }
+    $lock = @fopen($directory . '/resource-storage.lock', 'c');
+    if (is_resource($lock)) {
+        @chmod($directory . '/resource-storage.lock', 0600);
+        flock($lock, LOCK_EX);
+        $cache = is_file($file) ? json_decode((string) @file_get_contents($file), true) : null;
+        $ttl = !empty($cache['complete']) ? 1800 : 60;
+        $fresh = is_array($cache) && isset($cache['generatedUnix'], $cache['data']) && is_array($cache['data']);
+        if ($fresh && ((!$refresh && time() - (int) $cache['generatedUnix'] < $ttl) || (int) $cache['generatedUnix'] >= $requestedAt)) {
+            flock($lock, LOCK_UN); fclose($lock);
+            return $cache['data'];
+        }
+    }
+
+    $filesystem = resourceFilesystemUsage();
+    $sites = resourceSites($manager);
+    $siteUsers = [];
+    foreach ($sites as $site) {
+        $user = (string) $site['user'];
+        if (!preg_match('/^[A-Za-z0-9._-]{1,64}$/', $user)) continue;
+        $siteUsers[$user]['domains'][] = (string) $site['domain'];
+    }
+    ksort($siteUsers);
+
+    $paths = [];
+    foreach (array_keys($siteUsers) as $user) {
+        $path = resourceRootPath('/home/' . $user);
+        if ($path) { $siteUsers[$user]['path'] = $path; $paths[] = $path; }
+    }
+    $otherHome = [];
+    $homeEntries = array_merge(glob('/home/*') ?: [], glob('/home/.[!.]*') ?: []);
+    foreach (array_values(array_unique($homeEntries)) as $path) {
+        if (is_link($path) || dirname($path) !== '/home' || in_array($path, array_column($siteUsers, 'path'), true)) continue;
+        $path = resourceRootPath($path);
+        if ($path) { $otherHome[] = $path; $paths[] = $path; }
+    }
+    $osPaths = array_values(array_filter(array_map('resourceRootPath', ['/usr', '/etc', '/opt'])));
+    $servicePaths = array_values(array_filter(array_map('resourceRootPath', ['/var'])));
+    $adminPaths = array_values(array_filter(array_map('resourceRootPath', ['/root'])));
+    $temporaryPaths = array_values(array_filter(array_map('resourceRootPath', ['/tmp'])));
+    $miscPaths = array_values(array_filter(array_map('resourceRootPath', ['/srv', '/mnt', '/media'])));
+    $paths = array_values(array_unique(array_merge($paths, $osPaths, $servicePaths, $adminPaths, $temporaryPaths, $miscPaths)));
+    $usage = resourceDirectoryUsage($paths);
+
+    $detailsForPaths = static function (array $groupPaths) use ($usage): array {
+        $details = [];
+        foreach ($groupPaths as $path) if (isset($usage[$path])) $details[] = ['label' => $path, 'bytes' => $usage[$path]];
+        usort($details, static fn($a, $b) => $b['bytes'] <=> $a['bytes']);
+        return $details;
+    };
+    $siteDetails = [];
+    foreach ($siteUsers as $user => $metadata) {
+        $path = $metadata['path'] ?? null;
+        if (!$path || !isset($usage[$path])) continue;
+        $domains = array_values(array_unique($metadata['domains'] ?? []));
+        $siteDetails[] = [
+            'label' => $user,
+            'bytes' => $usage[$path],
+            'note' => ($domains ? implode(', ', $domains) . '. ' : '') . 'Includes application roots, rootless Docker data, backups, caches, and other files in this site user home.',
+            'metrics' => resourceRootlessDockerMetrics($user),
+        ];
+    }
+    usort($siteDetails, static fn($a, $b) => $b['bytes'] <=> $a['bytes']);
+
+    $makeGroup = static function (string $id, string $label, string $description, array $details): array {
+        return [
+            'id' => $id,
+            'label' => $label,
+            'bytes' => array_sum(array_column($details, 'bytes')),
+            'description' => $description,
+            'details' => $details,
+        ];
+    };
+    $groups = [
+        $makeGroup('site-users', 'Site users', 'Complete site-user home directories, including application roots, Docker data, backups, and caches.', $siteDetails),
+        $makeGroup('system-users', 'Other users and home data', 'Panel services, database helpers, swap files, and other data stored directly under /home.', $detailsForPaths($otherHome)),
+        $makeGroup('operating-system', 'Operating system', 'Installed system software and configuration on this filesystem.', $detailsForPaths($osPaths)),
+        $makeGroup('system-services', 'System and service data', 'Databases, logs, package state, and other service data under /var.', $detailsForPaths($servicePaths)),
+        $makeGroup('administrator', 'Administrator data', 'Files, caches, and tools under the root administrator home.', $detailsForPaths($adminPaths)),
+        $makeGroup('temporary', 'Temporary files', 'Temporary data on the root filesystem.', $detailsForPaths($temporaryPaths)),
+    ];
+    $knownBytes = array_sum(array_column($groups, 'bytes')) + array_sum(array_map(static fn($path) => $usage[$path] ?? 0, $miscPaths));
+    $otherBytes = max(0, (int) $filesystem['usedBytes'] - $knownBytes);
+    $otherDetails = $detailsForPaths($miscPaths);
+    if ($otherBytes > 0) $otherDetails[] = [
+        'label' => 'Filesystem overhead and unclassified data',
+        'bytes' => $otherBytes,
+        'note' => 'Includes filesystem metadata and files outside the measured top-level groups.',
+    ];
+    $groups[] = $makeGroup('other', 'Other and filesystem overhead', 'Allocated space not assigned to the explicit groups above.', $otherDetails);
+    $missing = count(array_diff($paths, array_keys($usage)));
+    $data = [
+        'generatedAt' => gmdate(DATE_ATOM),
+        'totalBytes' => (int) $filesystem['totalBytes'],
+        'usedBytes' => (int) $filesystem['usedBytes'],
+        'availableBytes' => (int) $filesystem['availableBytes'],
+        'reservedBytes' => (int) $filesystem['reservedBytes'],
+        'accountedBytes' => $knownBytes,
+        'groups' => $groups,
+        'note' => 'Directory totals use allocated blocks on the root filesystem. Docker image, volume, and build-cache figures are Docker-reported drill-down values and may overlap because layers are shared.' . ($missing ? ' ' . $missing . ' path(s) did not finish within the bounded scan and remain in Other.' : ''),
+    ];
+    $temporary = $file . '.' . bin2hex(random_bytes(6)) . '.tmp';
+    $stored = ['generatedUnix' => time(), 'complete' => $missing === 0, 'data' => $data];
+    if (@file_put_contents($temporary, json_encode($stored), LOCK_EX) !== false) { @chmod($temporary, 0600); @rename($temporary, $file); }
+    if (is_resource($lock)) { flock($lock, LOCK_UN); fclose($lock); }
+    return $data;
+}
+
 function resourceSiteRoot(Site $site, array $overrides): ?string
 {
     $user = (string) $site->getUser();
@@ -4742,6 +4959,10 @@ try {
         case 'server-resources':
             if (!in_array($user->getRole(), [User::ROLE_ADMIN, User::ROLE_SITE_MANAGER], true)) respond(['ok' => false, 'code' => 'FORBIDDEN']);
             respond(['ok' => true, 'data' => serverResources($manager)]);
+
+        case 'server-storage':
+            if (!in_array($user->getRole(), [User::ROLE_ADMIN, User::ROLE_SITE_MANAGER], true)) respond(['ok' => false, 'code' => 'FORBIDDEN']);
+            respond(['ok' => true, 'data' => serverStorage($manager, ($input['refresh'] ?? false) === true)]);
 
         case 'server-info':
             if (!in_array($user->getRole(), [User::ROLE_ADMIN, User::ROLE_SITE_MANAGER], true)) respond(['ok' => false, 'code' => 'FORBIDDEN']);

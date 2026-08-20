@@ -184,6 +184,45 @@ export interface ServerResources {
   };
 }
 
+export interface ServerStorageMetric {
+  label: string;
+  value: string;
+  reclaimable?: string;
+}
+
+export interface ServerStorageDetail {
+  label: string;
+  bytes: number;
+  note?: string;
+  metrics?: ServerStorageMetric[];
+}
+
+export interface ServerStorageGroup {
+  id:
+    | "site-users"
+    | "system-users"
+    | "operating-system"
+    | "system-services"
+    | "administrator"
+    | "temporary"
+    | "other";
+  label: string;
+  bytes: number;
+  description: string;
+  details: ServerStorageDetail[];
+}
+
+export interface ServerStorageBreakdown {
+  generatedAt: string;
+  totalBytes: number;
+  usedBytes: number;
+  availableBytes: number;
+  reservedBytes: number;
+  accountedBytes: number;
+  groups: ServerStorageGroup[];
+  note: string;
+}
+
 export interface ResourceHistoryPoint {
   t: number;
   cpu: number;
@@ -271,6 +310,10 @@ export interface CloudPanelClient {
     input: Record<string, unknown>,
   ): Promise<unknown>;
   getServerResources(session: CloudPanelSession): Promise<ServerResources>;
+  getServerStorage(
+    session: CloudPanelSession,
+    refresh?: boolean,
+  ): Promise<ServerStorageBreakdown>;
   getServerInfo(session: CloudPanelSession): Promise<ServerInfo>;
   updateProfile(
     session: CloudPanelSession,

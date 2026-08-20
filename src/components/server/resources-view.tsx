@@ -17,7 +17,11 @@ import {
   X,
 } from "lucide-react";
 import { toast } from "sonner";
-import type { ResourceHistoryPoint, ServerResources } from "@/types/cloudpanel";
+import type {
+  ResourceHistoryPoint,
+  ServerResources,
+  ServerStorageBreakdown,
+} from "@/types/cloudpanel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -230,6 +234,9 @@ export function ResourcesView({
   const [activeOnly, setActiveOnly] = useState(false);
   const [sort, setSort] = useState<WebsiteSort>("memory");
   const [page, setPage] = useState(1);
+  const [storage, setStorage] = useState<ServerStorageBreakdown | null>(null);
+  const [storageBusy, setStorageBusy] = useState(false);
+  const [storageError, setStorageError] = useState("");
 
   const refresh = useCallback(async (silent = false) => {
     if (!silent) setBusy(true);
@@ -249,6 +256,26 @@ export function ResourcesView({
     }
   }, [loaded]);
 
+  const loadStorage = useCallback(async (force = false) => {
+    setStorageBusy(true);
+    setStorageError("");
+    try {
+      const result = await fetch("/api/server/storage", {
+        method: force ? "POST" : "GET",
+        cache: "no-store",
+      }).then((response) => response.json());
+      if (!result.success)
+        throw new Error(result.error?.message || "Storage analysis could not be loaded.");
+      setStorage(result.data.storage as ServerStorageBreakdown);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Storage analysis could not be loaded.";
+      setStorageError(message);
+      if (force) toast.error(message);
+    } finally {
+      setStorageBusy(false);
+    }
+  }, []);
+
   // Render the route immediately, then load the privileged process snapshot.
   // A short server cache collapses concurrent viewers and polling requests.
   useEffect(() => {
@@ -258,6 +285,11 @@ export function ResourcesView({
     }, 15_000);
     return () => clearInterval(interval);
   }, [loaded, refresh]);
+
+  useEffect(() => {
+    if (detail === "disk" && !storage && !storageBusy && !storageError)
+      void loadStorage();
+  }, [detail, loadStorage, storage, storageBusy, storageError]);
 
   const maxCpu = Math.max(1, ...data.websites.map((entry) => entry.cpuPercent));
   const maxMemory = Math.max(1, ...data.websites.map((entry) => entry.memoryBytes));
@@ -682,29 +714,125 @@ export function ResourcesView({
                 <h4 className="mb-2 text-sm font-bold text-slate-700">History (24h)</h4>
                 <HistoryChart points={history} accessor={active.accessor} />
               </div>
-              <div>
-                <h4 className="mb-2 text-sm font-bold text-slate-700">Top consumers</h4>
-                {active.consumers.length ? (
-                  <div className="space-y-2">
-                    {active.consumers.map((consumer) => (
-                      <div key={consumer.name} className="rounded-xl border border-slate-200/70 p-3">
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="min-w-0">
-                            <p className="truncate text-sm font-semibold text-ink">{consumer.name}</p>
-                            <p className="truncate text-xs text-slate-400">{consumer.note}</p>
-                          </div>
-                          <span className="shrink-0 text-sm font-bold text-slate-700">{consumer.value}</span>
-                        </div>
-                        <Gauge percent={consumer.percent} className="mt-2" />
-                      </div>
-                    ))}
+              {detail === "disk" ? (
+                <div>
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <div>
+                      <h4 className="text-sm font-bold text-slate-700">Storage breakdown</h4>
+                      <p className="text-xs text-slate-400">Complete filesystem groups, not only website application roots.</p>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={storageBusy}
+                      onClick={() => void loadStorage(true)}
+                    >
+                      {storageBusy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                      Analyze again
+                    </Button>
                   </div>
-                ) : (
-                  <p className="rounded-xl border border-dashed border-slate-200 py-6 text-center text-sm text-slate-400">
-                    No measurable usage right now.
-                  </p>
-                )}
-              </div>
+                  {storageBusy && !storage ? (
+                    <div className="rounded-xl border border-dashed border-slate-200 px-4 py-8 text-center">
+                      <LoaderCircle className="mx-auto h-5 w-5 animate-spin text-panel-600" />
+                      <p className="mt-2 text-sm font-semibold text-slate-600">Analyzing allocated storage…</p>
+                      <p className="mt-1 text-xs text-slate-400">Large Docker stores can take a minute or two. Hosted sites continue running normally.</p>
+                    </div>
+                  ) : storage ? (
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                        {[
+                          ["Allocated", formatBytes(storage.usedBytes)],
+                          ["Available", formatBytes(storage.availableBytes)],
+                          ["Reserved", formatBytes(storage.reservedBytes)],
+                          ["Identified", formatBytes(storage.accountedBytes)],
+                        ].map(([label, value]) => (
+                          <div key={label} className="rounded-lg bg-slate-50 p-2.5">
+                            <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">{label}</p>
+                            <p className="mt-0.5 text-xs font-bold text-slate-700">{value}</p>
+                          </div>
+                        ))}
+                      </div>
+                      {storage.reservedBytes > 0 && (
+                        <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                          Reserved space is held by the filesystem and is not ordinary file data.
+                        </p>
+                      )}
+                      {storage.groups.map((group) => (
+                        <div key={group.id} className="rounded-xl border border-slate-200/70 p-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="text-sm font-semibold text-ink">{group.label}</p>
+                              <p className="mt-0.5 text-xs leading-5 text-slate-400">{group.description}</p>
+                            </div>
+                            <span className="shrink-0 text-sm font-bold text-slate-700">{formatBytes(group.bytes)}</span>
+                          </div>
+                          <Gauge percent={(group.bytes / Math.max(1, storage.usedBytes)) * 100} className="mt-2" />
+                          {group.details.length > 0 && (
+                            <details className="mt-2 border-t border-slate-100 pt-2">
+                              <summary className="cursor-pointer text-xs font-semibold text-panel-600">Show details</summary>
+                              <div className="mt-2 space-y-2">
+                                {group.details.map((entry) => (
+                                  <div key={`${group.id}-${entry.label}`} className="rounded-lg bg-slate-50/80 p-2.5">
+                                    <div className="flex items-start justify-between gap-3">
+                                      <div className="min-w-0">
+                                        <p className="break-all text-xs font-semibold text-slate-700">{entry.label}</p>
+                                        {entry.note && <p className="mt-0.5 text-[11px] leading-4 text-slate-400">{entry.note}</p>}
+                                      </div>
+                                      <span className="shrink-0 text-xs font-bold text-slate-600">{formatBytes(entry.bytes)}</span>
+                                    </div>
+                                    {entry.metrics && entry.metrics.length > 0 && (
+                                      <div className="mt-2 grid gap-1 sm:grid-cols-2">
+                                        {entry.metrics.map((metric) => (
+                                          <p key={metric.label} className="rounded bg-white px-2 py-1 text-[10px] text-slate-500">
+                                            <b className="text-slate-700">{metric.label}:</b> {metric.value}
+                                            {metric.reclaimable ? ` · reclaimable ${metric.reclaimable}` : ""}
+                                          </p>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            </details>
+                          )}
+                        </div>
+                      ))}
+                      <p className="text-[11px] leading-5 text-slate-400">
+                        Updated {new Date(storage.generatedAt).toLocaleString()}. {storage.note}
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="rounded-xl border border-dashed border-red-200 bg-red-50/50 px-4 py-5 text-center">
+                      <p className="text-sm font-semibold text-red-700">Storage analysis is unavailable.</p>
+                      <p className="mt-1 text-xs text-red-600">{storageError}</p>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div>
+                  <h4 className="mb-2 text-sm font-bold text-slate-700">Top consumers</h4>
+                  {active.consumers.length ? (
+                    <div className="space-y-2">
+                      {active.consumers.map((consumer) => (
+                        <div key={consumer.name} className="rounded-xl border border-slate-200/70 p-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-semibold text-ink">{consumer.name}</p>
+                              <p className="truncate text-xs text-slate-400">{consumer.note}</p>
+                            </div>
+                            <span className="shrink-0 text-sm font-bold text-slate-700">{consumer.value}</span>
+                          </div>
+                          <Gauge percent={consumer.percent} className="mt-2" />
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="rounded-xl border border-dashed border-slate-200 py-6 text-center text-sm text-slate-400">
+                      No measurable usage right now.
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </div>,

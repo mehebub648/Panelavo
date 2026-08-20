@@ -4,7 +4,7 @@ import React from "react";
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ServerResources } from "@/types/cloudpanel";
+import type { ServerResources, ServerStorageBreakdown } from "@/types/cloudpanel";
 import { ResourcesView } from "./resources-view";
 
 vi.mock("sonner", () => ({ toast: { error: vi.fn() } }));
@@ -32,6 +32,39 @@ function resources(): ServerResources {
     shared: { cpuPercent: 1, memoryBytes: 200, processes: 2 },
     system: { cpuPercent: 2, memoryBytes: 300, processes: 3 },
     attribution: { memoryMethod: "pss", note: "Unresolved work remains separate." },
+  };
+}
+
+function storage(): ServerStorageBreakdown {
+  return {
+    generatedAt: "2026-08-21T00:00:00.000Z",
+    totalBytes: 200_000,
+    usedBytes: 140_000,
+    availableBytes: 60_000,
+    reservedBytes: 0,
+    accountedBytes: 130_000,
+    groups: [
+      {
+        id: "site-users",
+        label: "Site users",
+        bytes: 120_000,
+        description: "Complete site-user homes.",
+        details: [{
+          label: "site-24003",
+          bytes: 100_000,
+          note: "example.test. Includes Docker data.",
+          metrics: [{ label: "Build Cache", value: "23.3GB", reclaimable: "17.26GB" }],
+        }],
+      },
+      {
+        id: "other",
+        label: "Other and filesystem overhead",
+        bytes: 20_000,
+        description: "Unclassified data.",
+        details: [],
+      },
+    ],
+    note: "Directory totals use allocated blocks.",
   };
 }
 
@@ -64,5 +97,25 @@ describe("ResourcesView", () => {
     render(<ResourcesView initialData={null} initialHistory={[]} />);
     expect(screen.getByText("Measuring website usage…")).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText("Website resource usage")).toBeInTheDocument());
+  });
+
+  it("loads complete storage groups only when disk details are opened", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      json: async () => ({ success: true, data: { storage: storage() } }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ResourcesView initialData={resources()} initialHistory={[]} />);
+    fireEvent.click(screen.getByText("Disk (/)").closest("button")!);
+
+    await waitFor(() => expect(screen.getByText("Storage breakdown")).toBeInTheDocument());
+    expect(await screen.findByText("Site users")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Show details"));
+    expect(screen.getByText("site-24003")).toBeInTheDocument();
+    expect(screen.getByText(/reclaimable 17.26GB/)).toHaveTextContent("23.3GB");
+    expect(fetchMock).toHaveBeenCalledWith("/api/server/storage", {
+      method: "GET",
+      cache: "no-store",
+    });
   });
 });
