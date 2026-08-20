@@ -9,5 +9,11 @@ export default async function ResourcesPage() {
   const session = await requireUserOrRedirect({ allowDuringUpdate: true });
   if (!["super-admin", "manager"].includes(session.user.panelRole ?? "")) notFound();
   const history = await getResourceHistory();
-  return <ResourcesView initialData={null} initialHistory={history} />;
+  return (
+    <ResourcesView
+      initialData={null}
+      initialHistory={history}
+      canReclaimStorage={session.user.panelRole === "super-admin"}
+    />
+  );
 }

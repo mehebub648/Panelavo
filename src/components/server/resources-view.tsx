@@ -11,6 +11,7 @@ import {
   LoaderCircle,
   MemoryStick,
   RefreshCw,
+  Sparkles,
   Search,
   Timer,
   UsersRound,
@@ -21,8 +22,10 @@ import type {
   ResourceHistoryPoint,
   ServerResources,
   ServerStorageBreakdown,
+  ServerStorageCleanupResult,
 } from "@/types/cloudpanel";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
@@ -219,9 +222,11 @@ function StatCard({
 export function ResourcesView({
   initialData,
   initialHistory,
+  canReclaimStorage = false,
 }: {
   initialData: ServerResources | null;
   initialHistory: ResourceHistoryPoint[];
+  canReclaimStorage?: boolean;
 }) {
   const [data, setData] = useState(initialData ?? EMPTY_RESOURCES);
   const [history, setHistory] = useState(initialHistory);
@@ -237,6 +242,9 @@ export function ResourcesView({
   const [storage, setStorage] = useState<ServerStorageBreakdown | null>(null);
   const [storageBusy, setStorageBusy] = useState(false);
   const [storageError, setStorageError] = useState("");
+  const [cleanupBusy, setCleanupBusy] = useState(false);
+  const [cleanupConfirm, setCleanupConfirm] = useState(false);
+  const [lastCleanup, setLastCleanup] = useState<ServerStorageCleanupResult | null>(null);
 
   const refresh = useCallback(async (silent = false) => {
     if (!silent) setBusy(true);
@@ -276,13 +284,34 @@ export function ResourcesView({
     }
   }, []);
 
+  const reclaimStorage = useCallback(async () => {
+    setCleanupBusy(true);
+    try {
+      const result = await fetch("/api/server/storage/reclaim", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ confirmation: "RECLAIM BUILD CACHE" }),
+      }).then((response) => response.json());
+      if (!result.success)
+        throw new Error(result.error?.message || "Build-cache cleanup could not be completed.");
+      const cleanup = result.data.cleanup as ServerStorageCleanupResult;
+      setLastCleanup(cleanup);
+      toast.success(`Recovered ${formatBytes(cleanup.reclaimedBytes)} of server storage.`);
+      await loadStorage(true);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Build-cache cleanup could not be completed.");
+    } finally {
+      setCleanupBusy(false);
+    }
+  }, [loadStorage]);
+
   // Render the route immediately, then load the privileged process snapshot.
   // A short server cache collapses concurrent viewers and polling requests.
   useEffect(() => {
     if (!loaded) void refresh(true);
     const interval = setInterval(() => {
       if (!document.hidden) void refresh(true);
-    }, 15_000);
+    }, 30_000);
     return () => clearInterval(interval);
   }, [loaded, refresh]);
 
@@ -716,20 +745,33 @@ export function ResourcesView({
               </div>
               {detail === "disk" ? (
                 <div>
-                  <div className="mb-2 flex items-center justify-between gap-3">
+                  <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
                     <div>
                       <h4 className="text-sm font-bold text-slate-700">Storage breakdown</h4>
                       <p className="text-xs text-slate-400">Complete filesystem groups, not only website application roots.</p>
                     </div>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={storageBusy}
-                      onClick={() => void loadStorage(true)}
-                    >
-                      {storageBusy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-                      Analyze again
-                    </Button>
+                    <div className="flex flex-wrap gap-2">
+                      {canReclaimStorage && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={storageBusy || cleanupBusy}
+                          onClick={() => setCleanupConfirm(true)}
+                        >
+                          {cleanupBusy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+                          Reclaim build cache
+                        </Button>
+                      )}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={storageBusy || cleanupBusy}
+                        onClick={() => void loadStorage(true)}
+                      >
+                        {storageBusy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                        Analyze again
+                      </Button>
+                    </div>
                   </div>
                   {storageBusy && !storage ? (
                     <div className="rounded-xl border border-dashed border-slate-200 px-4 py-8 text-center">
@@ -739,6 +781,22 @@ export function ResourcesView({
                     </div>
                   ) : storage ? (
                     <div className="space-y-3">
+                      {lastCleanup && (
+                        <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-3 text-xs text-emerald-900">
+                          <p className="font-bold">Last cleanup recovered {formatBytes(lastCleanup.reclaimedBytes)}</p>
+                          <p className="mt-1 leading-5">{lastCleanup.note}</p>
+                          <details className="mt-2">
+                            <summary className="cursor-pointer font-semibold">Show per-site results</summary>
+                            <div className="mt-2 space-y-1">
+                              {lastCleanup.sites.map((site) => (
+                                <p key={site.user}>
+                                  <b>{site.user}</b>: {site.reclaimed} · {site.status}
+                                </p>
+                              ))}
+                            </div>
+                          </details>
+                        </div>
+                      )}
                       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                         {[
                           ["Allocated", formatBytes(storage.usedBytes)],
@@ -837,6 +895,19 @@ export function ResourcesView({
           </div>
         </div>,
         document.body,
+      )}
+      {cleanupConfirm && (
+        <ConfirmDialog
+          title="Reclaim unused build cache?"
+          message="Panelavo will clean each site's private BuildKit cache while retaining up to 5 GB per site. Running containers, images, volumes, databases, backups, and application files will not be removed. Future builds may need to download or rebuild discarded layers."
+          confirmText="Reclaim cache"
+          variant="default"
+          onCancel={() => setCleanupConfirm(false)}
+          onConfirm={() => {
+            setCleanupConfirm(false);
+            void reclaimStorage();
+          }}
+        />
       )}
     </div>
   );

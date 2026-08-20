@@ -10,6 +10,7 @@ import type {
   ServerInfo,
   ServerResources,
   ServerStorageBreakdown,
+  ServerStorageCleanupResult,
   SiteCreationOptions,
   UpdateProfileInput,
 } from "@/types/cloudpanel";
@@ -22,7 +23,7 @@ import {
 import { getSiteTypeOverrides } from "@/server/sites/site-type-overlay";
 import { AppError } from "./errors";
 
-export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 12;
+export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 13;
 export const CLOUDPANEL_BROKER_PATH =
   "/usr/local/libexec/panelavo/panelavo-broker";
 
@@ -945,6 +946,29 @@ export class LiveCloudPanelClient implements CloudPanelClient {
         503,
       );
     return result.data as ServerStorageBreakdown;
+  }
+
+  async reclaimServerStorage(session: CloudPanelSession) {
+    const [siteRoots, siteTypes] = await Promise.all([
+      getSiteRootOverrides(),
+      getSiteTypeOverrides(),
+    ]);
+    const result = await this.bridge(
+      {
+        action: "server-storage-reclaim",
+        username: this.sessionUser(session),
+        siteRoots,
+        siteTypes,
+      },
+      1_810_000,
+    );
+    if (!result.ok || !result.data)
+      throw new AppError(
+        "CLOUDPANEL_UNAVAILABLE",
+        "Safe build-cache cleanup could not be completed.",
+        503,
+      );
+    return result.data as ServerStorageCleanupResult;
   }
 
   async getServerInfo(session: CloudPanelSession) {

@@ -29,7 +29,7 @@ use App\Site\Updater\StaticSite as StaticSiteUpdater;
 use Symfony\Component\Dotenv\Dotenv;
 
 const CLOUDPANEL_ROOT = '/home/clp/htdocs/app/files';
-const PANELAVO_BROKER_PROTOCOL_VERSION = 12;
+const PANELAVO_BROKER_PROTOCOL_VERSION = 13;
 const PANELAVO_BROKER_MAX_INPUT_BYTES = 100663296;
 const PANELAVO_ROOTLESS_MIGRATION_ROOT = '/var/lib/panelavo/rootless-migrations';
 const PANELAVO_ROOTLESS_MIGRATION_TTL = 86400;
@@ -3609,16 +3609,16 @@ function resourceRootPath(string $path): ?string
     return $path;
 }
 
-function resourceRootlessDockerMetrics(string $user): array
+function resourceRootlessDockerCommand(string $user, array $arguments, int $seconds): ?array
 {
-    if (!preg_match('/^[A-Za-z0-9._-]{1,64}$/', $user)) return [];
+    if (!preg_match('/^[A-Za-z0-9._-]{1,64}$/', $user)) return null;
     $account = function_exists('posix_getpwnam') ? posix_getpwnam($user) : false;
     $uid = is_array($account) ? (int) ($account['uid'] ?? 0) : 0;
     $socket = $uid > 0 ? '/run/user/' . $uid . '/docker.sock' : '';
     $docker = is_executable('/usr/bin/docker') ? '/usr/bin/docker' : (is_executable('/usr/local/bin/docker') ? '/usr/local/bin/docker' : null);
-    if (!$docker || !$socket || !pathIsSocket($socket)) return [];
+    if (!$docker || !$socket || !pathIsSocket($socket)) return null;
     $home = '/home/' . $user;
-    $result = resourceCommand([
+    return resourceCommand(array_merge([
         '/usr/bin/sudo', '-n', '-u', $user, '--',
         '/usr/bin/env', '-i',
         'PATH=/usr/local/bin:/usr/bin:/bin',
@@ -3627,8 +3627,14 @@ function resourceRootlessDockerMetrics(string $user): array
         'LOGNAME=' . $user,
         'XDG_RUNTIME_DIR=/run/user/' . $uid,
         'DOCKER_HOST=unix://' . $socket,
-        $docker, 'system', 'df', '--format', '{{json .}}',
-    ], 8);
+        $docker,
+    ], $arguments), $seconds);
+}
+
+function resourceRootlessDockerMetrics(string $user): array
+{
+    $result = resourceRootlessDockerCommand($user, ['system', 'df', '--format', '{{json .}}'], 8);
+    if ($result === null) return [];
     $metrics = [];
     foreach (preg_split('/\R/', trim($result['stdout'])) ?: [] as $line) {
         $row = json_decode($line, true);
@@ -3640,6 +3646,69 @@ function resourceRootlessDockerMetrics(string $user): array
         ];
     }
     return $metrics;
+}
+
+function reclaimServerBuildCache($manager): array
+{
+    $directory = '/var/lib/panelavo';
+    if (!is_dir($directory)) @mkdir($directory, 0700, true);
+    $lock = @fopen($directory . '/storage-cleanup.lock', 'c');
+    if (!is_resource($lock) || !flock($lock, LOCK_EX | LOCK_NB)) {
+        if (is_resource($lock)) fclose($lock);
+        respond(['ok' => false, 'code' => 'BUSY', 'message' => 'Another safe storage cleanup is already running.']);
+    }
+    @chmod($directory . '/storage-cleanup.lock', 0600);
+
+    $retainedBytes = 5000000000;
+    $before = resourceFilesystemUsage();
+    $siteUsers = [];
+    foreach (resourceSites($manager) as $site) {
+        $user = (string) $site['user'];
+        if (!preg_match('/^[A-Za-z0-9._-]{1,64}$/', $user)) continue;
+        $siteUsers[$user][] = (string) $site['domain'];
+    }
+    ksort($siteUsers);
+    $sites = [];
+    foreach ($siteUsers as $user => $domains) {
+        $help = resourceRootlessDockerCommand($user, ['builder', 'prune', '--help'], 8);
+        if ($help === null) {
+            $sites[] = ['user' => $user, 'domains' => array_values(array_unique($domains)), 'status' => 'skipped', 'reclaimed' => '0B', 'message' => 'The private Docker daemon is not running.'];
+            continue;
+        }
+        if ($help['code'] !== 0 || !str_contains($help['stdout'], '--max-used-space')) {
+            $sites[] = ['user' => $user, 'domains' => array_values(array_unique($domains)), 'status' => 'skipped', 'reclaimed' => '0B', 'message' => 'This Docker version does not support bounded build-cache cleanup.'];
+            continue;
+        }
+        $result = resourceRootlessDockerCommand($user, [
+            'builder', 'prune', '--all', '--force', '--max-used-space', (string) $retainedBytes,
+        ], 600);
+        if ($result === null || $result['code'] !== 0) {
+            $detail = trim((string) (($result['stderr'] ?? '') !== '' ? $result['stderr'] : ($result['stdout'] ?? '')));
+            $sites[] = ['user' => $user, 'domains' => array_values(array_unique($domains)), 'status' => 'failed', 'reclaimed' => '0B', 'message' => $detail !== '' ? substr($detail, 0, 240) : 'Docker did not complete the cleanup.'];
+            continue;
+        }
+        $reclaimed = '0B';
+        if (preg_match('/^Total:\s*(.+)$/mi', $result['stdout'], $match)) $reclaimed = trim($match[1]);
+        $unchanged = preg_match('/^0(?:\.0+)?\s*(?:B|kB|KB|MB|GB|TB)$/i', $reclaimed) === 1;
+        $sites[] = [
+            'user' => $user,
+            'domains' => array_values(array_unique($domains)),
+            'status' => $unchanged ? 'unchanged' : 'cleaned',
+            'reclaimed' => $reclaimed,
+            'message' => $unchanged ? 'No disposable build cache exceeded the retained allowance.' : 'Unused build layers were removed; containers, images, volumes, and application files were preserved.',
+        ];
+    }
+    $after = resourceFilesystemUsage();
+    @unlink($directory . '/resource-storage.json');
+    flock($lock, LOCK_UN);
+    fclose($lock);
+    return [
+        'generatedAt' => gmdate(DATE_ATOM),
+        'reclaimedBytes' => max(0, (int) $before['usedBytes'] - (int) $after['usedBytes']),
+        'retainedBuildCacheBytes' => $retainedBytes,
+        'sites' => $sites,
+        'note' => 'Only unused BuildKit cache was considered. Running containers, images, volumes, databases, backups, and application files were not pruned.',
+    ];
 }
 
 function serverStorage($manager, bool $refresh = false): array
@@ -4963,6 +5032,10 @@ try {
         case 'server-storage':
             if (!in_array($user->getRole(), [User::ROLE_ADMIN, User::ROLE_SITE_MANAGER], true)) respond(['ok' => false, 'code' => 'FORBIDDEN']);
             respond(['ok' => true, 'data' => serverStorage($manager, ($input['refresh'] ?? false) === true)]);
+
+        case 'server-storage-reclaim':
+            if ($user->getRole() !== User::ROLE_ADMIN) respond(['ok' => false, 'code' => 'FORBIDDEN']);
+            respond(['ok' => true, 'data' => reclaimServerBuildCache($manager)]);
 
         case 'server-info':
             if (!in_array($user->getRole(), [User::ROLE_ADMIN, User::ROLE_SITE_MANAGER], true)) respond(['ok' => false, 'code' => 'FORBIDDEN']);

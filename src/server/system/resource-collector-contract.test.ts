@@ -27,5 +27,15 @@ describe("resource collector source contract", () => {
     expect(source).toContain("'DOCKER_HOST=unix://' . $socket");
     expect(source).toContain("'/usr/bin/sudo', '-n', '-u', $user");
     expect(source).toContain("resource-storage.lock");
+    const cleanup = source.slice(
+      source.indexOf("function reclaimServerBuildCache"),
+      source.indexOf("function serverStorage"),
+    );
+    expect(cleanup).toContain("'builder', 'prune', '--all', '--force', '--max-used-space'");
+    expect(cleanup).toContain("$retainedBytes = 5000000000");
+    expect(cleanup).toContain("storage-cleanup.lock");
+    expect(cleanup).not.toContain("'system', 'prune'");
+    expect(cleanup).not.toContain("'volume', 'prune'");
+    expect(cleanup).not.toContain("'image', 'prune'");
   });
 });

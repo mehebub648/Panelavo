@@ -1,7 +1,10 @@
 import type { CloudPanelSession, ServerResources } from "@/types/cloudpanel";
 import { getCloudPanelClient } from "@/server/cloudpanel";
 
-const CACHE_MS = 10_000;
+// The privileged collector reads proportional memory from /proc. A 25-second
+// cache keeps the dashboard responsive while collapsing concurrent viewers
+// and avoiding duplicate scans between the 30-second client polls.
+const CACHE_MS = 25_000;
 
 type SnapshotState = {
   value?: ServerResources;

@@ -223,6 +223,22 @@ export interface ServerStorageBreakdown {
   note: string;
 }
 
+export interface ServerStorageCleanupSite {
+  user: string;
+  domains: string[];
+  status: "cleaned" | "unchanged" | "skipped" | "failed";
+  reclaimed: string;
+  message: string;
+}
+
+export interface ServerStorageCleanupResult {
+  generatedAt: string;
+  reclaimedBytes: number;
+  retainedBuildCacheBytes: number;
+  sites: ServerStorageCleanupSite[];
+  note: string;
+}
+
 export interface ResourceHistoryPoint {
   t: number;
   cpu: number;
@@ -314,6 +330,9 @@ export interface CloudPanelClient {
     session: CloudPanelSession,
     refresh?: boolean,
   ): Promise<ServerStorageBreakdown>;
+  reclaimServerStorage(
+    session: CloudPanelSession,
+  ): Promise<ServerStorageCleanupResult>;
   getServerInfo(session: CloudPanelSession): Promise<ServerInfo>;
   updateProfile(
     session: CloudPanelSession,

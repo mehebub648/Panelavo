@@ -180,6 +180,7 @@ function withPanelRoles(inner: CloudPanelClient): CloudPanelClient {
     },
     getServerResources: inner.getServerResources.bind(inner),
     getServerStorage: inner.getServerStorage.bind(inner),
+    reclaimServerStorage: inner.reclaimServerStorage.bind(inner),
     getServerInfo: inner.getServerInfo.bind(inner),
     updateProfile: async (session, input) =>
       decorateUser(await inner.updateProfile(session, input)),

@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ServerResources, ServerStorageBreakdown } from "@/types/cloudpanel";
 import { ResourcesView } from "./resources-view";
 
-vi.mock("sonner", () => ({ toast: { error: vi.fn() } }));
+vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 
 function resources(): ServerResources {
   return {
@@ -117,5 +117,40 @@ describe("ResourcesView", () => {
       method: "GET",
       cache: "no-store",
     });
+  });
+
+  it("confirms and reports bounded build-cache cleanup for super administrators", async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string) => Promise.resolve({
+      json: async () => url.endsWith("/reclaim")
+        ? {
+            success: true,
+            data: {
+              cleanup: {
+                generatedAt: "2026-08-21T01:00:00.000Z",
+                reclaimedBytes: 40_000,
+                retainedBuildCacheBytes: 5_000_000_000,
+                sites: [{ user: "site-24003", domains: ["example.test"], status: "cleaned", reclaimed: "13GB", message: "Unused layers removed." }],
+                note: "Volumes and application files were preserved.",
+              },
+            },
+          }
+        : { success: true, data: { storage: storage() } },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ResourcesView initialData={resources()} initialHistory={[]} canReclaimStorage />);
+    fireEvent.click(screen.getByText("Disk (/)").closest("button")!);
+    await screen.findByText("Storage breakdown");
+    fireEvent.click(screen.getByRole("button", { name: "Reclaim build cache" }));
+    expect(screen.getByText("Reclaim unused build cache?")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Reclaim cache" }));
+
+    await screen.findByText("Last cleanup recovered 39.1 KB");
+    expect(fetchMock).toHaveBeenCalledWith("/api/server/storage/reclaim", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ confirmation: "RECLAIM BUILD CACHE" }),
+    });
+    expect(screen.getByText(/Volumes and application files were preserved/)).toBeInTheDocument();
   });
 });

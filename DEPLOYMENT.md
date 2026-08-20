@@ -102,6 +102,8 @@ Broker protocol 11 adds the website-attributed resource snapshot and its bounded
 
 Broker protocol 12 adds the on-demand whole-filesystem storage analysis used by Disk details. Existing installations must run the trusted `setup.sh` before deploying a protocol 12 application release; the in-panel updater refuses this release while protocol 11 is installed. The scan runs only when requested, uses low CPU and idle-I/O priority, is bounded to five minutes, and caches complete results for thirty minutes. It reads allocation metadata only and never prunes Docker, deletes files, or changes hosted sites.
 
+Broker protocol 13 adds the Super Admin-only safe BuildKit cache reclaim used by Disk details. Existing installations must run the trusted `setup.sh` before deploying a protocol 13 application release; the in-panel updater refuses this release while protocol 12 is installed. Cleanup is explicitly confirmed, host-wide serialized, and sequential across exact rootless site-user sockets. It runs only when Docker supports `--max-used-space`, retains up to 5 GB of build cache per site, and never prunes containers, images, volumes, databases, backups, or application files.
+
 S3-compatible backup destinations require an HTTPS endpoint and `CREDENTIALS_ENCRYPTION_KEY` (or the existing 32-character-or-longer `SESSION_SECRET`). The configured bucket credentials need list, read, write, and delete access only under the chosen site prefix. No bucket credentials are installed into the root broker.
 
 SMTP and webhook notification settings use the same credential-encryption key. Permit outbound TCP to the configured SMTP host/port and outbound HTTPS to the webhook receiver; Panelavo does not require an inbound notification port.
