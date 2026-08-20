@@ -73,6 +73,7 @@ const CREATE_TOOLS = [
 
 const WRITE_TOOLS = [
   "panelavo_begin_artifact_upload",
+  "panelavo_cancel_site_job",
   "panelavo_configure_backup_schedule",
   "panelavo_configure_deploy_hooks",
   "panelavo_configure_offsite_backup",
@@ -84,12 +85,15 @@ const WRITE_TOOLS = [
   "panelavo_deploy_site",
   "panelavo_execute_terminal_command",
   "panelavo_get_artifact_upload",
+  "panelavo_get_site_job",
   "panelavo_get_site_automation",
   "panelavo_manage_offsite_backup",
   "panelavo_manage_site_domains",
   "panelavo_manage_site_section",
+  "panelavo_list_site_jobs",
   "panelavo_point_site_dns",
   "panelavo_run_site_operation",
+  "panelavo_start_site_job",
   "panelavo_update_site",
 ];
 

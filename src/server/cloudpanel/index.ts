@@ -165,7 +165,7 @@ function withPanelRoles(inner: CloudPanelClient): CloudPanelClient {
         panelAdmin,
       );
     },
-    manageSiteSection: async (session, domain, section, input) => {
+    manageSiteSection: async (session, domain, section, input, execution) => {
       assertNotPanelSelf(domain);
       await assertActionAllowedForSiteType(domain, section, input);
       const panelAdmin = session.usernameHint
@@ -174,7 +174,13 @@ function withPanelRoles(inner: CloudPanelClient): CloudPanelClient {
       return withSiteSectionType(
         domain,
         section,
-        await inner.manageSiteSection(session, domain, section, input),
+        await inner.manageSiteSection(
+          session,
+          domain,
+          section,
+          input,
+          execution,
+        ),
         panelAdmin,
       );
     },

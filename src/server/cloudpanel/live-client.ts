@@ -12,6 +12,7 @@ import type {
   ServerStorageBreakdown,
   ServerStorageCleanupResult,
   SiteCreationOptions,
+  SiteSectionExecutionOptions,
   UpdateProfileInput,
 } from "@/types/cloudpanel";
 import { isPanelAdmin } from "@/server/auth/panel-roles";
@@ -72,12 +73,35 @@ function parseBrokerOutput(output: string): BridgeResult {
 function invokeBroker(
   input: Record<string, unknown>,
   timeout = 15_000,
+  execution: SiteSectionExecutionOptions = {},
 ): Promise<BridgeResult> {
   return new Promise((resolve, reject) => {
+    if (execution.signal?.aborted) {
+      reject(
+        new AppError("REQUEST_CANCELLED", "The operation was cancelled.", 409),
+      );
+      return;
+    }
     const child = spawn("/usr/bin/sudo", ["-n", CLOUDPANEL_BROKER_PATH], {
       shell: false,
       stdio: ["pipe", "pipe", "pipe"],
+      detached: process.platform !== "win32",
     });
+    let stoppedBy: "timeout" | "cancel" | undefined;
+    const stop = (reason: "timeout" | "cancel") => {
+      if (stoppedBy || child.exitCode !== null || child.signalCode !== null)
+        return;
+      stoppedBy = reason;
+      try {
+        if (process.platform !== "win32" && child.pid)
+          process.kill(-child.pid, "SIGKILL");
+        else child.kill("SIGKILL");
+      } catch {
+        child.kill("SIGKILL");
+      }
+    };
+    const abort = () => stop("cancel");
+    execution.signal?.addEventListener("abort", abort, { once: true });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk: Buffer) => {
@@ -92,9 +116,10 @@ function invokeBroker(
         ...input,
       }),
     );
-    const timer = setTimeout(() => child.kill("SIGKILL"), timeout);
+    const timer = setTimeout(() => stop("timeout"), timeout);
     child.on("error", () => {
       clearTimeout(timer);
+      execution.signal?.removeEventListener("abort", abort);
       reject(
         new AppError(
           "CLOUDPANEL_UNAVAILABLE",
@@ -105,6 +130,23 @@ function invokeBroker(
     });
     child.on("close", (code, signal) => {
       clearTimeout(timer);
+      execution.signal?.removeEventListener("abort", abort);
+      if (stoppedBy === "cancel") {
+        reject(
+          new AppError("REQUEST_CANCELLED", "The operation was cancelled.", 409),
+        );
+        return;
+      }
+      if (stoppedBy === "timeout") {
+        reject(
+          new AppError(
+            "REQUEST_TIMEOUT",
+            "The privileged server service took too long to respond.",
+            504,
+          ),
+        );
+        return;
+      }
       if (code === 0) {
         try {
           resolve(parseBrokerOutput(stdout));
@@ -309,9 +351,10 @@ export class LiveCloudPanelClient implements CloudPanelClient {
   private async bridge(
     input: Record<string, unknown>,
     timeout?: number,
+    execution?: SiteSectionExecutionOptions,
   ): Promise<BridgeResult> {
     await checkCloudPanelBroker();
-    return invokeBroker(input, timeout);
+    return invokeBroker(input, timeout, execution);
   }
 
   private privilegedError(result: BridgeResult, fallback: string) {
@@ -763,6 +806,7 @@ export class LiveCloudPanelClient implements CloudPanelClient {
     domain: string,
     section: string,
     input: Record<string, unknown>,
+    execution?: SiteSectionExecutionOptions,
   ) {
     const { panelAdmin } = await this.requireSiteAccess(session, domain);
     const applicationRootDirectory = await getSiteRootOverride(domain);
@@ -894,6 +938,7 @@ export class LiveCloudPanelClient implements CloudPanelClient {
           input.deployOperations.length > 0
           ? SITE_SECTION_TIMEOUTS.actions
           : siteSectionTimeout(section),
+        execution,
       );
       if (!result.ok) throw siteSectionBridgeError(result);
       if (result.data !== undefined) return result.data;

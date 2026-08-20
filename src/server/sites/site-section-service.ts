@@ -15,6 +15,7 @@ import {
 import { AppError } from "@/server/cloudpanel/errors";
 import { getDeployHooks } from "@/server/deploy/hooks";
 import { getSiteMeta } from "@/server/sites/site-meta";
+import type { SiteSectionExecutionOptions } from "@/types/cloudpanel";
 
 const untypedOperationSchema = z
   .record(z.unknown())
@@ -125,6 +126,7 @@ export async function manageSiteSectionForActor(
   domain: string,
   section: string,
   submitted: unknown,
+  execution?: SiteSectionExecutionOptions,
 ) {
   assertSection(section);
   if (section === "settings")
@@ -163,6 +165,7 @@ export async function manageSiteSectionForActor(
       domain,
       section,
       operation,
+      execution,
     );
   } finally {
     release();

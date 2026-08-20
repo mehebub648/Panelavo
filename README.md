@@ -116,6 +116,8 @@ The available tools follow the live role: users can inspect assigned websites; s
 
 For large non-Git releases, MCP can create a 24-hour artifact upload bound to the current MCP credential, live CloudPanel user, and writable website. The client streams raw binary chunks (up to 32 MiB each) to the returned HTTPS URL with `Content-Range`, resumes from `Upload-Offset`, and declares the complete size plus SHA-256 before sending data. Panelavo accepts files up to 2 GiB and marks an artifact complete only after the final checksum matches; failed, expired, and explicitly deleted artifacts never reach a website. Active artifacts are capped per account to prevent the panel store from becoming an unbounded upload area.
 
+Long MCP deployments, backups, and allow-listed Operations can run as background jobs. Starting a job returns its ID immediately; status calls expose bounded lifecycle logs, result summaries, explicit timeout state, and honest interruption state after a Panelavo restart. Jobs are bound to the originating MCP credential and current writable-site access, limited to one active job per actor and website, retained for seven days (up to 100 per actor), and time out within 30 minutes. Cancelling a job sends an abort signal through the shared site service and stops the complete privileged broker process group so child builds cannot continue invisibly. Existing synchronous tools remain available for compatible clients.
+
 Codex CLI setup is:
 
 ```bash

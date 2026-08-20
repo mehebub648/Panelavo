@@ -36,6 +36,10 @@ export interface CloudPanelSession {
   twoFactorCsrf?: string;
 }
 
+export type SiteSectionExecutionOptions = {
+  signal?: AbortSignal;
+};
+
 export interface CloudPanelSite {
   id: string;
   domain: string;
@@ -324,6 +328,7 @@ export interface CloudPanelClient {
     domain: string,
     section: string,
     input: Record<string, unknown>,
+    execution?: SiteSectionExecutionOptions,
   ): Promise<unknown>;
   getServerResources(session: CloudPanelSession): Promise<ServerResources>;
   getServerStorage(

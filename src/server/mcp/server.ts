@@ -21,6 +21,12 @@ import {
   deleteArtifactUpload,
   getArtifactUpload,
 } from "@/server/mcp/artifacts";
+import {
+  cancelMcpJob,
+  getMcpJob,
+  listMcpJobs,
+  startMcpJob,
+} from "@/server/mcp/jobs";
 import { siteSectionToolSchema } from "@/server/mcp/site-section-tool-schema";
 import { audit, auditContext } from "@/server/security/log";
 import { rateLimit } from "@/server/security/request";
@@ -208,6 +214,41 @@ const artifactIdSchema = z
   .string()
   .uuid()
   .describe("The artifact upload ID returned by Panelavo.");
+
+const jobIdSchema = z
+  .string()
+  .uuid()
+  .describe("The background job ID returned by Panelavo.");
+
+const jobOperationSchema = z
+  .object({
+    kind: z.literal("operation"),
+    command: z.enum(operationCommands).optional(),
+    fix: z.enum(operationFixCommands).optional(),
+    script: z.string().max(64).optional(),
+    name: z.string().max(100).optional(),
+  })
+  .refine((value) => Boolean(value.command) !== Boolean(value.fix), {
+    message: "Choose exactly one operation command or repair.",
+  });
+
+const startJobToolSchema = z.object({
+  domain: domainSchema,
+  timeoutSeconds: z.number().int().min(30).max(1_800).default(1_800),
+  job: z.discriminatedUnion("kind", [
+    z.object({
+      kind: z.literal("deploy"),
+      plan: z.enum(["compose", "node", "static-build", "php", "python"]),
+    }),
+    z.object({
+      kind: z.literal("backup"),
+      files: z.boolean().default(true),
+      databases: z.array(z.string().max(64)).max(50).optional(),
+      note: z.string().max(200).optional(),
+    }),
+    jobOperationSchema,
+  ]),
+});
 
 const beginArtifactUploadToolSchema = z.object({
   domain: domainSchema,
@@ -701,6 +742,199 @@ export function createPanelavoMcpServer(actor: PanelActor) {
             return deleteArtifactUpload(actor, artifactId);
           },
         ),
+    );
+
+    server.registerTool(
+      "panelavo_start_site_job",
+      {
+        title: "Start a background website job",
+        description:
+          "Queue a long deployment, backup, or allow-listed operation and return immediately with a job ID. Inspect progress and lifecycle logs with the job-status tool; cancellation stops the complete privileged process group.",
+        inputSchema: startJobToolSchema,
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: true,
+          idempotentHint: false,
+          openWorldHint: true,
+        },
+      },
+      async ({ domain, timeoutSeconds, job }, context) => {
+        const label =
+          job.kind === "deploy"
+            ? `${job.plan} deployment`
+            : job.kind === "backup"
+              ? "backup"
+              : String(job.fix ?? job.command);
+        const confirmation = await requireSiteActionConfirmation(
+          actor,
+          confirmationManager,
+          {
+            context,
+            domain,
+            tool: "panelavo_start_site_job",
+            arguments: { domain, timeoutSeconds, job },
+            message: `Allow the AI assistant to start the ${label} background job for ${domain}? It may change or restart the live website and will be stopped after ${timeoutSeconds} seconds if unfinished.`,
+          },
+        );
+        if (confirmation) return confirmation;
+        return runTool(
+          actor,
+          "panelavo_start_site_job",
+          { type: "site", id: domain },
+          { kind: job.kind, timeoutSeconds },
+          async () => {
+            await writableSiteForActor(actor, domain);
+            return startMcpJob(
+              actor,
+              { domain, kind: label, timeoutSeconds },
+              async ({ signal, log }) => {
+                if (job.kind === "deploy") {
+                  await log("Checking the live Operations preflight.");
+                  assertReadyOperation(
+                    await getSiteSectionForActor(actor, domain, "actions"),
+                    "plan",
+                    job.plan,
+                  );
+                  await log(`Running the server-owned ${job.plan} plan.`);
+                  return manageSiteSectionForActor(
+                    actor,
+                    domain,
+                    "actions",
+                    { action: "deploy", plan: job.plan },
+                    { signal },
+                  );
+                }
+                if (job.kind === "backup") {
+                  await log("Creating the atomic local website snapshot.");
+                  return manageSiteSectionForActor(
+                    actor,
+                    domain,
+                    "backups",
+                    { action: "create", ...job },
+                    { signal },
+                  );
+                }
+                const selected = job.fix ?? job.command!;
+                await log("Checking that the requested operation is ready.");
+                assertReadyOperation(
+                  await getSiteSectionForActor(actor, domain, "actions"),
+                  job.fix ? "fix" : "command",
+                  selected,
+                );
+                await log(`Running the allow-listed ${selected} operation.`);
+                return manageSiteSectionForActor(
+                  actor,
+                  domain,
+                  "actions",
+                  job.fix
+                    ? { action: "fix", fix: job.fix }
+                    : {
+                        action: "run",
+                        command: job.command,
+                        script: job.script,
+                        name: job.name,
+                      },
+                  { signal },
+                );
+              },
+            );
+          },
+        );
+      },
+    );
+
+    server.registerTool(
+      "panelavo_get_site_job",
+      {
+        title: "Inspect a background website job",
+        description:
+          "Return one background job's status, bounded lifecycle logs, result summary, timeout, and error without waiting for it to finish.",
+        inputSchema: z.object({ jobId: jobIdSchema }),
+        annotations: {
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
+      },
+      async ({ jobId }) =>
+        runTool(
+          actor,
+          "panelavo_get_site_job",
+          { type: "job", id: jobId },
+          {},
+          async () => {
+            const job = await getMcpJob(actor, jobId);
+            await writableSiteForActor(actor, job.domain);
+            return job;
+          },
+        ),
+    );
+
+    server.registerTool(
+      "panelavo_list_site_jobs",
+      {
+        title: "List background website jobs",
+        description:
+          "List the current MCP credential's recent background jobs for one writable website.",
+        inputSchema: z.object({ domain: domainSchema }),
+        annotations: {
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
+      },
+      async ({ domain }) =>
+        runTool(
+          actor,
+          "panelavo_list_site_jobs",
+          { type: "site", id: domain },
+          {},
+          async () => {
+            await writableSiteForActor(actor, domain);
+            return listMcpJobs(actor, domain);
+          },
+        ),
+    );
+
+    server.registerTool(
+      "panelavo_cancel_site_job",
+      {
+        title: "Cancel a background website job",
+        description:
+          "Request cancellation of one active background job. Panelavo kills the complete broker process group so child builds and deployment commands do not continue invisibly.",
+        inputSchema: z.object({ jobId: jobIdSchema }),
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: true,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
+      },
+      async ({ jobId }, context) => {
+        const job = await getMcpJob(actor, jobId);
+        await writableSiteForActor(actor, job.domain);
+        const confirmation = await requireSiteActionConfirmation(
+          actor,
+          confirmationManager,
+          {
+            context,
+            domain: job.domain,
+            tool: "panelavo_cancel_site_job",
+            arguments: { jobId },
+            message: `Cancel the active ${job.kind} job for ${job.domain}? Its complete server process group will be stopped.`,
+          },
+        );
+        if (confirmation) return confirmation;
+        return runTool(
+          actor,
+          "panelavo_cancel_site_job",
+          { type: "job", id: jobId },
+          { domain: job.domain },
+          () => cancelMcpJob(actor, jobId),
+        );
+      },
     );
 
     server.registerTool(
