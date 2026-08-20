@@ -98,6 +98,8 @@ The Operations tab manages applications hosted by CloudPanel; it is separate fro
 
 `setup.sh` installs the host ACL, uidmap, D-Bus user-session, and slirp4netns prerequisites used by the root-owned broker. ACL enforcement stays under `/home/<site-user>/htdocs`, grants the site user named `rwX`, and applies default directory entries for future descendants. Existing installations must run the trusted `setup.sh` once when upgrading to broker protocol 10 so the root-owned bridge can execute narrowly allow-listed scheduled backups, private off-site staging, self-service CloudPanel MFA enrollment, and atomic pull-plus-operation plans; the ordinary in-panel updater intentionally cannot install host packages or replace the root-owned broker.
 
+Broker protocol 11 adds the website-attributed resource snapshot and its bounded root-owned process/container inspection. Existing installations must run the trusted `setup.sh` before deploying a protocol 11 application release. The in-panel updater refuses the release while protocol 10 is installed, preventing the new Resources UI from running against the older response contract.
+
 S3-compatible backup destinations require an HTTPS endpoint and `CREDENTIALS_ENCRYPTION_KEY` (or the existing 32-character-or-longer `SESSION_SECRET`). The configured bucket credentials need list, read, write, and delete access only under the chosen site prefix. No bucket credentials are installed into the root broker.
 
 SMTP and webhook notification settings use the same credential-encryption key. Permit outbound TCP to the configured SMTP host/port and outbound HTTPS to the webhook receiver; Panelavo does not require an inbound notification port.

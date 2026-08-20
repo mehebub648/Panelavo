@@ -29,7 +29,7 @@ use App\Site\Updater\StaticSite as StaticSiteUpdater;
 use Symfony\Component\Dotenv\Dotenv;
 
 const CLOUDPANEL_ROOT = '/home/clp/htdocs/app/files';
-const PANELAVO_BROKER_PROTOCOL_VERSION = 10;
+const PANELAVO_BROKER_PROTOCOL_VERSION = 11;
 const PANELAVO_BROKER_MAX_INPUT_BYTES = 100663296;
 const PANELAVO_ROOTLESS_MIGRATION_ROOT = '/var/lib/panelavo/rootless-migrations';
 const PANELAVO_ROOTLESS_MIGRATION_TTL = 86400;
@@ -3512,10 +3512,14 @@ function sampleCpu(): array
     $hertz = (int) trim((string) shell_exec('getconf CLK_TCK 2>/dev/null'));
     if ($hertz <= 0) $hertz = 100;
     $byUid = [];
+    $byPid = [];
     foreach ($procB as $pid => [$uid, $t]) {
         if (!isset($procA[$pid])) continue;
         $delta = $t - $procA[$pid][1];
-        if ($delta > 0) $byUid[$uid] = ($byUid[$uid] ?? 0) + $delta;
+        if ($delta <= 0) continue;
+        $percent = $delta / $hertz / $elapsed * 100;
+        $byPid[$pid] = round($percent, 1);
+        $byUid[$uid] = ($byUid[$uid] ?? 0) + $delta;
     }
     $byUser = [];
     foreach ($byUid as $uid => $ticksDelta) {
@@ -3525,7 +3529,198 @@ function sampleCpu(): array
         // Single-core units (100 = one full core), matching capacity cores×100.
         $byUser[$name] = round($ticksDelta / $hertz / $elapsed * 100, 1);
     }
-    return ['usedPercent' => $usedPercent, 'byUser' => $byUser];
+    return ['usedPercent' => $usedPercent, 'byUser' => $byUser, 'byPid' => $byPid];
+}
+
+function resourceCommand(array $args, int $seconds = 3): array
+{
+    $command = array_merge(['/usr/bin/timeout', '--signal=KILL', (string) $seconds], $args);
+    $process = @proc_open($command, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+    if (!is_resource($process)) return ['code' => -1, 'stdout' => '', 'stderr' => ''];
+    fclose($pipes[0]);
+    $stdout = stream_get_contents($pipes[1]); fclose($pipes[1]);
+    $stderr = stream_get_contents($pipes[2]); fclose($pipes[2]);
+    return ['code' => proc_close($process), 'stdout' => $stdout ?: '', 'stderr' => $stderr ?: ''];
+}
+
+function resourceSiteRoot(Site $site, array $overrides): ?string
+{
+    $user = (string) $site->getUser();
+    if (!preg_match('/^[A-Za-z0-9._-]{1,64}$/', $user)) return null;
+    $base = realpath('/home/' . $user . '/htdocs');
+    if (!$base || !is_dir($base)) return null;
+    $domain = strtolower((string) $site->getDomainName());
+    $relative = trim(str_replace('\\', '/', (string) ($overrides[$domain] ?? $site->getRootDirectory())), '/');
+    if (strlen($relative) > 200 || str_contains($relative, "\0")) return null;
+    foreach ($relative === '' ? [] : explode('/', $relative) as $part) {
+        if ($part === '' || $part === '.' || $part === '..' || !preg_match('/^[A-Za-z0-9._-]+$/', $part)) return null;
+    }
+    $candidate = $base . ($relative === '' ? '' : '/' . $relative);
+    if (!pathIsContained($candidate, $base)) return null;
+    return realpath($candidate) ?: (is_dir($candidate) ? $candidate : null);
+}
+
+function resourceSites($manager): array
+{
+    global $input;
+    $roots = is_array($input['siteRoots'] ?? null) ? $input['siteRoots'] : [];
+    $types = is_array($input['siteTypes'] ?? null) ? $input['siteTypes'] : [];
+    $sites = [];
+    foreach ($manager->getRepository(Site::class)->findAll() as $site) {
+        $domain = strtolower((string) $site->getDomainName());
+        $type = (string) ($types[$domain] ?? $site->getType());
+        if (!in_array($type, ['php', 'nodejs', 'static', 'python', 'reverse-proxy', 'docker'], true)) $type = 'reverse-proxy';
+        $sites[] = [
+            'domain' => $domain,
+            'user' => (string) $site->getUser(),
+            'type' => $type,
+            'root' => resourceSiteRoot($site, $roots),
+            'port' => expectedSitePort($site),
+        ];
+    }
+    return $sites;
+}
+
+function resourceProcesses(array $cpuByPid): array
+{
+    $items = [];
+    foreach (glob('/proc/[0-9]*') ?: [] as $directory) {
+        $pid = (int) basename($directory);
+        $uid = @fileowner($directory);
+        if ($pid < 1 || $uid === false) continue;
+        $status = (string) @file_get_contents($directory . '/status');
+        preg_match('/^VmRSS:\s+(\d+)\s+kB$/mi', $status, $rssMatch);
+        $rss = (int) ($rssMatch[1] ?? 0) * 1024;
+        $pss = null;
+        $rollup = @file_get_contents($directory . '/smaps_rollup');
+        if (is_string($rollup) && preg_match('/^Pss:\s+(\d+)\s+kB$/mi', $rollup, $pssMatch)) {
+            $pss = (int) $pssMatch[1] * 1024;
+        }
+        $cwd = @readlink($directory . '/cwd');
+        $cmdline = @file_get_contents($directory . '/cmdline');
+        $cgroup = (string) @file_get_contents($directory . '/cgroup');
+        $items[] = [
+            'pid' => $pid,
+            'uid' => (int) $uid,
+            'cpuPercent' => (float) ($cpuByPid[$pid] ?? 0),
+            'memoryBytes' => $pss ?? $rss,
+            'pss' => $pss !== null,
+            'cwd' => is_string($cwd) ? preg_replace('/ \(deleted\)$/', '', $cwd) : '',
+            'cmdline' => is_string($cmdline) ? str_replace("\0", ' ', substr($cmdline, 0, 4096)) : '',
+            'cgroup' => $cgroup,
+        ];
+    }
+    return $items;
+}
+
+function resourceRootContainers(array $processes): array
+{
+    $docker = is_executable('/usr/bin/docker') ? '/usr/bin/docker' : (is_executable('/usr/local/bin/docker') ? '/usr/local/bin/docker' : null);
+    if (!$docker) return [];
+    $ids = [];
+    foreach ($processes as $process) {
+        if (preg_match('/user-\d+\.slice/', $process['cgroup'])) continue;
+        if (preg_match('/(?:docker[-\/]|cri-containerd[-\/])([a-f0-9]{12,64})(?:\.scope)?/i', $process['cgroup'], $match)) $ids[] = strtolower($match[1]);
+    }
+    $ids = array_values(array_unique($ids));
+    if (!$ids) return [];
+    $inspected = resourceCommand(array_merge([$docker, 'inspect'], array_slice($ids, 0, 200)), 3);
+    $decoded = json_decode($inspected['stdout'], true);
+    return is_array($decoded) ? $decoded : [];
+}
+
+function resourceContainerSites(array $sites, array $processes): array
+{
+    $result = [];
+    foreach (resourceRootContainers($processes) as $container) {
+        $id = strtolower((string) ($container['Id'] ?? ''));
+        if (!preg_match('/^[a-f0-9]{12,64}$/', $id)) continue;
+        $labels = is_array($container['Config']['Labels'] ?? null) ? $container['Config']['Labels'] : [];
+        $paths = [];
+        foreach (['com.docker.compose.project.working_dir', 'com.docker.compose.project.config_files'] as $key) {
+            if (is_string($labels[$key] ?? null)) $paths[] = $labels[$key];
+        }
+        foreach (($container['Mounts'] ?? []) as $mount) if (is_string($mount['Source'] ?? null)) $paths[] = $mount['Source'];
+        $ports = [];
+        foreach (($container['NetworkSettings']['Ports'] ?? []) as $bindings) {
+            foreach (is_array($bindings) ? $bindings : [] as $binding) {
+                $port = (int) ($binding['HostPort'] ?? 0);
+                if ($port > 0) $ports[] = $port;
+            }
+        }
+        $project = strtolower((string) ($labels['com.docker.compose.project'] ?? ''));
+        $scores = [];
+        $sources = [];
+        foreach ($sites as $index => $site) {
+            $score = 0;
+            if ($project !== '' && $project === composeProjectNameForDomain($site['domain'])) { $score += 8; $sources[$index][] = 'container'; }
+            foreach ($paths as $path) {
+                if ($site['root'] && pathIsContained((string) $path, $site['root'])) { $score += 6; $sources[$index][] = 'path'; break; }
+            }
+            if ($site['port'] && in_array((int) $site['port'], $ports, true)) { $score += 5; $sources[$index][] = 'port'; }
+            if ($score > 0) $scores[$index] = $score;
+        }
+        if (!$scores) continue;
+        arsort($scores);
+        $indexes = array_keys($scores);
+        if (count($indexes) > 1 && $scores[$indexes[0]] === $scores[$indexes[1]]) continue;
+        $result[$id] = ['site' => $indexes[0], 'sources' => array_values(array_unique($sources[$indexes[0]] ?? ['container']))];
+    }
+    return $result;
+}
+
+function composeProjectNameForDomain(string $domain): string
+{
+    $name = trim(strtolower((string) preg_replace('/[^a-z0-9]+/i', '-', $domain)), '-');
+    return 'panelavo-' . ($name !== '' ? $name : 'site');
+}
+
+function resourceDiskUsage(array $sites): array
+{
+    $directory = '/var/lib/panelavo';
+    if (!is_dir($directory)) @mkdir($directory, 0700, true);
+    $file = $directory . '/resource-disk.json';
+    $cache = is_file($file) ? json_decode((string) @file_get_contents($file), true) : null;
+    if (!is_array($cache)) $cache = ['updatedAt' => 0, 'bytes' => [], 'cursor' => 0, 'complete' => false];
+    if (!is_array($cache['bytes'] ?? null)) $cache['bytes'] = [];
+    $roots = array_values(array_unique(array_filter(array_column($sites, 'root'), 'is_string')));
+    $ttl = !empty($cache['complete']) ? 600 : 15;
+    if (time() - (int) ($cache['updatedAt'] ?? 0) >= $ttl && $roots) {
+        $missing = array_values(array_diff($roots, array_keys(is_array($cache['bytes'] ?? null) ? $cache['bytes'] : [])));
+        $priority = $missing ?: $roots;
+        $cursor = (int) ($cache['cursor'] ?? 0) % count($priority);
+        $priority = array_merge(array_slice($priority, $cursor), array_slice($priority, 0, $cursor));
+        $scanRoots = array_values(array_unique(array_merge($priority, $roots)));
+        $du = is_executable('/usr/bin/du') ? '/usr/bin/du' : '/bin/du';
+        $scan = resourceCommand(array_merge([$du, '-sb', '--one-file-system', '--'], $scanRoots), 3);
+        $completed = 0;
+        foreach (preg_split('/\R/', trim($scan['stdout'])) ?: [] as $line) {
+            if (preg_match('/^(\d+)\s+(.+)$/', $line, $match)) { $cache['bytes'][$match[2]] = (int) $match[1]; $completed++; }
+        }
+        $cache['updatedAt'] = time();
+        $cache['cursor'] = ($cursor + max(1, $completed)) % count($priority);
+        $cache['complete'] = count(array_diff($roots, array_keys($cache['bytes']))) === 0;
+        $temporary = $file . '.' . bin2hex(random_bytes(6)) . '.tmp';
+        if (@file_put_contents($temporary, json_encode($cache), LOCK_EX) !== false) { @chmod($temporary, 0600); @rename($temporary, $file); }
+    }
+    return is_array($cache['bytes'] ?? null) ? $cache['bytes'] : [];
+}
+
+function resourceBucket(): array
+{
+    return ['cpuPercent' => 0.0, 'memoryBytes' => 0, 'processes' => 0];
+}
+
+function addResourceProcess(array &$bucket, array $process): void
+{
+    $bucket['cpuPercent'] += (float) $process['cpuPercent'];
+    $bucket['memoryBytes'] += (int) $process['memoryBytes'];
+    $bucket['processes']++;
+}
+
+function resourceCommandReferencesRoot(string $command, string $root): bool
+{
+    return preg_match('/(?:^|[\s=:\"\'])' . preg_quote($root, '/') . '(?:\/|$|[\s:\"\'])/', $command) === 1;
 }
 
 function serverResources($manager): array
@@ -3542,53 +3737,117 @@ function serverResources($manager): array
     // Current CPU, machine total and per user, from one sampling window.
     $cpuSample = sampleCpu();
 
-    // Aggregate memory and process counts by system user (snapshot data — ps
-    // is fine for these; its %cpu column is NOT used, see sampleCpu).
-    $byUser = [];
-    foreach (preg_split('/\R/', (string) shell_exec('ps -eo user:32,pcpu,pmem,rss --no-headers 2>/dev/null')) ?: [] as $line) {
-        $parts = preg_split('/\s+/', trim($line));
-        if (count($parts) < 4) continue;
-        [$name, $cpu, $memPct, $rss] = $parts;
-        $byUser[$name] ??= ['user' => $name, 'cpuPercent' => 0.0, 'memoryPercent' => 0.0, 'memoryBytes' => 0, 'processes' => 0];
-        $byUser[$name]['memoryPercent'] += (float) $memPct;
-        $byUser[$name]['memoryBytes'] += (int) $rss * 1024;
-        $byUser[$name]['processes']++;
+    $sites = resourceSites($manager);
+    $processes = resourceProcesses($cpuSample['byPid']);
+    $containerSites = resourceContainerSites($sites, $processes);
+    $diskByRoot = resourceDiskUsage($sites);
+
+    $siteIndexesByUser = [];
+    $uidToUser = [];
+    foreach ($sites as $index => $site) {
+        $siteIndexesByUser[$site['user']][] = $index;
+        $account = function_exists('posix_getpwnam') ? posix_getpwnam($site['user']) : false;
+        if (is_array($account)) $uidToUser[(int) $account['uid']] = $site['user'];
     }
-    foreach ($cpuSample['byUser'] as $name => $percent) {
-        $byUser[$name] ??= ['user' => $name, 'cpuPercent' => 0.0, 'memoryPercent' => 0.0, 'memoryBytes' => 0, 'processes' => 0];
-        $byUser[$name]['cpuPercent'] = $percent;
+    $websiteBuckets = array_fill(0, count($sites), null);
+    foreach ($websiteBuckets as $index => $_) $websiteBuckets[$index] = resourceBucket();
+    $websiteSources = array_fill(0, count($sites), []);
+    $shared = resourceBucket();
+    $system = resourceBucket();
+
+    foreach ($processes as $process) {
+        $siteIndex = null;
+        $sources = [];
+        $containerized = preg_match('/(?:docker[-\/]|cri-containerd[-\/])([a-f0-9]{12,64})(?:\.scope)?/i', $process['cgroup'], $match) === 1;
+        if ($containerized) {
+            $containerId = strtolower($match[1]);
+            foreach ($containerSites as $knownId => $matchData) {
+                if (str_starts_with($knownId, $containerId) || str_starts_with($containerId, $knownId)) {
+                    $siteIndex = $matchData['site']; $sources = $matchData['sources']; break;
+                }
+            }
+        }
+        if ($siteIndex === null) {
+            $pathMatches = [];
+            foreach ($sites as $index => $site) {
+                if (!$site['root']) continue;
+                if (($process['cwd'] !== '' && pathIsContained($process['cwd'], $site['root'])) || resourceCommandReferencesRoot($process['cmdline'], $site['root'])) {
+                    $pathMatches[$index] = strlen($site['root']);
+                }
+            }
+            if ($pathMatches) { arsort($pathMatches); $siteIndex = array_key_first($pathMatches); $sources[] = 'path'; }
+        }
+        $siteUser = $uidToUser[$process['uid']] ?? null;
+        if ($siteIndex === null && preg_match('/user-(\d+)\.slice/', $process['cgroup'], $uidMatch)) {
+            $siteUser = $uidToUser[(int) $uidMatch[1]] ?? $siteUser;
+            if ($siteUser) $sources[] = 'container';
+        }
+        // A rootful container's internal UID can numerically equal an
+        // unrelated host site UID. If Docker/path/port evidence did not match
+        // it, keep it in System instead of falling back to that coincidence.
+        if ($siteIndex === null && $containerized && !preg_match('/user-\d+\.slice/', $process['cgroup'])) {
+            addResourceProcess($system, $process);
+            continue;
+        }
+        if ($siteIndex === null && $siteUser) {
+            $candidates = $siteIndexesByUser[$siteUser] ?? [];
+            if (count($candidates) === 1) { $siteIndex = $candidates[0]; $sources[] = 'owner'; }
+            else { addResourceProcess($shared, $process); continue; }
+        }
+        if ($siteIndex === null) addResourceProcess($system, $process);
+        else {
+            addResourceProcess($websiteBuckets[$siteIndex], $process);
+            $websiteSources[$siteIndex] = array_values(array_unique(array_merge($websiteSources[$siteIndex], $sources)));
+        }
     }
 
-    // Site users: attach their domains and home-directory disk usage. du is
-    // expensive, so results are cached for 10 minutes.
-    $domainsByUser = [];
-    foreach ($manager->getRepository(Site::class)->findAll() as $site) {
-        $domainsByUser[$site->getUser()][] = $site->getDomainName();
-    }
-    $cacheFile = '/tmp/.panelavo-du-cache.json';
-    $cache = null;
-    if (is_file($cacheFile) && time() - (int) filemtime($cacheFile) < 600) {
-        $cache = json_decode((string) file_get_contents($cacheFile), true);
-    }
-    if (!is_array($cache)) {
-        $cache = [];
-        foreach (array_keys($domainsByUser) as $siteUser) {
-            if (!preg_match('/^[a-z_][a-z0-9._-]*$/', $siteUser)) continue;
-            $output = shell_exec('timeout 10 du -sb --one-file-system ' . escapeshellarg('/home/' . $siteUser) . ' 2>/dev/null');
-            if ($output && preg_match('/^(\d+)/', trim($output), $m)) $cache[$siteUser] = (int) $m[1];
+    $websites = [];
+    foreach ($sites as $index => $site) {
+        $bucket = $websiteBuckets[$index];
+        $diskShared = false;
+        if ($site['root']) foreach ($sites as $otherIndex => $other) {
+            if ($index === $otherIndex || !$other['root']) continue;
+            if (pathIsContained($site['root'], $other['root']) || pathIsContained($other['root'], $site['root'])) { $diskShared = true; break; }
         }
-        @file_put_contents($cacheFile, json_encode($cache));
+        $websites[] = [
+            'domain' => $site['domain'],
+            'siteUser' => $site['user'],
+            'type' => $site['type'],
+            'cpuPercent' => round($bucket['cpuPercent'], 1),
+            'memoryBytes' => $bucket['memoryBytes'],
+            'processes' => $bucket['processes'],
+            'diskBytes' => $site['root'] !== null && isset($diskByRoot[$site['root']]) ? $diskByRoot[$site['root']] : null,
+            'diskShared' => $diskShared,
+            'sources' => $websiteSources[$index],
+        ];
     }
+    usort($websites, fn($a, $b) => ($b['memoryBytes'] <=> $a['memoryBytes']) ?: strcmp($a['domain'], $b['domain']));
+
+    // Backward-compatible per-user totals for MCP clients released before the
+    // website attribution model. Memory is PSS when the kernel exposes it.
+    $byUser = [];
+    foreach ($processes as $process) {
+        $account = function_exists('posix_getpwuid') ? posix_getpwuid($process['uid']) : false;
+        $name = is_array($account) ? (string) ($account['name'] ?? $process['uid']) : (string) $process['uid'];
+        $byUser[$name] ??= ['user' => $name, 'cpuPercent' => 0.0, 'memoryPercent' => 0.0, 'memoryBytes' => 0, 'processes' => 0];
+        $byUser[$name]['cpuPercent'] += $process['cpuPercent'];
+        $byUser[$name]['memoryBytes'] += $process['memoryBytes'];
+        $byUser[$name]['processes']++;
+    }
+    $domainsByUser = [];
+    foreach ($sites as $site) $domainsByUser[$site['user']][] = $site['domain'];
     foreach ($domainsByUser as $siteUser => $domains) {
         $byUser[$siteUser] ??= ['user' => $siteUser, 'cpuPercent' => 0.0, 'memoryPercent' => 0.0, 'memoryBytes' => 0, 'processes' => 0];
         $byUser[$siteUser]['domains'] = $domains;
-        if (isset($cache[$siteUser])) $byUser[$siteUser]['diskBytes'] = $cache[$siteUser];
+        $uniqueRoots = array_values(array_unique(array_filter(array_map(static fn($site) => $site['user'] === $siteUser ? $site['root'] : null, $sites), 'is_string')));
+        $known = array_filter(array_map(static fn($root) => $diskByRoot[$root] ?? null, $uniqueRoots), 'is_int');
+        if ($known) $byUser[$siteUser]['diskBytes'] = array_sum($known);
     }
     $users = array_values($byUser);
     usort($users, fn($a, $b) => ($b['memoryBytes'] <=> $a['memoryBytes']));
     foreach ($users as &$entry) {
         $entry['cpuPercent'] = round($entry['cpuPercent'], 1);
-        $entry['memoryPercent'] = round($entry['memoryPercent'], 1);
+        $entry['memoryPercent'] = $memTotal ? round($entry['memoryBytes'] / $memTotal * 100, 1) : 0;
     }
     unset($entry);
 
@@ -3620,6 +3879,21 @@ function serverResources($manager): array
             'mount' => '/',
         ],
         'users' => array_slice($users, 0, 40),
+        'websites' => $websites,
+        'shared' => [
+            'cpuPercent' => round($shared['cpuPercent'], 1),
+            'memoryBytes' => $shared['memoryBytes'],
+            'processes' => $shared['processes'],
+        ],
+        'system' => [
+            'cpuPercent' => round($system['cpuPercent'], 1),
+            'memoryBytes' => $system['memoryBytes'],
+            'processes' => $system['processes'],
+        ],
+        'attribution' => [
+            'memoryMethod' => count(array_filter($processes, static fn($process) => !$process['pss'] && $process['memoryBytes'] > 0)) === 0 ? 'pss' : 'rss',
+            'note' => 'Processes are assigned only by Unix ownership, application-root evidence, rootless cgroup ownership, or uniquely matched root-Docker metadata. Unresolved and shared processes are kept separate instead of guessed.',
+        ],
     ];
 }
 

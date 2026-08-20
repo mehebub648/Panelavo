@@ -130,6 +130,26 @@ export interface ServerResourceUser {
   domains?: string[];
 }
 
+export type ServerResourceSource = "owner" | "path" | "container" | "port";
+
+export interface ServerResourceWebsite {
+  domain: string;
+  siteUser: string;
+  type: SiteType;
+  cpuPercent: number;
+  memoryBytes: number;
+  processes: number;
+  diskBytes?: number | null;
+  diskShared: boolean;
+  sources: ServerResourceSource[];
+}
+
+export interface ServerResourceRemainder {
+  cpuPercent: number;
+  memoryBytes: number;
+  processes: number;
+}
+
 export interface ServerResources {
   generatedAt: string;
   uptimeSeconds: number;
@@ -155,6 +175,13 @@ export interface ServerResources {
     mount: string;
   };
   users: ServerResourceUser[];
+  websites: ServerResourceWebsite[];
+  shared: ServerResourceRemainder;
+  system: ServerResourceRemainder;
+  attribution: {
+    memoryMethod: "pss" | "rss";
+    note: string;
+  };
 }
 
 export interface ResourceHistoryPoint {

@@ -14,10 +14,14 @@ import type {
 } from "@/types/cloudpanel";
 import { isPanelAdmin } from "@/server/auth/panel-roles";
 import { getDatabaseManagerUrl } from "@/server/sites/database-manager";
-import { getSiteRootOverride } from "@/server/sites/site-root-overlay";
+import {
+  getSiteRootOverride,
+  getSiteRootOverrides,
+} from "@/server/sites/site-root-overlay";
+import { getSiteTypeOverrides } from "@/server/sites/site-type-overlay";
 import { AppError } from "./errors";
 
-export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 10;
+export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 11;
 export const CLOUDPANEL_BROKER_PATH =
   "/usr/local/libexec/panelavo/panelavo-broker";
 
@@ -896,8 +900,17 @@ export class LiveCloudPanelClient implements CloudPanelClient {
   }
 
   async getServerResources(session: CloudPanelSession) {
+    const [siteRoots, siteTypes] = await Promise.all([
+      getSiteRootOverrides(),
+      getSiteTypeOverrides(),
+    ]);
     const result = await this.bridge(
-      { action: "server-resources", username: this.sessionUser(session) },
+      {
+        action: "server-resources",
+        username: this.sessionUser(session),
+        siteRoots,
+        siteTypes,
+      },
       60_000,
     );
     if (!result.ok || !result.data)

@@ -92,6 +92,8 @@ The application cookie is opaque, `HttpOnly`, `SameSite=Strict`, scoped to `/`, 
 
 Super Admins can inspect the retained audit trail at `/audit`. The page and `/api/audit` expose bounded filters for user, site/target, action, outcome, and date range, paginate newest-first, and verify the ledger's content hashes, links, and persisted head before showing the integrity badge. The existing redaction policy applies before events reach the ledger.
 
+Managers and Super Admins can open `/resources` without waiting for the privileged resource snapshot: the route renders first and fills in the live measurements separately. Website rows support search, runtime filtering, active-only filtering, sorting, and pagination. CPU is sampled per process; memory uses proportional set size (PSS) when available so shared pages are divided instead of counted repeatedly; disk covers the configured application root and explicitly marks roots shared by multiple website records. Panelavo attributes site-user, rootless-container, root-Docker, and root-owned application processes only when Unix ownership, cgroup, application-path, Compose, or upstream-port evidence identifies one website. Shared or unresolved work remains in separate Shared and System totals rather than being divided or guessed; for example, a common database engine stays System when the operating system cannot prove which website caused its current work.
+
 ## Tested CloudPanel CLI integration
 
 The live adapter was validated against CloudPanel frontend asset version **2.5.4** and CLI version **6.0.8**. All CloudPanel access is local (CLI + bridge); no CloudPanel URL needs to be configured.

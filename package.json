@@ -1,6 +1,6 @@
 {
   "name": "panelavo",
-  "version": "0.1.85",
+  "version": "0.1.86",
   "private": true,
   "engines": {
     "node": ">=20"
@@ -62,6 +62,6 @@
   },
   "packageManager": "pnpm@10.12.1",
   "panelavo": {
-    "brokerProtocolVersion": 10
+    "brokerProtocolVersion": 11
   }
 }

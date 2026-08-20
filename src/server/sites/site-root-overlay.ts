@@ -20,6 +20,10 @@ export async function getSiteRootOverride(domain: string) {
   return (await store.load()).roots[domain.toLowerCase()];
 }
 
+export async function getSiteRootOverrides() {
+  return { ...(await store.load()).roots };
+}
+
 export async function setSiteRootOverride(domain: string, root: string) {
   const value = await store.load();
   value.roots[domain.toLowerCase()] = root;
