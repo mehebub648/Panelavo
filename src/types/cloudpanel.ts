@@ -40,6 +40,26 @@ export type SiteSectionExecutionOptions = {
   signal?: AbortSignal;
 };
 
+export type SiteReleaseOperation =
+  | { action: "list" }
+  | {
+      action: "deploy";
+      artifactPath: string;
+      artifactName: string;
+      expectedSha256: string;
+      releaseId: string;
+      stripComponents: 0 | 1;
+      plan: "node" | "static-build" | "php" | "python";
+      requiredPaths: string[];
+      healthPath: string;
+    }
+  | {
+      action: "rollback";
+      releaseId: string;
+      plan: "node" | "static-build" | "php" | "python";
+      healthPath: string;
+    };
+
 export interface CloudPanelSite {
   id: string;
   domain: string;
@@ -328,6 +348,12 @@ export interface CloudPanelClient {
     domain: string,
     section: string,
     input: Record<string, unknown>,
+    execution?: SiteSectionExecutionOptions,
+  ): Promise<unknown>;
+  manageSiteRelease(
+    session: CloudPanelSession,
+    domain: string,
+    operation: SiteReleaseOperation,
     execution?: SiteSectionExecutionOptions,
   ): Promise<unknown>;
   getServerResources(session: CloudPanelSession): Promise<ServerResources>;

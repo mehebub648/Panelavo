@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod4";
 import { deployHookCommands } from "@/lib/deploy-hooks";
@@ -18,6 +19,7 @@ import {
 } from "@/server/mcp/confirmation";
 import {
   beginArtifactUpload,
+  completedArtifactPath,
   deleteArtifactUpload,
   getArtifactUpload,
 } from "@/server/mcp/artifacts";
@@ -249,6 +251,27 @@ const startJobToolSchema = z.object({
     jobOperationSchema,
   ]),
 });
+
+const managedReleasePlanSchema = z.enum([
+  "node",
+  "static-build",
+  "php",
+  "python",
+]);
+
+const healthPathSchema = z
+  .string()
+  .min(1)
+  .max(500)
+  .startsWith("/")
+  .regex(/^[^\x00-\x1f\x7f]*$/)
+  .describe("A public HTTPS path that must return 2xx or 3xx after activation.");
+
+const requiredReleasePathSchema = z
+  .string()
+  .min(1)
+  .max(240)
+  .regex(/^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/);
 
 const beginArtifactUploadToolSchema = z.object({
   domain: domainSchema,
@@ -933,6 +956,230 @@ export function createPanelavoMcpServer(actor: PanelActor) {
           { type: "job", id: jobId },
           { domain: job.domain },
           () => cancelMcpJob(actor, jobId),
+        );
+      },
+    );
+
+    server.registerTool(
+      "panelavo_list_site_releases",
+      {
+        title: "List managed website releases",
+        description:
+          "List versioned artifact releases for one writable website and identify the active atomic release pointer.",
+        inputSchema: z.object({ domain: domainSchema }),
+        annotations: {
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
+      },
+      async ({ domain }) =>
+        runTool(
+          actor,
+          "panelavo_list_site_releases",
+          { type: "site", id: domain },
+          {},
+          async () => {
+            const { client } = await writableSiteForActor(actor, domain);
+            return client.manageSiteRelease(actor.cloudPanel, domain, {
+              action: "list",
+            });
+          },
+        ),
+    );
+
+    server.registerTool(
+      "panelavo_deploy_artifact_release",
+      {
+        title: "Deploy an atomic artifact release",
+        description:
+          "Stage a completed tar.gz artifact as a versioned code release, validate required paths and the selected server-owned deployment plan, atomically activate it, verify a public HTTPS health path, and automatically restore the previous release on failure. Existing environment files are preserved. Docker Compose is intentionally excluded until its bind mounts can use the data-aware contract.",
+        inputSchema: z.object({
+          domain: domainSchema,
+          artifactId: artifactIdSchema,
+          stripComponents: z.union([z.literal(0), z.literal(1)]).default(0),
+          plan: managedReleasePlanSchema,
+          requiredPaths: z.array(requiredReleasePathSchema).max(20).default([]),
+          healthPath: healthPathSchema.default("/"),
+          timeoutSeconds: z.number().int().min(30).max(1_800).default(1_800),
+        }),
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: true,
+          idempotentHint: false,
+          openWorldHint: true,
+        },
+      },
+      async (
+        {
+          domain,
+          artifactId,
+          stripComponents,
+          plan,
+          requiredPaths,
+          healthPath,
+          timeoutSeconds,
+        },
+        context,
+      ) => {
+        const upload = await getArtifactUpload(actor, artifactId);
+        if (upload.domain !== domain.toLowerCase())
+          throw new AppError(
+            "INVALID_REQUEST",
+            "That artifact belongs to a different website.",
+            409,
+          );
+        await writableSiteForActor(actor, domain);
+        const argumentsValue = {
+          domain,
+          artifactId,
+          stripComponents,
+          plan,
+          requiredPaths,
+          healthPath,
+          timeoutSeconds,
+        };
+        const confirmation = await requireSiteActionConfirmation(
+          actor,
+          confirmationManager,
+          {
+            context,
+            domain,
+            tool: "panelavo_deploy_artifact_release",
+            arguments: argumentsValue,
+            message: `Deploy artifact ${upload.name} to ${domain} with an atomic ${plan} release and require ${healthPath} to stay healthy? Panelavo will automatically restore the previous release if deployment or health verification fails.`,
+          },
+        );
+        if (confirmation) return confirmation;
+        return runTool(
+          actor,
+          "panelavo_deploy_artifact_release",
+          { type: "site", id: domain },
+          { artifactId, plan },
+          async () => {
+            const currentUpload = await getArtifactUpload(actor, artifactId);
+            if (currentUpload.domain !== domain.toLowerCase())
+              throw new AppError(
+                "INVALID_REQUEST",
+                "That artifact belongs to a different website.",
+                409,
+              );
+            const { client } = await writableSiteForActor(actor, domain);
+            const releaseId = randomUUID();
+            return startMcpJob(
+              actor,
+              {
+                domain,
+                kind: `atomic ${plan} artifact release`,
+                timeoutSeconds,
+              },
+              async ({ signal, log }) => {
+                await log("Validating and staging the checksum-bound artifact.");
+                const value = await client.manageSiteRelease(
+                  actor.cloudPanel,
+                  domain,
+                  {
+                    action: "deploy",
+                    artifactPath: completedArtifactPath(currentUpload),
+                    artifactName: currentUpload.name,
+                    expectedSha256: currentUpload.expectedSha256,
+                    releaseId,
+                    stripComponents,
+                    plan,
+                    requiredPaths,
+                    healthPath,
+                  },
+                  { signal },
+                );
+                await log("The release passed its deployment and HTTPS health gates.");
+                return value;
+              },
+            );
+          },
+        );
+      },
+    );
+
+    server.registerTool(
+      "panelavo_rollback_site_release",
+      {
+        title: "Roll back a managed website release",
+        description:
+          "Atomically activate one earlier managed release, rerun its server-owned deployment plan, verify its public HTTPS health path, and restore the current release if the rollback target fails.",
+        inputSchema: z.object({
+          domain: domainSchema,
+          releaseId: z.string().regex(/^[A-Za-z0-9._-]{1,100}$/),
+          plan: managedReleasePlanSchema,
+          healthPath: healthPathSchema.default("/"),
+          timeoutSeconds: z.number().int().min(30).max(1_800).default(1_800),
+        }),
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: true,
+          idempotentHint: false,
+          openWorldHint: true,
+        },
+      },
+      async (
+        { domain, releaseId, plan, healthPath, timeoutSeconds },
+        context,
+      ) => {
+        const { client } = await writableSiteForActor(actor, domain);
+        const releases = (await client.manageSiteRelease(
+          actor.cloudPanel,
+          domain,
+          { action: "list" },
+        )) as { items?: Array<{ id?: string; current?: boolean }> };
+        const target = releases.items?.find((item) => item.id === releaseId);
+        if (!target || target.current)
+          throw new AppError(
+            "INVALID_REQUEST",
+            target?.current
+              ? "That release is already active."
+              : "Choose a release returned by the release-list tool.",
+            409,
+          );
+        const argumentsValue = {
+          domain,
+          releaseId,
+          plan,
+          healthPath,
+          timeoutSeconds,
+        };
+        const confirmation = await requireSiteActionConfirmation(
+          actor,
+          confirmationManager,
+          {
+            context,
+            domain,
+            tool: "panelavo_rollback_site_release",
+            arguments: argumentsValue,
+            message: `Roll ${domain} back to release ${releaseId}, rerun the ${plan} plan, and require ${healthPath} to pass? Panelavo will restore the current release if the target fails.`,
+          },
+        );
+        if (confirmation) return confirmation;
+        return runTool(
+          actor,
+          "panelavo_rollback_site_release",
+          { type: "site", id: domain },
+          { releaseId, plan },
+          () =>
+            startMcpJob(
+              actor,
+              { domain, kind: `rollback to ${releaseId}`, timeoutSeconds },
+              async ({ signal, log }) => {
+                await log("Validating the rollback target and deployment plan.");
+                const value = await client.manageSiteRelease(
+                  actor.cloudPanel,
+                  domain,
+                  { action: "rollback", releaseId, plan, healthPath },
+                  { signal },
+                );
+                await log("The rollback target passed its HTTPS health gate.");
+                return value;
+              },
+            ),
         );
       },
     );

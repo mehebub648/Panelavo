@@ -29,7 +29,7 @@ use App\Site\Updater\StaticSite as StaticSiteUpdater;
 use Symfony\Component\Dotenv\Dotenv;
 
 const CLOUDPANEL_ROOT = '/home/clp/htdocs/app/files';
-const PANELAVO_BROKER_PROTOCOL_VERSION = 14;
+const PANELAVO_BROKER_PROTOCOL_VERSION = 15;
 const PANELAVO_BROKER_MAX_INPUT_BYTES = 100663296;
 const PANELAVO_ROOTLESS_MIGRATION_ROOT = '/var/lib/panelavo/rootless-migrations';
 const PANELAVO_ROOTLESS_MIGRATION_TTL = 86400;
@@ -4509,6 +4509,322 @@ function gitSection(Site $site, ?array $selectedChange = null, ?string $notice =
     return $data;
 }
 
+// Managed artifact releases keep immutable trees outside the configured
+// application root and make that root one atomic symlink pointer. The first
+// activation adopts the existing directory as the initial rollback release.
+// Docker Compose is deliberately excluded here: bind mounts require the
+// separate data-aware deployment contract rather than a code-only swap.
+function managedReleasePaths(Site $site): array
+{
+    $user = (string) $site->getUser();
+    $base = realpath('/home/' . $user . '/htdocs');
+    $relative = configuredSiteRootDirectory($site);
+    if (!$base || $relative === '' || str_starts_with($relative, '.panelavo-releases')) {
+        respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => 'Managed releases require an application root below the site htdocs directory.']);
+    }
+    $root = $base . '/' . $relative;
+    if (!pathIsContained($root, $base)) invalidBrokerRequest();
+    $key = substr(hash('sha256', $relative), 0, 24);
+    $managed = $base . '/.panelavo-releases/' . $key;
+    return [
+        'base' => $base,
+        'relative' => $relative,
+        'root' => $root,
+        'managed' => $managed,
+        'releases' => $managed . '/releases',
+    ];
+}
+
+function safeReleaseRelativePath(mixed $value): string
+{
+    if (!is_string($value) || strlen($value) < 1 || strlen($value) > 240 || str_contains($value, "\0")) invalidBrokerRequest();
+    $path = trim(str_replace('\\', '/', $value), '/');
+    if ($path === '') invalidBrokerRequest();
+    foreach (explode('/', $path) as $part) {
+        if ($part === '' || $part === '.' || $part === '..' || preg_match('/^[A-Za-z0-9._-]+$/', $part) !== 1) invalidBrokerRequest();
+    }
+    return $path;
+}
+
+function validatePanelavoArtifact(array $operation): string
+{
+    $path = brokerString($operation, 'artifactPath', 1, 1024);
+    $name = brokerString($operation, 'artifactName', 1, 255, '/^[^\/\\\\\x00]+\.(tar\.gz|tgz)$/i');
+    if (basename($name) !== $name) invalidBrokerRequest();
+    $expected = strtolower(brokerString($operation, 'expectedSha256', 64, 64, '/^[a-fA-F0-9]{64}$/'));
+    $real = realpath($path);
+    $callerUid = (int) (getenv('PANELAVO_CALLER_UID') ?: -1);
+    $account = function_exists('posix_getpwuid') ? posix_getpwuid($callerUid) : false;
+    $callerHome = is_array($account) ? realpath('/home/' . (string) ($account['name'] ?? '') . '/htdocs') : false;
+    if (!$real || !$callerHome || !is_file($real) || is_link($path)
+        || @fileowner($real) !== $callerUid
+        || !str_starts_with($real, $callerHome . '/')
+        || preg_match('#/\.data/mcp-artifacts/[0-9a-f-]{36}\.part$#i', $real) !== 1) {
+        respond(['ok' => false, 'code' => 'FORBIDDEN']);
+    }
+    $actual = hash_file('sha256', $real);
+    if (!is_string($actual) || !hash_equals($expected, $actual)) {
+        respond(['ok' => false, 'code' => 'INVALID_REQUEST', 'message' => 'The completed artifact no longer matches its declared SHA-256 checksum.']);
+    }
+    return $real;
+}
+
+function assertReleaseRootHasNoMounts(string $root): void
+{
+    $normalized = normalizeAbsolutePath($root);
+    $mountInfo = @file('/proc/self/mountinfo', FILE_IGNORE_NEW_LINES) ?: [];
+    foreach ($mountInfo as $line) {
+        $parts = explode(' ', $line);
+        if (count($parts) < 5) continue;
+        $mount = str_replace(['\\040', '\\011', '\\012', '\\134'], [' ', "\t", "\n", '\\'], $parts[4]);
+        $mount = normalizeAbsolutePath($mount);
+        if ($normalized && $mount && ($mount === $normalized || str_starts_with($mount, $normalized . '/'))) {
+            respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => 'Managed code releases cannot adopt an application root containing a mounted filesystem.']);
+        }
+    }
+}
+
+function inspectReleaseArchive(Site $site, string $artifact, int $stripComponents, string $cwd, int $maximumBytes): void
+{
+    $names = runSiteCommand($site, ['/usr/bin/tar', 'tzf', $artifact], 300, true, [], $cwd);
+    $listing = runSiteCommand($site, ['/usr/bin/tar', 'tvzf', $artifact], 300, true, [], $cwd);
+    if ($names['code'] !== 0 || $listing['code'] !== 0
+        || str_contains($names['stdout'], '[stdout truncated by Panelavo]')
+        || str_contains($listing['stdout'], '[stdout truncated by Panelavo]')) {
+        respond(['ok' => false, 'code' => 'INVALID_REQUEST', 'message' => 'The tar archive is invalid or too large to validate safely.']);
+    }
+    $top = null;
+    $count = 0;
+    foreach (preg_split('/\R/', trim($names['stdout'])) ?: [] as $entry) {
+        if ($entry === '') continue;
+        $count++;
+        if ($count > 10000) respond(['ok' => false, 'code' => 'INVALID_REQUEST', 'message' => 'Managed release archives are limited to 10,000 entries.']);
+        $normalized = str_replace('\\', '/', $entry);
+        if (str_starts_with($normalized, '/') || str_contains($normalized, "\0") || preg_match('/[\x00-\x1f\x7f]/', $normalized)) invalidBrokerRequest();
+        $parts = array_values(array_filter(explode('/', trim($normalized, '/')), static fn(string $part): bool => $part !== '' && $part !== '.'));
+        if (!$parts) continue;
+        foreach ($parts as $part) if ($part === '..') invalidBrokerRequest();
+        if ($stripComponents === 1) {
+            if ($top === null) $top = $parts[0];
+            if ($parts[0] !== $top) respond(['ok' => false, 'code' => 'INVALID_REQUEST', 'message' => 'stripComponents=1 requires one common top-level archive folder.']);
+        }
+    }
+    if ($count === 0) invalidBrokerRequest();
+    $unpackedBytes = 0;
+    foreach (preg_split('/\R/', trim($listing['stdout'])) ?: [] as $entry) {
+        if ($entry !== '' && !in_array($entry[0], ['-', 'd'], true)) {
+            respond(['ok' => false, 'code' => 'INVALID_REQUEST', 'message' => 'Managed releases reject archive links and special filesystem entries.']);
+        }
+        if ($entry === '') continue;
+        if (preg_match('/^\S+\s+\S+\s+(\d+)\s+/', trim($entry), $match) !== 1) invalidBrokerRequest();
+        $unpackedBytes += (int) $match[1];
+        if ($unpackedBytes > $maximumBytes) {
+            respond(['ok' => false, 'code' => 'INVALID_REQUEST', 'message' => 'The unpacked release would exceed the safe storage allowance.']);
+        }
+    }
+}
+
+function preserveReleaseEnvironment(string $current, string $staged): void
+{
+    foreach (PANELAVO_ENV_FILES as $name) {
+        $source = $current . '/' . $name;
+        $target = $staged . '/' . $name;
+        if (!is_file($source) || is_link($source) || (int) @filesize($source) > 262144) continue;
+        if (is_link($target) || (file_exists($target) && !is_file($target))) invalidBrokerRequest();
+        if (!@copy($source, $target)) respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED', 'message' => 'Could not preserve the existing environment file for the staged release.']);
+        @chmod($target, @fileperms($source) & 0777);
+    }
+}
+
+function resolveManagedReleasePlan(Site $site, User $user, string $relative, string $plan): array
+{
+    global $input;
+    $previous = $input['applicationRootDirectory'] ?? null;
+    $hadPrevious = array_key_exists('applicationRootDirectory', $input);
+    $input['applicationRootDirectory'] = $relative;
+    try {
+        ensureSiteProjectAccess($site);
+        $state = operationsState($site, $user);
+        return resolveDeploymentPlan($site, $state, $plan);
+    } finally {
+        if ($hadPrevious) $input['applicationRootDirectory'] = $previous;
+        else unset($input['applicationRootDirectory']);
+    }
+}
+
+function switchManagedRelease(string $root, string $target): bool
+{
+    $temporary = dirname($root) . '/.panelavo-release-pointer-' . bin2hex(random_bytes(8));
+    if (!@symlink($target, $temporary) || !@rename($temporary, $root)) {
+        @unlink($temporary);
+        return false;
+    }
+    return true;
+}
+
+function currentManagedRelease(array $paths): ?string
+{
+    if (!is_link($paths['root'])) return null;
+    $target = realpath($paths['root']);
+    if (!$target || !str_starts_with($target, $paths['releases'] . '/') || dirname($target) !== $paths['releases']) {
+        respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => 'The application root is a symlink not managed by Panelavo.']);
+    }
+    return $target;
+}
+
+function runManagedReleasePlan(Site $site, array $steps, string $healthPath): array
+{
+    $results = executeOperationSteps($site, $steps);
+    $last = end($results) ?: ['exitCode' => 1, 'timedOut' => false, 'output' => 'No deployment step ran.'];
+    $health = ['code' => 1, 'stdout' => '', 'stderr' => 'Deployment steps failed before the health check.'];
+    if ((int) $last['exitCode'] === 0) {
+        $domain = (string) $site->getDomainName();
+        $health = runSiteCommand($site, [
+            'curl', '--fail', '--silent', '--show-error', '--output', '/dev/null',
+            '--retry', '12', '--retry-delay', '5', '--retry-all-errors',
+            '--connect-timeout', '3', '--max-time', '90',
+            '--resolve', $domain . ':443:127.0.0.1',
+            'https://' . $domain . $healthPath,
+        ], 120);
+    }
+    return ['steps' => $results, 'health' => $health, 'ok' => (int) $last['exitCode'] === 0 && $health['code'] === 0];
+}
+
+function listManagedReleases(Site $site): array
+{
+    $paths = managedReleasePaths($site);
+    $current = is_link($paths['root']) ? currentManagedRelease($paths) : null;
+    $items = [];
+    foreach (glob($paths['releases'] . '/*', GLOB_ONLYDIR) ?: [] as $directory) {
+        $id = basename($directory);
+        if (preg_match('/^[A-Za-z0-9._-]{1,100}$/', $id) !== 1) continue;
+        $items[] = [
+            'id' => $id,
+            'current' => $current !== null && hash_equals($current, (string) realpath($directory)),
+            'createdAt' => gmdate(DATE_ATOM, (int) (@filemtime($directory) ?: time())),
+        ];
+    }
+    usort($items, static fn(array $a, array $b): int => strcmp($b['createdAt'], $a['createdAt']));
+    return ['managed' => is_link($paths['root']), 'items' => $items];
+}
+
+function retainManagedReleases(array $paths, string $current, int $retain = 10): void
+{
+    $directories = glob($paths['releases'] . '/*', GLOB_ONLYDIR) ?: [];
+    usort($directories, static fn(string $a, string $b): int => ((int) @filemtime($b)) <=> ((int) @filemtime($a)));
+    $kept = 0;
+    foreach ($directories as $directory) {
+        $real = realpath($directory);
+        if (!$real || dirname($real) !== $paths['releases']) continue;
+        if (hash_equals($real, $current)) continue;
+        if ($kept < max(0, $retain - 1)) {
+            $kept++;
+            continue;
+        }
+        deleteTree($real);
+    }
+}
+
+function manageArtifactRelease(Site $site, User $user, array $operation): array
+{
+    $action = (string) ($operation['action'] ?? '');
+    if ($action === 'list') return listManagedReleases($site);
+    $paths = managedReleasePaths($site);
+    $releaseId = brokerString($operation, 'releaseId', 1, 100, '/^[A-Za-z0-9._-]+$/');
+    $plan = brokerString($operation, 'plan', 1, 32, '/^(node|static-build|php|python)$/');
+    $healthPath = brokerString($operation, 'healthPath', 1, 500, '#^/[A-Za-z0-9._~!$&\'()*+,;=:@%/-]*(\?[A-Za-z0-9._~!$&\'()*+,;=:@%/?-]*)?$#');
+    if (!is_dir($paths['releases']) && !@mkdir($paths['releases'], 0750, true)) respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED']);
+    foreach ([$paths['base'] . '/.panelavo-releases', $paths['managed'], $paths['releases']] as $directory) {
+        @chown($directory, $site->getUser());
+        @chgrp($directory, $site->getUser());
+        @chmod($directory, 0750);
+    }
+    $lock = @fopen('/var/lock/panelavo-operations-' . $site->getUser() . '.lock', 'c');
+    if (!$lock || !flock($lock, LOCK_EX | LOCK_NB)) respond(['ok' => false, 'code' => 'OPERATION_BUSY']);
+    try {
+        if ($action === 'deploy') {
+            if (!preg_match('/^[0-9a-f-]{36}$/i', $releaseId)) invalidBrokerRequest();
+            $artifact = validatePanelavoArtifact($operation);
+            $strip = $operation['stripComponents'] ?? null;
+            if (!in_array($strip, [0, 1], true)) invalidBrokerRequest();
+            $destination = $paths['releases'] . '/' . $releaseId;
+            if (file_exists($destination) || is_link($destination)) invalidBrokerRequest();
+            $currentReal = realpath($paths['root']);
+            if (!$currentReal || !is_dir($currentReal)) respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => 'The current application root must exist before its first managed release.']);
+            if (!is_link($paths['root'])) assertReleaseRootHasNoMounts($paths['root']);
+            $freeBytes = (int) (@disk_free_space($paths['releases']) ?: 0);
+            $maximumBytes = min(10 * 1024 * 1024 * 1024, (int) floor($freeBytes * 0.7));
+            if ($maximumBytes < 1024 * 1024) respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED', 'message' => 'There is not enough free storage to stage this release safely.']);
+            inspectReleaseArchive($site, $artifact, $strip, $currentReal, $maximumBytes);
+            $staging = $paths['releases'] . '/.staging-' . $releaseId;
+            if (!@mkdir($staging, 0700)) respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED']);
+            $extract = runSiteCommand($site, array_merge(
+                ['/usr/bin/tar', 'xzf', $artifact, '--no-same-owner', '--no-same-permissions'],
+                $strip === 1 ? ['--strip-components=1'] : [],
+                ['-C', $staging],
+            ), 900, true, [], $staging);
+            if ($extract['code'] !== 0) { deleteTree($staging); respond(['ok' => false, 'code' => 'INVALID_REQUEST', 'message' => 'The validated release archive could not be extracted.']); }
+            $entries = array_values(array_diff(@scandir($staging) ?: [], ['.', '..']));
+            if (!$entries) { deleteTree($staging); invalidBrokerRequest(); }
+            foreach ((array) ($operation['requiredPaths'] ?? []) as $required) {
+                $relative = safeReleaseRelativePath($required);
+                if (!file_exists($staging . '/' . $relative) && !is_link($staging . '/' . $relative)) {
+                    deleteTree($staging);
+                    respond(['ok' => false, 'code' => 'INVALID_REQUEST', 'message' => 'A required release path is missing: ' . $relative]);
+                }
+            }
+            preserveReleaseEnvironment($currentReal, $staging);
+            @mkdir($staging . '/.well-known/acme-challenge', 0755, true);
+            $ownership = runSiteCommand($site, ['/usr/bin/chown', '-R', '--', $site->getUser() . ':' . $site->getUser(), $staging], 900, true, [], $staging);
+            if ($ownership['code'] !== 0 || !@rename($staging, $destination)) { deleteTree($staging); respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED']); }
+        } elseif ($action === 'rollback') {
+            $destination = realpath($paths['releases'] . '/' . $releaseId);
+            if (!$destination || dirname($destination) !== $paths['releases'] || !is_dir($destination)) invalidBrokerRequest();
+            if (!is_link($paths['root'])) respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => 'This website has not adopted managed releases yet.']);
+        } else invalidBrokerRequest();
+
+        $destination = (string) realpath($destination);
+        $destinationRelative = substr($destination, strlen($paths['base']) + 1);
+        $steps = resolveManagedReleasePlan($site, $user, $destinationRelative, $plan);
+        $previous = currentManagedRelease($paths);
+        if ($previous === null) {
+            $legacyId = 'legacy-' . gmdate('YmdHis') . '-' . bin2hex(random_bytes(4));
+            $previous = $paths['releases'] . '/' . $legacyId;
+            if (!@rename($paths['root'], $previous)) respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED', 'message' => 'Could not adopt the existing application as the rollback release.']);
+            if (!switchManagedRelease($paths['root'], $destination)) {
+                @rename($previous, $paths['root']);
+                respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED', 'message' => 'Could not atomically activate the release pointer.']);
+            }
+        } else {
+            if (hash_equals($previous, $destination)) invalidBrokerRequest();
+            if (!switchManagedRelease($paths['root'], $destination)) respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED', 'message' => 'Could not atomically activate the release pointer.']);
+        }
+        $run = runManagedReleasePlan($site, $steps, $healthPath);
+        if (!$run['ok']) {
+            if (!switchManagedRelease($paths['root'], $previous)) {
+                respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED', 'message' => 'The release failed and the previous release pointer could not be restored. Inspect the website immediately.']);
+            }
+            $previousRelative = substr($previous, strlen($paths['base']) + 1);
+            $rollbackSteps = resolveManagedReleasePlan($site, $user, $previousRelative, $plan);
+            $rollback = runManagedReleasePlan($site, $rollbackSteps, $healthPath);
+            respond([
+                'ok' => false,
+                'code' => 'SITE_UPDATE_FAILED',
+                'message' => $rollback['ok']
+                    ? 'The release failed its deployment or health gate and Panelavo restored the previous release.'
+                    : 'The release failed and automatic rollback also failed. Inspect the website immediately.',
+            ]);
+        }
+        ensureSiteProjectAccess($site);
+        retainManagedReleases($paths, $destination);
+        $listing = listManagedReleases($site);
+        return ['releaseId' => $releaseId, 'activated' => true, 'run' => $run, 'releases' => $listing['items']];
+    } finally {
+        flock($lock, LOCK_UN);
+        fclose($lock);
+    }
+}
+
 function runComposePortSelfTest(): never
 {
     $config = ['services' => [
@@ -5659,6 +5975,17 @@ try {
             } else respond(['ok' => false, 'code' => 'INVALID_ACTION']);
             $manager->flush();
             respond(['ok' => true]);
+
+        case 'site-release':
+            $site = requireSiteWriter(
+                $manager,
+                $user,
+                brokerDomainValue($input['domain'] ?? null),
+                !empty($input['panelAdmin']),
+            );
+            $operation = $input['operation'] ?? null;
+            if (!is_array($operation) || count($operation) > 12) invalidBrokerRequest();
+            respond(['ok' => true, 'data' => manageArtifactRelease($site, $user, $operation)]);
 
         case 'update-site':
             $site = authorizedSite($manager, $user, (string) ($input['domain'] ?? ''));

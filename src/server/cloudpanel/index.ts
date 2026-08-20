@@ -184,6 +184,10 @@ function withPanelRoles(inner: CloudPanelClient): CloudPanelClient {
         panelAdmin,
       );
     },
+    manageSiteRelease: async (session, domain, operation, execution) => {
+      assertNotPanelSelf(domain);
+      return inner.manageSiteRelease(session, domain, operation, execution);
+    },
     getServerResources: inner.getServerResources.bind(inner),
     getServerStorage: inner.getServerStorage.bind(inner),
     reclaimServerStorage: inner.reclaimServerStorage.bind(inner),

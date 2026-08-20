@@ -81,6 +81,7 @@ const WRITE_TOOLS = [
   "panelavo_create_backup",
   "panelavo_create_linked_service",
   "panelavo_delete_artifact_upload",
+  "panelavo_deploy_artifact_release",
   "panelavo_delete_site",
   "panelavo_deploy_site",
   "panelavo_execute_terminal_command",
@@ -91,8 +92,10 @@ const WRITE_TOOLS = [
   "panelavo_manage_site_domains",
   "panelavo_manage_site_section",
   "panelavo_list_site_jobs",
+  "panelavo_list_site_releases",
   "panelavo_point_site_dns",
   "panelavo_run_site_operation",
+  "panelavo_rollback_site_release",
   "panelavo_start_site_job",
   "panelavo_update_site",
 ];
