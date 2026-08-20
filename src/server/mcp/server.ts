@@ -273,6 +273,12 @@ const requiredReleasePathSchema = z
   .max(240)
   .regex(/^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/);
 
+const siteRecoveryActionSchema = z.enum([
+  "repair-site-acl",
+  "restart-rootless-runtime",
+  "recover-rootless-migration",
+]);
+
 const beginArtifactUploadToolSchema = z.object({
   domain: domainSchema,
   name: z
@@ -1180,6 +1186,94 @@ export function createPanelavoMcpServer(actor: PanelActor) {
                 return value;
               },
             ),
+        );
+      },
+    );
+
+    server.registerTool(
+      "panelavo_diagnose_site_proxy",
+      {
+        title: "Diagnose a website proxy",
+        description:
+          "Run Panelavo's bounded upstream check against the exact reverse-proxy URL configured in CloudPanel. No browser-supplied URL or shell command is accepted.",
+        inputSchema: z.object({ domain: domainSchema }),
+        annotations: {
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: true,
+        },
+      },
+      async ({ domain }) =>
+        runTool(
+          actor,
+          "panelavo_diagnose_site_proxy",
+          { type: "site", id: domain },
+          {},
+          async () => {
+            const { client } = await writableSiteForActor(actor, domain);
+            return client.manageSiteRecovery(actor.cloudPanel, domain, {
+              action: "diagnose-proxy",
+            });
+          },
+        ),
+    );
+
+    server.registerTool(
+      "panelavo_run_site_recovery",
+      {
+        title: "Run a controlled website recovery",
+        description:
+          "Run one strict allow-listed recovery: reapply the site-user ACL invariant, restart only this site's private rootless Docker runtime, or recover a journaled rootful-to-rootless migration. Migration recovery remains live Super Admin-only in the broker.",
+        inputSchema: z.object({
+          domain: domainSchema,
+          action: siteRecoveryActionSchema,
+          timeoutSeconds: z.number().int().min(30).max(1_800).default(1_800),
+        }),
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: true,
+          idempotentHint: true,
+          openWorldHint: true,
+        },
+      },
+      async ({ domain, action, timeoutSeconds }, context) => {
+        await writableSiteForActor(actor, domain);
+        const confirmation = await requireSiteActionConfirmation(
+          actor,
+          confirmationManager,
+          {
+            context,
+            domain,
+            tool: "panelavo_run_site_recovery",
+            arguments: { domain, action, timeoutSeconds },
+            message: `Allow Panelavo to run the controlled ${action} recovery for ${domain}? The root broker will reject this unless the live role and site state permit that exact operation.`,
+          },
+        );
+        if (confirmation) return confirmation;
+        return runTool(
+          actor,
+          "panelavo_run_site_recovery",
+          { type: "site", id: domain },
+          { action },
+          async () => {
+            const { client } = await writableSiteForActor(actor, domain);
+            return startMcpJob(
+              actor,
+              { domain, kind: action, timeoutSeconds },
+              async ({ signal, log }) => {
+                await log(`Running the allow-listed ${action} broker recovery.`);
+                const value = await client.manageSiteRecovery(
+                  actor.cloudPanel,
+                  domain,
+                  { action },
+                  { signal },
+                );
+                await log("The controlled recovery finished.");
+                return value;
+              },
+            );
+          },
         );
       },
     );

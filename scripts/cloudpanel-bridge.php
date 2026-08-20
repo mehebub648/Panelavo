@@ -29,7 +29,7 @@ use App\Site\Updater\StaticSite as StaticSiteUpdater;
 use Symfony\Component\Dotenv\Dotenv;
 
 const CLOUDPANEL_ROOT = '/home/clp/htdocs/app/files';
-const PANELAVO_BROKER_PROTOCOL_VERSION = 15;
+const PANELAVO_BROKER_PROTOCOL_VERSION = 16;
 const PANELAVO_BROKER_MAX_INPUT_BYTES = 100663296;
 const PANELAVO_ROOTLESS_MIGRATION_ROOT = '/var/lib/panelavo/rootless-migrations';
 const PANELAVO_ROOTLESS_MIGRATION_TTL = 86400;
@@ -4825,6 +4825,67 @@ function manageArtifactRelease(Site $site, User $user, array $operation): array
     }
 }
 
+function recoveryRun(string $command, array $steps, string $startedAt): array
+{
+    $last = end($steps) ?: ['exitCode' => 1, 'timedOut' => false, 'output' => 'No recovery step ran.'];
+    return [
+        'command' => $command,
+        'display' => count($steps) . ' controlled recovery step(s) executed',
+        'exitCode' => (int) ($last['exitCode'] ?? 1),
+        'timedOut' => !empty($last['timedOut']),
+        'output' => implode("\n\n", array_map(
+            static fn(array $item): string => '── ' . ($item['label'] ?? $command) . ' (' . ($item['display'] ?? 'controlled recovery') . ")\n" . (($item['output'] ?? '') !== '' ? $item['output'] : '(no output)'),
+            $steps,
+        )),
+        'startedAt' => $startedAt,
+        'finishedAt' => gmdate(DATE_ATOM),
+        'steps' => $steps,
+    ];
+}
+
+function manageSiteRecovery(Site $site, User $user, array $operation): array
+{
+    $action = (string) ($operation['action'] ?? '');
+    if ($action === 'diagnose-proxy') {
+        $startedAt = gmdate(DATE_ATOM);
+        $state = operationsState($site, $user);
+        $steps = executeOperationSteps($site, [resolveOperationStep($state, 'upstream-check', [])]);
+        return ['run' => recoveryRun($action, $steps, $startedAt)];
+    }
+    if (!in_array($action, ['repair-site-acl', 'restart-rootless-runtime', 'recover-rootless-migration'], true)) invalidBrokerRequest();
+    if ($action === 'recover-rootless-migration' && $user->getRole() !== User::ROLE_ADMIN) {
+        respond(['ok' => false, 'code' => 'FORBIDDEN']);
+    }
+    $lock = @fopen('/var/lock/panelavo-operations-' . $site->getUser() . '.lock', 'c');
+    if (!$lock || !flock($lock, LOCK_EX | LOCK_NB)) respond(['ok' => false, 'code' => 'OPERATION_BUSY']);
+    $startedAt = gmdate(DATE_ATOM);
+    try {
+        if ($action === 'repair-site-acl') {
+            $root = realpath(siteRootPath($site));
+            if (!$root || !is_dir($root)) respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => 'The application root does not exist.']);
+            ensureSiteProjectAccess($site);
+            $steps = [[
+                'command' => $action,
+                'label' => 'Repair site-user project access',
+                'display' => 'reapply contained access and inherited directory ACLs',
+                'exitCode' => 0,
+                'timedOut' => false,
+                'output' => 'The site-user ACL invariant is present on the configured application root.',
+            ]];
+        } elseif ($action === 'restart-rootless-runtime') {
+            $steps = [];
+            executeFix($site, 'initialize-rootless-runtime', $steps);
+        } else {
+            $outcome = recoverRootlessMigration($site);
+            $steps = (array) ($outcome['steps'] ?? []);
+        }
+    } finally {
+        flock($lock, LOCK_UN);
+        fclose($lock);
+    }
+    return ['run' => recoveryRun($action, $steps, $startedAt)];
+}
+
 function runComposePortSelfTest(): never
 {
     $config = ['services' => [
@@ -5986,6 +6047,17 @@ try {
             $operation = $input['operation'] ?? null;
             if (!is_array($operation) || count($operation) > 12) invalidBrokerRequest();
             respond(['ok' => true, 'data' => manageArtifactRelease($site, $user, $operation)]);
+
+        case 'site-recovery':
+            $site = requireSiteWriter(
+                $manager,
+                $user,
+                brokerDomainValue($input['domain'] ?? null),
+                !empty($input['panelAdmin']),
+            );
+            $operation = $input['operation'] ?? null;
+            if (!is_array($operation) || count($operation) !== 1) invalidBrokerRequest();
+            respond(['ok' => true, 'data' => manageSiteRecovery($site, $user, $operation)]);
 
         case 'update-site':
             $site = authorizedSite($manager, $user, (string) ($input['domain'] ?? ''));

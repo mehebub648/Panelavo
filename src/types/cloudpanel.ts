@@ -60,6 +60,15 @@ export type SiteReleaseOperation =
       healthPath: string;
     };
 
+export type SiteRecoveryOperation =
+  | { action: "diagnose-proxy" }
+  | {
+      action:
+        | "repair-site-acl"
+        | "restart-rootless-runtime"
+        | "recover-rootless-migration";
+    };
+
 export interface CloudPanelSite {
   id: string;
   domain: string;
@@ -354,6 +363,12 @@ export interface CloudPanelClient {
     session: CloudPanelSession,
     domain: string,
     operation: SiteReleaseOperation,
+    execution?: SiteSectionExecutionOptions,
+  ): Promise<unknown>;
+  manageSiteRecovery(
+    session: CloudPanelSession,
+    domain: string,
+    operation: SiteRecoveryOperation,
     execution?: SiteSectionExecutionOptions,
   ): Promise<unknown>;
   getServerResources(session: CloudPanelSession): Promise<ServerResources>;
