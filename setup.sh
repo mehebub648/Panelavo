@@ -681,12 +681,15 @@ if command -v ufw >/dev/null 2>&1; then
   ufw delete allow "${APP_PORT}/tcp" >/dev/null 2>&1 || true
   ufw deny "${APP_PORT}/tcp" >/dev/null 2>&1 || true
   if [ "${EXPOSE_CLOUDPANEL:-false}" != "true" ]; then
-    # Remove any existing allow rule, then explicitly deny public access.
+    # CloudPanel may install a broad 8433:8443 allow before this exact rule.
+    # Reinsert the exact deny first so UFW evaluates it before that range.
     ufw delete allow "${CLOUDPANEL_PORT}/tcp" >/dev/null 2>&1 || true
-    ufw deny "${CLOUDPANEL_PORT}/tcp" >/dev/null 2>&1 || true
+    ufw delete deny "${CLOUDPANEL_PORT}/tcp" >/dev/null 2>&1 || true
+    ufw insert 1 deny "${CLOUDPANEL_PORT}/tcp" >/dev/null 2>&1 || die "Could not prioritize the CloudPanel port deny rule in ufw."
     log "Prepared a firewall deny rule for CloudPanel port ${CLOUDPANEL_PORT}."
     log "Reach CloudPanel via an SSH tunnel if ever needed: ssh -L ${CLOUDPANEL_PORT}:127.0.0.1:${CLOUDPANEL_PORT} root@${SERVER_IP}"
   else
+    ufw delete deny "${CLOUDPANEL_PORT}/tcp" >/dev/null 2>&1 || true
     ufw allow "${CLOUDPANEL_PORT}/tcp" >/dev/null 2>&1 || true
     warn "EXPOSE_CLOUDPANEL=true — CloudPanel stays reachable on port ${CLOUDPANEL_PORT}."
   fi
