@@ -120,6 +120,8 @@ Broker protocol 18 adds ownership-aware Project Endpoint inventory and verificat
 
 Broker protocol 19 makes website creation return the authoritative CloudPanel site record. Existing installations must run trusted `sudo bash setup.sh` before deploying a protocol 19 application release; this keeps creation-time labels bound to the real upstream record instead of a temporary local identity.
 
+Broker protocol 20 adds fingerprinted fresh-PHP-site scaffold replacement during Git clone. Existing installations must run trusted `sudo bash setup.sh` before deploying a protocol 20 application release. Only unchanged creation-time regular files are eligible; the bridge preserves ACME state, clones into staging first, restores the scaffold on promotion failure, and keeps every other non-empty root blocked.
+
 S3-compatible backup destinations require an HTTPS endpoint and `CREDENTIALS_ENCRYPTION_KEY` (or the existing 32-character-or-longer `SESSION_SECRET`). The configured bucket credentials need list, read, write, and delete access only under the chosen site prefix. No bucket credentials are installed into the root broker.
 
 SMTP and webhook notification settings use the same credential-encryption key. Permit outbound TCP to the configured SMTP host/port and outbound HTTPS to the webhook receiver; Panelavo does not require an inbound notification port.

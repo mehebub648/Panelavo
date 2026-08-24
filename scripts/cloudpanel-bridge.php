@@ -29,10 +29,11 @@ use App\Site\Updater\StaticSite as StaticSiteUpdater;
 use Symfony\Component\Dotenv\Dotenv;
 
 const CLOUDPANEL_ROOT = '/home/clp/htdocs/app/files';
-const PANELAVO_BROKER_PROTOCOL_VERSION = 19;
+const PANELAVO_BROKER_PROTOCOL_VERSION = 20;
 const PANELAVO_BROKER_MAX_INPUT_BYTES = 100663296;
 const PANELAVO_ROOTLESS_MIGRATION_ROOT = '/var/lib/panelavo/rootless-migrations';
 const PANELAVO_ROOTLESS_MIGRATION_TTL = 86400;
+const PANELAVO_FRESH_SITE_SCAFFOLD_ROOT = '/var/lib/panelavo/fresh-site-scaffolds';
 
 function respond(array $value, int $status = 0): never
 {
@@ -4366,6 +4367,85 @@ function runGit(Site $site, array $args, bool $allowFailure = false): array
     return ['code' => $code, 'stdout' => substr($stdout ?: '', 0, 500000), 'stderr' => substr($stderr ?: '', 0, 50000)];
 }
 
+function freshSiteScaffoldInventory(string $root, array $ignored = []): ?array
+{
+    $entries = array_values(array_diff(scandir($root) ?: [], ['.', '..', '.well-known'], $ignored));
+    sort($entries, SORT_STRING);
+    if (!$entries || count($entries) > 10) return null;
+    $files = [];
+    $total = 0;
+    foreach ($entries as $name) {
+        $path = $root . '/' . $name;
+        if (is_link($path) || !is_file($path)) return null;
+        $size = filesize($path);
+        if (!is_int($size) || $size < 0 || $size > 1048576) return null;
+        $total += $size;
+        if ($total > 2097152) return null;
+        $sha256 = hash_file('sha256', $path);
+        if (!is_string($sha256)) return null;
+        $files[] = ['name' => $name, 'size' => $size, 'sha256' => $sha256];
+    }
+    return $files;
+}
+
+function freshSiteScaffoldPath(Site $site, bool $create): ?string
+{
+    $parent = dirname(PANELAVO_FRESH_SITE_SCAFFOLD_ROOT);
+    foreach ([$parent, PANELAVO_FRESH_SITE_SCAFFOLD_ROOT] as $index => $directory) {
+        if (is_link($directory)) return null;
+        if (!is_dir($directory)) {
+            if (!$create || !@mkdir($directory, $index === 0 ? 0755 : 0700, true)) return null;
+        }
+        $real = realpath($directory);
+        $stat = @lstat($directory);
+        if ($real !== $directory || !is_array($stat) || (int) ($stat['uid'] ?? -1) !== 0) return null;
+    }
+    @chmod(PANELAVO_FRESH_SITE_SCAFFOLD_ROOT, 0700);
+    $identity = strtolower((string) $site->getId() . "\n" . (string) $site->getDomainName());
+    return PANELAVO_FRESH_SITE_SCAFFOLD_ROOT . '/' . hash('sha256', $identity) . '.json';
+}
+
+function captureFreshSiteScaffold(Site $site): void
+{
+    $root = realpath(siteRootPath($site));
+    if (!$root || !is_dir($root)) return;
+    $files = freshSiteScaffoldInventory($root);
+    $path = $files ? freshSiteScaffoldPath($site, true) : null;
+    if (!$path) return;
+    $encoded = json_encode([
+        'version' => 1,
+        'siteId' => (string) $site->getId(),
+        'domain' => strtolower((string) $site->getDomainName()),
+        'root' => $root,
+        'files' => $files,
+    ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+    if (!is_string($encoded)) return;
+    $temporary = $path . '.tmp-' . bin2hex(random_bytes(6));
+    if (@file_put_contents($temporary, $encoded, LOCK_EX) === false) return;
+    @chmod($temporary, 0600);
+    if (!@rename($temporary, $path)) @unlink($temporary);
+}
+
+function loadFreshSiteScaffold(Site $site, string $root, array $ignored = []): ?array
+{
+    $path = freshSiteScaffoldPath($site, false);
+    if (!$path || is_link($path) || !is_file($path)) return null;
+    $manifest = json_decode((string) @file_get_contents($path), true);
+    if (!is_array($manifest)
+        || (int) ($manifest['version'] ?? 0) !== 1
+        || (string) ($manifest['siteId'] ?? '') !== (string) $site->getId()
+        || strtolower((string) ($manifest['domain'] ?? '')) !== strtolower((string) $site->getDomainName())
+        || (string) ($manifest['root'] ?? '') !== $root
+        || !is_array($manifest['files'] ?? null)) {
+        return null;
+    }
+    $current = freshSiteScaffoldInventory($root, $ignored);
+    return is_array($current) && hash_equals(
+        hash('sha256', json_encode($manifest['files'], JSON_UNESCAPED_SLASHES) ?: ''),
+        hash('sha256', json_encode($current, JSON_UNESCAPED_SLASHES) ?: ''),
+    ) ? ['path' => $path, 'files' => $current] : null;
+}
+
 function gitChanges(Site $site): array
 {
     $raw = runGit($site, ['status', '--porcelain=v1', '-z', '--untracked-files=all'], true)['stdout'];
@@ -5480,6 +5560,28 @@ function runComposePortSelfTest(): never
     exit(0);
 }
 
+function runFreshSiteScaffoldSelfTest(): never
+{
+    $assert = static function (bool $condition, string $message): void {
+        if (!$condition) throw new RuntimeException($message);
+    };
+    $temporary = sys_get_temp_dir() . '/panelavo-scaffold-self-test-' . bin2hex(random_bytes(4));
+    mkdir($temporary, 0700);
+    mkdir($temporary . '/.well-known', 0700);
+    file_put_contents($temporary . '/index.php', '<?php echo "ready";');
+    $initial = freshSiteScaffoldInventory($temporary);
+    $assert(is_array($initial) && count($initial) === 1, 'one generated file should be fingerprinted');
+    $assert(($initial[0]['name'] ?? '') === 'index.php', 'ACME state must be excluded from the fingerprint');
+    file_put_contents($temporary . '/index.php', '<?php echo "changed";');
+    $changed = freshSiteScaffoldInventory($temporary);
+    $assert(($initial[0]['sha256'] ?? '') !== ($changed[0]['sha256'] ?? ''), 'an edited placeholder must not match its creation fingerprint');
+    mkdir($temporary . '/custom', 0700);
+    $assert(freshSiteScaffoldInventory($temporary) === null, 'directories must never be treated as removable scaffolding');
+    deleteTree($temporary);
+    echo "Fresh-site scaffold self-test passed.\n";
+    exit(0);
+}
+
 function runEnvSelfTest(): never
 {
     $assert = static function (bool $condition, string $message): void {
@@ -5557,6 +5659,7 @@ function runEndpointSelfTest(): never
 }
 
 if (($argv[1] ?? '') === '--self-test-ports') runComposePortSelfTest();
+if (($argv[1] ?? '') === '--self-test-scaffold') runFreshSiteScaffoldSelfTest();
 if (($argv[1] ?? '') === '--self-test-env') runEnvSelfTest();
 if (($argv[1] ?? '') === '--self-test-rootless') runRootlessSelfTest();
 if (($argv[1] ?? '') === '--self-test-datastore') runDatastoreSelfTest();
@@ -5826,13 +5929,18 @@ try {
             if (!$createdSite instanceof Site) {
                 respond(['ok' => false, 'code' => 'CLPCTL_FAILED', 'message' => 'The created website record could not be loaded.']);
             }
+            if ($createdSite->getType() === Site::TYPE_PHP) captureFreshSiteScaffold($createdSite);
             respond(['ok' => true, 'site' => publicSite($createdSite)]);
 
         case 'clpctl-site-delete':
             $domain = brokerDomainValue($input['domain'] ?? null);
             $site = requireSiteWriter($manager, $user, $domain, ($input['panelAdmin'] ?? false) === true);
             cleanupRootlessDockerBeforeSiteDelete($site);
-            finishClpctl(runClpctl(['site:delete', '--domainName=' . $domain, '--force']));
+            $deleteResult = runClpctl(['site:delete', '--domainName=' . $domain, '--force']);
+            if ($deleteResult['code'] !== 0) finishClpctl($deleteResult);
+            $scaffoldPath = freshSiteScaffoldPath($site, false);
+            if ($scaffoldPath) @unlink($scaffoldPath);
+            finishClpctl($deleteResult);
 
         case 'clpctl-db-add':
             $domain = brokerDomainValue($input['domain'] ?? null);
@@ -6073,19 +6181,112 @@ try {
                     $root = realpath($rootPath);
                     $entries = $root ? array_values(array_diff(scandir($root) ?: [], ['.', '..'])) : [];
                     $contentEntries = array_values(array_diff($entries, ['.well-known']));
-                    if (!$root || $contentEntries) respond(['ok' => false, 'code' => 'DIRECTORY_NOT_EMPTY']);
-                    if (in_array('.well-known', $entries, true)) {
-                        // ACME creates .well-known before application code is
-                        // deployed. Clone metadata into a temporary child,
-                        // promote .git, then check out the working tree around
-                        // the preserved challenge directory.
-                        $temporary = '.panelavo-clone-' . bin2hex(random_bytes(8));
-                        runGit($site, array_values(array_filter(['clone', '--no-checkout', $ref ? '--branch' : null, $ref ?: null, $url, $temporary])));
-                        if (!rename($root . '/' . $temporary . '/.git', $root . '/.git')) respond(['ok' => false, 'code' => 'GIT_FAILED']);
-                        rmdir($root . '/' . $temporary);
-                        runGit($site, ['reset', '--hard', 'HEAD']);
-                    } else {
-                        runGit($site, array_values(array_filter(['clone', $ref ? '--branch' : null, $ref ?: null, $url, '.'])));
+                    if (!$root
+                        || (in_array('.well-known', $entries, true)
+                            && (is_link($root . '/.well-known') || !is_dir($root . '/.well-known')))) {
+                        respond(['ok' => false, 'code' => 'DIRECTORY_NOT_EMPTY']);
+                    }
+                    $scaffold = $contentEntries ? loadFreshSiteScaffold($site, $root) : null;
+                    if ($contentEntries && !$scaffold) respond(['ok' => false, 'code' => 'DIRECTORY_NOT_EMPTY']);
+
+                    // Always clone into a temporary child first. The original
+                    // scaffold and ACME directory stay untouched until Git has
+                    // fetched and checked out the complete repository.
+                    $temporary = '.panelavo-clone-' . bin2hex(random_bytes(8));
+                    $temporaryPath = $root . '/' . $temporary;
+                    $clone = runGit($site, array_values(array_filter([
+                        'clone', $ref ? '--branch' : null, $ref ?: null, $url, $temporary,
+                    ])), true);
+                    if ($clone['code'] !== 0) {
+                        if (is_dir($temporaryPath)) deleteTree($temporaryPath);
+                        respond(['ok' => false, 'code' => 'GIT_FAILED', 'message' => trim($clone['stderr'] ?: $clone['stdout'])]);
+                    }
+
+                    $clonedEntries = array_values(array_diff(scandir($temporaryPath) ?: [], ['.', '..']));
+                    if (!in_array('.git', $clonedEntries, true)) {
+                        deleteTree($temporaryPath);
+                        respond(['ok' => false, 'code' => 'GIT_FAILED']);
+                    }
+                    $scaffoldNames = $scaffold
+                        ? array_map(static fn(array $file): string => (string) ($file['name'] ?? ''), $scaffold['files'])
+                        : [];
+                    foreach ($clonedEntries as $name) {
+                        if ((file_exists($root . '/' . $name) || is_link($root . '/' . $name))
+                            && !in_array($name, $scaffoldNames, true)) {
+                            deleteTree($temporaryPath);
+                            respond(['ok' => false, 'code' => 'GIT_FAILED', 'message' => 'The repository conflicts with preserved website files.']);
+                        }
+                    }
+
+                    $scaffoldBackup = null;
+                    $stagedScaffold = [];
+                    if ($scaffold) {
+                        // Recheck the exact hashes after the network operation;
+                        // an edited or newly added file cancels the promotion.
+                        $scaffold = loadFreshSiteScaffold($site, $root, [$temporary]);
+                        if (!$scaffold) {
+                            deleteTree($temporaryPath);
+                            respond(['ok' => false, 'code' => 'DIRECTORY_NOT_EMPTY']);
+                        }
+                        $scaffoldBackup = $root . '/.panelavo-scaffold-' . bin2hex(random_bytes(8));
+                        if (!mkdir($scaffoldBackup, 0700)) {
+                            deleteTree($temporaryPath);
+                            respond(['ok' => false, 'code' => 'GIT_FAILED']);
+                        }
+                        foreach ($scaffold['files'] as $file) {
+                            $name = (string) ($file['name'] ?? '');
+                            if ($name === '' || !@rename($root . '/' . $name, $scaffoldBackup . '/' . $name)) {
+                                $restored = true;
+                                foreach (array_reverse($stagedScaffold) as $staged) {
+                                    if (!@rename($scaffoldBackup . '/' . $staged, $root . '/' . $staged)) $restored = false;
+                                }
+                                deleteTree($temporaryPath);
+                                if ($restored) deleteTree($scaffoldBackup);
+                                respond([
+                                    'ok' => false,
+                                    'code' => $restored ? 'GIT_FAILED' : 'SITE_UPDATE_FAILED',
+                                    'message' => $restored
+                                        ? 'The original website files could not be staged and were restored.'
+                                        : 'The original website files remain in protected staging because automatic restoration could not complete.',
+                                ]);
+                            }
+                            $stagedScaffold[] = $name;
+                        }
+                    }
+
+                    $promoted = [];
+                    $promotionOk = true;
+                    foreach ($clonedEntries as $name) {
+                        if (!@rename($temporaryPath . '/' . $name, $root . '/' . $name)) {
+                            $promotionOk = false;
+                            break;
+                        }
+                        $promoted[] = $name;
+                    }
+                    if (!$promotionOk) {
+                        $restored = true;
+                        foreach (array_reverse($promoted) as $name) {
+                            if (!@rename($root . '/' . $name, $temporaryPath . '/' . $name)) $restored = false;
+                        }
+                        foreach (array_reverse($stagedScaffold) as $name) {
+                            if (!@rename($scaffoldBackup . '/' . $name, $root . '/' . $name)) $restored = false;
+                        }
+                        if ($restored) {
+                            if (is_dir($temporaryPath)) deleteTree($temporaryPath);
+                            if ($scaffoldBackup && is_dir($scaffoldBackup)) deleteTree($scaffoldBackup);
+                        }
+                        respond([
+                            'ok' => false,
+                            'code' => $restored ? 'GIT_FAILED' : 'SITE_UPDATE_FAILED',
+                            'message' => $restored
+                                ? 'The repository checkout could not be promoted; the original files were restored.'
+                                : 'Repository promotion failed and protected staging was retained because automatic restoration could not complete.',
+                        ]);
+                    }
+                    @rmdir($temporaryPath);
+                    if ($scaffoldBackup) {
+                        deleteTree($scaffoldBackup);
+                        @unlink((string) $scaffold['path']);
                     }
                 } elseif ($action === 'init') runGit($site, ['init']);
                 elseif ($action === 'set-remote') {
