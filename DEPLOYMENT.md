@@ -118,6 +118,8 @@ Broker protocol 17 adds selective LanceDB table snapshots and validated restore/
 
 Broker protocol 18 adds ownership-aware Project Endpoint inventory and verification. Existing installations must run trusted `sudo bash setup.sh` before deploying a protocol 18 application release. The bridge exposes only high loopback listeners owned by the parent site's Unix boundary, rejects foreign, wildcard/public, and CloudPanel-reserved ports, and performs a bounded site-user HTTP check before activation. Pending reservations create no public proxy. Active endpoint changes are health-gated and restore the previous NGINX upstream when the post-change check fails.
 
+Broker protocol 19 makes website creation return the authoritative CloudPanel site record. Existing installations must run trusted `sudo bash setup.sh` before deploying a protocol 19 application release; this keeps creation-time labels bound to the real upstream record instead of a temporary local identity.
+
 S3-compatible backup destinations require an HTTPS endpoint and `CREDENTIALS_ENCRYPTION_KEY` (or the existing 32-character-or-longer `SESSION_SECRET`). The configured bucket credentials need list, read, write, and delete access only under the chosen site prefix. No bucket credentials are installed into the root broker.
 
 SMTP and webhook notification settings use the same credential-encryption key. Permit outbound TCP to the configured SMTP host/port and outbound HTTPS to the webhook receiver; Panelavo does not require an inbound notification port.

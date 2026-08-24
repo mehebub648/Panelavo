@@ -29,7 +29,7 @@ use App\Site\Updater\StaticSite as StaticSiteUpdater;
 use Symfony\Component\Dotenv\Dotenv;
 
 const CLOUDPANEL_ROOT = '/home/clp/htdocs/app/files';
-const PANELAVO_BROKER_PROTOCOL_VERSION = 18;
+const PANELAVO_BROKER_PROTOCOL_VERSION = 19;
 const PANELAVO_BROKER_MAX_INPUT_BYTES = 100663296;
 const PANELAVO_ROOTLESS_MIGRATION_ROOT = '/var/lib/panelavo/rootless-migrations';
 const PANELAVO_ROOTLESS_MIGRATION_TTL = 86400;
@@ -5820,7 +5820,13 @@ try {
                 }
                 $args[] = '--reverseProxyUrl=' . $url;
             }
-            finishClpctl(runClpctl($args));
+            $createResult = runClpctl($args);
+            if ($createResult['code'] !== 0) finishClpctl($createResult);
+            $createdSite = $manager->getRepository(Site::class)->findOneBy(['domainName' => $domain]);
+            if (!$createdSite instanceof Site) {
+                respond(['ok' => false, 'code' => 'CLPCTL_FAILED', 'message' => 'The created website record could not be loaded.']);
+            }
+            respond(['ok' => true, 'site' => publicSite($createdSite)]);
 
         case 'clpctl-site-delete':
             $domain = brokerDomainValue($input['domain'] ?? null);

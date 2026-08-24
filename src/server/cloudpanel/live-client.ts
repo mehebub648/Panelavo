@@ -29,7 +29,7 @@ import {
 import { getSiteTypeOverrides } from "@/server/sites/site-type-overlay";
 import { AppError } from "./errors";
 
-export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 18;
+export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 19;
 export const CLOUDPANEL_BROKER_PATH =
   "/usr/local/libexec/panelavo/panelavo-broker";
 
@@ -55,6 +55,25 @@ type BridgeResult = {
   sites?: CloudPanelSite[];
   data?: unknown;
 };
+
+export function createdSiteFromBridge(
+  result: Pick<BridgeResult, "site">,
+  expectedDomain: string,
+) {
+  const site = result.site;
+  if (
+    !site ||
+    !site.id.trim() ||
+    site.domain.toLowerCase() !== expectedDomain.toLowerCase()
+  ) {
+    throw new AppError(
+      "SITE_CREATION_FAILED",
+      "The server did not return the created website identity.",
+      502,
+    );
+  }
+  return site;
+}
 
 let brokerHealth: { checkedAt: number; promise: Promise<void> } | undefined;
 
@@ -706,6 +725,7 @@ export class LiveCloudPanelClient implements CloudPanelClient {
           result,
           "The server could not create the website.",
         );
+      return createdSiteFromBridge(result, input.domain);
     } catch (error) {
       if (error instanceof AppError && error.code === "REQUEST_TIMEOUT")
         throw error;
@@ -715,15 +735,6 @@ export class LiveCloudPanelClient implements CloudPanelClient {
         502,
       );
     }
-    return {
-      id: `live-${input.domain}`,
-      domain: input.domain,
-      type: input.type,
-      siteUser: input.siteUser,
-      status: "active",
-      createdAt: new Date().toISOString(),
-      url: `https://${input.domain}`,
-    };
   }
 
   async updateSite(

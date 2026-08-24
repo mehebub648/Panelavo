@@ -1,5 +1,45 @@
 import { describe, expect, it } from "vitest";
-import { siteSectionBridgeError, siteSectionTimeout } from "./live-client";
+import {
+  createdSiteFromBridge,
+  siteSectionBridgeError,
+  siteSectionTimeout,
+} from "./live-client";
+
+describe("createdSiteFromBridge", () => {
+  it("keeps the authoritative CloudPanel site identity", () => {
+    const site = createdSiteFromBridge(
+      {
+        site: {
+          id: "23001",
+          domain: "example.test",
+          type: "php",
+          url: "https://example.test",
+        },
+      },
+      "EXAMPLE.TEST",
+    );
+
+    expect(site.id).toBe("23001");
+  });
+
+  it("rejects a creation response without a matching site", () => {
+    expect(() => createdSiteFromBridge({}, "example.test")).toThrow(
+      "created website identity",
+    );
+    expect(() =>
+      createdSiteFromBridge(
+        {
+          site: {
+            id: "23001",
+            domain: "other.test",
+            url: "https://other.test",
+          },
+        },
+        "example.test",
+      ),
+    ).toThrow("created website identity");
+  });
+});
 
 describe("siteSectionTimeout", () => {
   it("keeps the bounded timeout policy explicit", () => {
