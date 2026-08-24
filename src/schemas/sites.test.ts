@@ -111,6 +111,7 @@ describe("site validation", () => {
       serviceName: "api",
       targetPort: 20001,
       aliases: ["api.example.com"],
+      allowPending: true,
     });
   });
 

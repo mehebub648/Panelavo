@@ -136,7 +136,7 @@ export function SiteList({ user }: { user: CloudPanelUser }) {
           site.meta?.serviceName,
         ].some((value) => value?.toLowerCase().includes(query.toLowerCase())),
     );
-    // Linked services render right under their parent; a service whose parent
+    // Project endpoints render right under their parent; an endpoint whose parent
     // is filtered out (or not visible) stays as a top-level row.
     const visible = new Set(matches.map((site) => site.domain.toLowerCase()));
     const children = new Map<string, ListedSite[]>();

@@ -13,6 +13,8 @@ import type {
   ServerStorageCleanupResult,
   SiteCreationOptions,
   SiteDatastoreOperation,
+  SiteEndpointOperation,
+  SiteEndpointResult,
   SiteReleaseOperation,
   SiteRecoveryOperation,
   SiteSectionExecutionOptions,
@@ -27,7 +29,7 @@ import {
 import { getSiteTypeOverrides } from "@/server/sites/site-type-overlay";
 import { AppError } from "./errors";
 
-export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 17;
+export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 18;
 export const CLOUDPANEL_BROKER_PATH =
   "/usr/local/libexec/panelavo/panelavo-broker";
 
@@ -136,7 +138,11 @@ function invokeBroker(
       execution.signal?.removeEventListener("abort", abort);
       if (stoppedBy === "cancel") {
         reject(
-          new AppError("REQUEST_CANCELLED", "The operation was cancelled.", 409),
+          new AppError(
+            "REQUEST_CANCELLED",
+            "The operation was cancelled.",
+            409,
+          ),
         );
         return;
       }
@@ -1019,6 +1025,27 @@ export class LiveCloudPanelClient implements CloudPanelClient {
     );
     if (!result.ok) throw siteSectionBridgeError(result);
     return result.data;
+  }
+
+  async manageSiteEndpoint(
+    session: CloudPanelSession,
+    domain: string,
+    operation: SiteEndpointOperation,
+  ): Promise<SiteEndpointResult> {
+    const { panelAdmin } = await this.requireSiteAccess(session, domain);
+    const result = await this.bridge({
+      action: "site-endpoint",
+      username: this.sessionUser(session),
+      domain,
+      operation,
+      panelAdmin,
+    });
+    if (!result.ok || !result.data)
+      throw this.privilegedError(
+        result,
+        "The project endpoint could not be inspected.",
+      );
+    return result.data as SiteEndpointResult;
   }
 
   async getServerResources(session: CloudPanelSession) {

@@ -90,7 +90,10 @@ export function SiteSettings({
       body.runtimeVersion = String(data.get("runtimeVersion") ?? "");
     if (["nodejs", "python"].includes(site.type ?? ""))
       body.appPort = Number(data.get("appPort"));
-    if (site.type === "reverse-proxy" || site.type === "docker")
+    if (
+      (site.type === "reverse-proxy" || site.type === "docker") &&
+      !site.meta?.parent
+    )
       body.reverseProxyUrl = String(data.get("reverseProxyUrl") ?? "");
     try {
       const response = await fetch(
@@ -178,7 +181,7 @@ export function SiteSettings({
 
       {site.meta?.parent && (
         <div className="rounded-xl border border-panel-200/60 bg-panel-50/40 p-4 text-sm text-slate-600">
-          This website is a linked service
+          This website is a project endpoint
           {site.meta.serviceName ? (
             <> (<span className="font-semibold">{site.meta.serviceName}</span>)</>
           ) : null}{" "}
@@ -307,7 +310,8 @@ export function SiteSettings({
               </p>
             </div>
           )}
-          {(site.type === "reverse-proxy" || site.type === "docker") && (
+          {(site.type === "reverse-proxy" || site.type === "docker") &&
+            !site.meta?.parent && (
             <div>
               <Label htmlFor="reverseProxyUrl" className="font-medium text-slate-700">
                 {site.type === "docker" ? "Container URL" : "Reverse proxy URL"}
@@ -357,7 +361,7 @@ export function SiteSettings({
         <section className="flex flex-col gap-4 rounded-2xl border border-red-200/60 bg-gradient-to-br from-red-50/50 to-white/50 backdrop-blur-sm p-5 sm:flex-row sm:items-center sm:justify-between sm:p-6 shadow-sm">
           <div>
             <h3 className="font-bold text-red-700">
-              {site.meta?.parent ? "Delete linked service" : "Delete website"}
+              {site.meta?.parent ? "Delete project endpoint" : "Delete website"}
             </h3>
             <p className="mt-1 text-sm text-slate-600">
               {site.meta?.parent

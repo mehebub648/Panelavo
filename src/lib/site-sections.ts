@@ -22,7 +22,6 @@ export const SERVICE_SECTIONS: ReadonlySet<string> = new Set([
   "settings",
   "domains",
   "certificates",
-  "vhost",
   "security",
   "users",
 ]);

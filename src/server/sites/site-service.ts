@@ -269,6 +269,12 @@ export async function updateManagedSite(
     ...otherSettings
   } = input;
   const meta = await getSiteMeta(domain);
+  if (meta?.parent && input.reverseProxyUrl !== undefined)
+    throw new AppError(
+      "INVALID_REQUEST",
+      "Change a project endpoint through the parent project's endpoint controls so ownership, health checks, and rollback remain enforced.",
+      409,
+    );
   const previousId = meta?.id;
   const movingId =
     input.appPort !== undefined &&
@@ -328,7 +334,7 @@ export async function deleteManagedSite(
   if (serviceNames.length)
     throw new AppError(
       "INVALID_REQUEST",
-      `This website still has linked services (${serviceNames.join(", ")}). Delete them first.`,
+      `This website still has project endpoints (${serviceNames.join(", ")}). Delete them first.`,
       409,
     );
 

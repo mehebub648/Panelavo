@@ -40,7 +40,7 @@ export default async function SiteLayout({
               <p className="text-xs font-bold uppercase tracking-wider text-slate-400">
                 {meta?.parent ? (
                   <>
-                    Linked service{meta.serviceName ? ` · ${meta.serviceName}` : ""} of{" "}
+                    Project endpoint{meta.serviceName ? ` · ${meta.serviceName}` : ""} of{" "}
                     <Link
                       href={`/sites/${encodeURIComponent(meta.parent)}/settings`}
                       className="text-panel-600 hover:underline"

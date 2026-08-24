@@ -29,7 +29,7 @@ use App\Site\Updater\StaticSite as StaticSiteUpdater;
 use Symfony\Component\Dotenv\Dotenv;
 
 const CLOUDPANEL_ROOT = '/home/clp/htdocs/app/files';
-const PANELAVO_BROKER_PROTOCOL_VERSION = 17;
+const PANELAVO_BROKER_PROTOCOL_VERSION = 18;
 const PANELAVO_BROKER_MAX_INPUT_BYTES = 100663296;
 const PANELAVO_ROOTLESS_MIGRATION_ROOT = '/var/lib/panelavo/rootless-migrations';
 const PANELAVO_ROOTLESS_MIGRATION_TTL = 86400;
@@ -1474,6 +1474,106 @@ function hostListeningPorts(Site $site): array
         $items[] = ['port' => $port, 'address' => (string) $parts[3], 'siteOwned' => $siteOwned, 'process' => $process];
     }
     return $items;
+}
+
+function isSafeEndpointAddress(string $address, int $port): bool
+{
+    return $address === '127.0.0.1:' . $port
+        || $address === '[::1]:' . $port
+        || $address === '::1:' . $port;
+}
+
+// A project endpoint may expose only a listener demonstrably owned by the
+// parent site's Unix boundary. Wildcard/public listeners and foreign
+// loopback processes are never eligible for an NGINX reverse proxy.
+function manageSiteEndpoint($manager, Site $site, array $operation): array
+{
+    $action = $operation['action'] ?? null;
+    if (!in_array($action, ['list', 'verify'], true)) invalidBrokerRequest();
+    $listeners = hostListeningPorts($site);
+    $owned = array_values(array_map(
+        static fn(array $item): array => [
+            'port' => (int) $item['port'],
+            'address' => (string) $item['address'],
+            'process' => (string) $item['process'],
+        ],
+        array_filter(
+            $listeners,
+            static fn(array $item): bool => !empty($item['siteOwned'])
+                && isSafeEndpointAddress((string) $item['address'], (int) $item['port'])
+                && (int) $item['port'] >= 1024,
+        ),
+    ));
+    usort($owned, static fn(array $left, array $right): int => $left['port'] <=> $right['port']);
+    $result = ['ports' => $owned, 'checkedAt' => gmdate(DATE_ATOM)];
+    if ($action === 'list') return $result;
+
+    $port = brokerPortValue($operation['port'] ?? null);
+    $endpointDomain = isset($operation['endpointDomain'])
+        ? brokerDomainValue($operation['endpointDomain'])
+        : null;
+    foreach ($manager->getRepository(Site::class)->findAll() as $candidate) {
+        if (!$candidate instanceof Site || $candidate->getId() === $site->getId()) continue;
+        if ($endpointDomain !== null && strtolower($candidate->getDomainName()) === $endpointDomain) continue;
+        if (expectedSitePort($candidate) === $port) {
+            return $result + ['probe' => [
+                'port' => $port,
+                'owned' => false,
+                'loopback' => false,
+                'reachable' => false,
+                'detail' => 'Port ' . $port . ' is reserved by another CloudPanel website.',
+            ]];
+        }
+    }
+    $matching = array_values(array_filter(
+        $listeners,
+        static fn(array $item): bool => (int) $item['port'] === $port,
+    ));
+    $eligible = array_values(array_filter(
+        $matching,
+        static fn(array $item): bool => !empty($item['siteOwned'])
+            && isSafeEndpointAddress((string) $item['address'], $port),
+    ));
+    if (!$eligible) {
+        $detail = $matching
+            ? 'Port ' . $port . ' is listening, but it is not a loopback listener owned by this project.'
+            : 'Port ' . $port . ' is not listening yet.';
+        return $result + ['probe' => [
+            'port' => $port,
+            'owned' => false,
+            'loopback' => false,
+            'reachable' => false,
+            'detail' => $detail,
+        ]];
+    }
+
+    $curl = is_executable('/usr/bin/curl') ? '/usr/bin/curl' : findSiteTool('/home/' . $site->getUser(), 'curl');
+    if (!$curl) return $result + ['probe' => [
+        'port' => $port,
+        'owned' => true,
+        'loopback' => true,
+        'reachable' => false,
+        'detail' => 'The port belongs to this project, but curl is unavailable for the health check.',
+    ]];
+    $probe = runSiteCommand(
+        $site,
+        [$curl, '--silent', '--show-error', '--output', '/dev/null', '--max-time', '10', '--write-out', '%{http_code}', 'http://127.0.0.1:' . $port . '/'],
+        15,
+    );
+    $status = preg_match('/^\d{3}$/', trim((string) $probe['stdout'])) === 1
+        ? (int) trim((string) $probe['stdout'])
+        : 0;
+    $healthy = $probe['code'] === 0 && $status >= 100 && $status < 500;
+    return $result + ['probe' => array_filter([
+        'port' => $port,
+        'owned' => true,
+        'loopback' => true,
+        'reachable' => $healthy,
+        'httpStatus' => $status ?: null,
+        'detail' => $healthy
+            ? 'The project-owned loopback endpoint responded with HTTP ' . $status . '.'
+            : 'The project owns this loopback port, but its HTTP health check failed.',
+    ], static fn($value) => $value !== null)];
 }
 
 function sitePortCapability(Site $site, array $listeners): array
@@ -5445,10 +5545,22 @@ function runRootlessSelfTest(): never
     exit(0);
 }
 
+function runEndpointSelfTest(): never
+{
+    if (!isSafeEndpointAddress('127.0.0.1:22001', 22001)) throw new RuntimeException('IPv4 loopback rejected.');
+    if (!isSafeEndpointAddress('[::1]:22001', 22001)) throw new RuntimeException('IPv6 loopback rejected.');
+    foreach (['0.0.0.0:22001', '*:22001', '127.0.0.1:22002'] as $unsafe) {
+        if (isSafeEndpointAddress($unsafe, 22001)) throw new RuntimeException('Unsafe endpoint address accepted.');
+    }
+    echo "Project endpoint self-test passed.\n";
+    exit(0);
+}
+
 if (($argv[1] ?? '') === '--self-test-ports') runComposePortSelfTest();
 if (($argv[1] ?? '') === '--self-test-env') runEnvSelfTest();
 if (($argv[1] ?? '') === '--self-test-rootless') runRootlessSelfTest();
 if (($argv[1] ?? '') === '--self-test-datastore') runDatastoreSelfTest();
+if (($argv[1] ?? '') === '--self-test-endpoints') runEndpointSelfTest();
 
 try {
     $encodedInput = stream_get_contents(STDIN, PANELAVO_BROKER_MAX_INPUT_BYTES + 1);
@@ -6505,6 +6617,17 @@ try {
             $operation = $input['operation'] ?? null;
             if (!is_array($operation) || count($operation) > 10) invalidBrokerRequest();
             respond(['ok' => true, 'data' => manageSiteDatastore($site, $user, $operation)]);
+
+        case 'site-endpoint':
+            $site = requireSiteWriter(
+                $manager,
+                $user,
+                brokerDomainValue($input['domain'] ?? null),
+                !empty($input['panelAdmin']),
+            );
+            $operation = $input['operation'] ?? null;
+            if (!is_array($operation) || count($operation) > 3) invalidBrokerRequest();
+            respond(['ok' => true, 'data' => manageSiteEndpoint($manager, $site, $operation)]);
 
         case 'update-site':
             $site = authorizedSite($manager, $user, (string) ($input['domain'] ?? ''));

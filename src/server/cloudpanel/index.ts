@@ -196,6 +196,10 @@ function withPanelRoles(inner: CloudPanelClient): CloudPanelClient {
       assertNotPanelSelf(domain);
       return inner.manageSiteDatastore(session, domain, operation, execution);
     },
+    manageSiteEndpoint: async (session, domain, operation) => {
+      assertNotPanelSelf(domain);
+      return inner.manageSiteEndpoint(session, domain, operation);
+    },
     getServerResources: inner.getServerResources.bind(inner),
     getServerStorage: inner.getServerStorage.bind(inner),
     reclaimServerStorage: inner.reclaimServerStorage.bind(inner),

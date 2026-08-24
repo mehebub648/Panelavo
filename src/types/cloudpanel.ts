@@ -101,6 +101,31 @@ export type SiteDatastoreOperation =
       checks: SiteDatastoreCheck[];
     };
 
+export type SiteEndpointPort = {
+  port: number;
+  address: string;
+  process?: string;
+};
+
+export type SiteEndpointProbe = {
+  port: number;
+  owned: boolean;
+  loopback: boolean;
+  reachable: boolean;
+  httpStatus?: number;
+  detail: string;
+};
+
+export type SiteEndpointOperation =
+  | { action: "list" }
+  | { action: "verify"; port: number; endpointDomain?: string };
+
+export type SiteEndpointResult = {
+  ports?: SiteEndpointPort[];
+  probe?: SiteEndpointProbe;
+  checkedAt: string;
+};
+
 export interface CloudPanelSite {
   id: string;
   domain: string;
@@ -409,6 +434,11 @@ export interface CloudPanelClient {
     operation: SiteDatastoreOperation,
     execution?: SiteSectionExecutionOptions,
   ): Promise<unknown>;
+  manageSiteEndpoint(
+    session: CloudPanelSession,
+    domain: string,
+    operation: SiteEndpointOperation,
+  ): Promise<SiteEndpointResult>;
   getServerResources(session: CloudPanelSession): Promise<ServerResources>;
   getServerStorage(
     session: CloudPanelSession,

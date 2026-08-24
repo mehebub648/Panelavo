@@ -36,7 +36,11 @@ vi.mock("@/server/sites/site-domain-service", () => ({
 }));
 vi.mock("@/server/sites/linked-service-service", () => ({
   createLinkedServiceForActor: vi.fn(),
+  deleteProjectEndpointForActor: vi.fn(),
   listLinkedServicesForActor: mocks.listLinkedServicesForActor,
+  listProjectPortsForActor: vi.fn(),
+  updateProjectEndpointForActor: vi.fn(),
+  verifyProjectEndpointForActor: vi.fn(),
 }));
 vi.mock("@/server/sites/site-automation-service", () => ({
   getSiteBackupAutomationForActor: mocks.getSiteBackupAutomationForActor,
@@ -80,6 +84,8 @@ const WRITE_TOOLS = [
   "panelavo_configure_site_uptime",
   "panelavo_create_backup",
   "panelavo_create_linked_service",
+  "panelavo_create_project_endpoint",
+  "panelavo_delete_project_endpoint",
   "panelavo_delete_artifact_upload",
   "panelavo_deploy_artifact_release",
   "panelavo_delete_site",
@@ -95,6 +101,7 @@ const WRITE_TOOLS = [
   "panelavo_manage_site_section",
   "panelavo_create_lancedb_snapshot",
   "panelavo_list_site_jobs",
+  "panelavo_list_project_ports",
   "panelavo_list_site_releases",
   "panelavo_point_site_dns",
   "panelavo_run_site_operation",
@@ -103,6 +110,8 @@ const WRITE_TOOLS = [
   "panelavo_rollback_site_release",
   "panelavo_start_site_job",
   "panelavo_update_site",
+  "panelavo_update_project_endpoint",
+  "panelavo_verify_project_endpoint",
 ];
 
 const SERVER_TOOLS = [

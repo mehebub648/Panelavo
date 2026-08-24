@@ -35,7 +35,11 @@ import { rateLimit } from "@/server/security/request";
 import { getServerPublicIp } from "@/server/network/server-ip";
 import {
   createLinkedServiceForActor,
+  deleteProjectEndpointForActor,
   listLinkedServicesForActor,
+  listProjectPortsForActor,
+  updateProjectEndpointForActor,
+  verifyProjectEndpointForActor,
 } from "@/server/sites/linked-service-service";
 import {
   getSiteDnsForActor,
@@ -107,6 +111,23 @@ const linkedServiceToolSchema = z.object({
     .max(65535)
     .describe("A loopback port exposed by the parent website's own stack."),
   aliases: z.array(domainSchema).max(10).default([]),
+  allowPending: z
+    .boolean()
+    .default(true)
+    .describe(
+      "Reserve a stopped port without creating a public proxy; verification activates it later.",
+    ),
+});
+
+const projectEndpointSchema = z.object({
+  domain: domainSchema.describe("The parent project's system domain."),
+  endpointDomain: domainSchema.describe(
+    "The endpoint system domain returned by Panelavo.",
+  ),
+});
+
+const updateProjectEndpointToolSchema = projectEndpointSchema.extend({
+  targetPort: z.number().int().min(1024).max(65535),
 });
 
 const uptimeToolSchema = z.object({
@@ -265,7 +286,9 @@ const healthPathSchema = z
   .max(500)
   .startsWith("/")
   .regex(/^[^\x00-\x1f\x7f]*$/)
-  .describe("A public HTTPS path that must return 2xx or 3xx after activation.");
+  .describe(
+    "A public HTTPS path that must return 2xx or 3xx after activation.",
+  );
 
 const requiredReleasePathSchema = z
   .string()
@@ -326,11 +349,17 @@ const beginArtifactUploadToolSchema = z.object({
     .max(255)
     .regex(/^[^/\\\x00]+$/)
     .describe("The archive or artifact filename, without a directory path."),
-  expectedBytes: z.number().int().min(1).max(2 * 1024 * 1024 * 1024),
+  expectedBytes: z
+    .number()
+    .int()
+    .min(1)
+    .max(2 * 1024 * 1024 * 1024),
   expectedSha256: z
     .string()
     .regex(/^[a-fA-F0-9]{64}$/)
-    .describe("The lowercase or uppercase SHA-256 digest of the complete file."),
+    .describe(
+      "The lowercase or uppercase SHA-256 digest of the complete file.",
+    ),
   mediaType: z.string().max(200).optional(),
 });
 
@@ -613,9 +642,9 @@ export function createPanelavoMcpServer(actor: PanelActor) {
   server.registerTool(
     "panelavo_list_linked_services",
     {
-      title: "List linked services",
+      title: "List project endpoints (legacy name)",
       description:
-        "List reverse-proxy services attached to an accessible parent website, including their domains, aliases, target URL, and live visibility.",
+        "Compatibility alias that lists project endpoints attached to an accessible parent website, including pending state, domains, aliases, selected port, and live visibility.",
       inputSchema: z.object({ domain: domainSchema }),
       annotations: {
         readOnlyHint: true,
@@ -711,6 +740,30 @@ export function createPanelavoMcpServer(actor: PanelActor) {
   }
 
   if (canWrite) {
+    server.registerTool(
+      "panelavo_list_project_ports",
+      {
+        title: "List project endpoint ports",
+        description:
+          "List available high loopback ports currently proven to belong to a writable project's Unix user or rootless Docker boundary. Foreign, publicly bound, and already reserved listeners are omitted.",
+        inputSchema: z.object({ domain: domainSchema }),
+        annotations: {
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
+      },
+      async ({ domain }) =>
+        runTool(
+          actor,
+          "panelavo_list_project_ports",
+          { type: "site", id: domain },
+          {},
+          () => listProjectPortsForActor(actor, domain),
+        ),
+    );
+
     server.registerTool(
       "panelavo_begin_artifact_upload",
       {
@@ -1120,7 +1173,9 @@ export function createPanelavoMcpServer(actor: PanelActor) {
                 timeoutSeconds,
               },
               async ({ signal, log }) => {
-                await log("Validating and staging the checksum-bound artifact.");
+                await log(
+                  "Validating and staging the checksum-bound artifact.",
+                );
                 const value = await client.manageSiteRelease(
                   actor.cloudPanel,
                   domain,
@@ -1137,7 +1192,9 @@ export function createPanelavoMcpServer(actor: PanelActor) {
                   },
                   { signal },
                 );
-                await log("The release passed its deployment and HTTPS health gates.");
+                await log(
+                  "The release passed its deployment and HTTPS health gates.",
+                );
                 return value;
               },
             );
@@ -1214,7 +1271,9 @@ export function createPanelavoMcpServer(actor: PanelActor) {
               actor,
               { domain, kind: `rollback to ${releaseId}`, timeoutSeconds },
               async ({ signal, log }) => {
-                await log("Validating the rollback target and deployment plan.");
+                await log(
+                  "Validating the rollback target and deployment plan.",
+                );
                 const value = await client.manageSiteRelease(
                   actor.cloudPanel,
                   domain,
@@ -1301,7 +1360,9 @@ export function createPanelavoMcpServer(actor: PanelActor) {
               actor,
               { domain, kind: action, timeoutSeconds },
               async ({ signal, log }) => {
-                await log(`Running the allow-listed ${action} broker recovery.`);
+                await log(
+                  `Running the allow-listed ${action} broker recovery.`,
+                );
                 const value = await client.manageSiteRecovery(
                   actor.cloudPanel,
                   domain,
@@ -1412,7 +1473,9 @@ export function createPanelavoMcpServer(actor: PanelActor) {
                 cancellable: false,
               },
               async ({ log }) => {
-                await log("Quiescing the rootless Compose project and creating the selected table snapshot.");
+                await log(
+                  "Quiescing the rootless Compose project and creating the selected table snapshot.",
+                );
                 const value = await client.manageSiteDatastore(
                   actor.cloudPanel,
                   domain,
@@ -1425,7 +1488,9 @@ export function createPanelavoMcpServer(actor: PanelActor) {
                     readyPath,
                   },
                 );
-                await log("The selected tables were checksummed and the website restarted.");
+                await log(
+                  "The selected tables were checksummed and the website restarted.",
+                );
                 return value;
               },
             );
@@ -1509,7 +1574,9 @@ export function createPanelavoMcpServer(actor: PanelActor) {
                 cancellable: false,
               },
               async ({ log }) => {
-                await log("Validating the snapshot and staging the selected LanceDB tables.");
+                await log(
+                  "Validating the snapshot and staging the selected LanceDB tables.",
+                );
                 const value = await client.manageSiteDatastore(
                   actor.cloudPanel,
                   domain,
@@ -1524,7 +1591,9 @@ export function createPanelavoMcpServer(actor: PanelActor) {
                     checks,
                   },
                 );
-                await log("The table swap passed readiness and data validation.");
+                await log(
+                  "The table swap passed readiness and data validation.",
+                );
                 return value;
               },
             );
@@ -1916,9 +1985,9 @@ export function createPanelavoMcpServer(actor: PanelActor) {
     server.registerTool(
       "panelavo_create_linked_service",
       {
-        title: "Create a linked service",
+        title: "Create a project endpoint (legacy name)",
         description:
-          "Create a reverse-proxy service under an accessible parent website. Panelavo allocates the system domain and site user, reserves the selected loopback port, configures aliases, plans DNS, and starts SSL issuance.",
+          "Compatibility alias that creates a project endpoint. Healthy owned loopback ports activate; stopped ports may remain private pending reservations.",
         inputSchema: linkedServiceToolSchema,
         annotations: {
           readOnlyHint: false,
@@ -1927,12 +1996,16 @@ export function createPanelavoMcpServer(actor: PanelActor) {
           openWorldHint: true,
         },
       },
-      async ({ domain, serviceName, targetPort, aliases }, context) => {
+      async (
+        { domain, serviceName, targetPort, aliases, allowPending },
+        context,
+      ) => {
         const argumentsValue = {
           domain,
           serviceName,
           targetPort,
           aliases,
+          allowPending,
         };
         const confirmation = await requireSiteActionConfirmation(
           actor,
@@ -1942,7 +2015,7 @@ export function createPanelavoMcpServer(actor: PanelActor) {
             domain,
             tool: "panelavo_create_linked_service",
             arguments: argumentsValue,
-            message: `Allow the AI assistant to create the linked service ${serviceName} under ${domain} on port ${targetPort}? Review the domains and port before approving.`,
+            message: `Allow the AI assistant to create the project endpoint ${serviceName} under ${domain} on port ${targetPort}? Review the domains and port before approving.`,
           },
         );
         if (confirmation) return confirmation;
@@ -1956,11 +2029,202 @@ export function createPanelavoMcpServer(actor: PanelActor) {
             const created = await createLinkedServiceForActor(
               actor,
               domain,
-              { serviceName, targetPort, aliases },
+              { serviceName, targetPort, aliases, allowPending },
               { serverIp: await getServerPublicIp() },
             );
-            return { site: created.site, warnings: created.warnings };
+            return {
+              site: created.site,
+              endpoint: created.endpoint,
+              warnings: created.warnings,
+              verification: created.verification,
+            };
           },
+        );
+      },
+    );
+
+    server.registerTool(
+      "panelavo_create_project_endpoint",
+      {
+        title: "Create a project endpoint",
+        description:
+          "Create an HTTPS reverse-proxy endpoint for a port owned by the selected project. Healthy project-owned loopback ports activate immediately; stopped ports may be reserved as non-public pending endpoints.",
+        inputSchema: linkedServiceToolSchema,
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: false,
+          idempotentHint: false,
+          openWorldHint: true,
+        },
+      },
+      async (input, context) => {
+        const confirmation = await requireSiteActionConfirmation(
+          actor,
+          confirmationManager,
+          {
+            context,
+            domain: input.domain,
+            tool: "panelavo_create_project_endpoint",
+            arguments: input,
+            message: `Allow the AI assistant to create the ${input.serviceName} endpoint for ${input.domain} on project port ${input.targetPort}?`,
+          },
+        );
+        if (confirmation) return confirmation;
+        return runTool(
+          actor,
+          "panelavo_create_project_endpoint",
+          { type: "site", id: input.domain },
+          {
+            serviceName: input.serviceName,
+            targetPort: input.targetPort,
+            aliasCount: input.aliases.length,
+          },
+          async () => {
+            rateLimit(`mcp:site-create:${actor.user.id}`, 5, 10 * 60_000);
+            const created = await createLinkedServiceForActor(
+              actor,
+              input.domain,
+              input,
+              { serverIp: await getServerPublicIp() },
+            );
+            return {
+              endpoint: created.endpoint,
+              warnings: created.warnings,
+              verification: created.verification,
+            };
+          },
+        );
+      },
+    );
+
+    server.registerTool(
+      "panelavo_update_project_endpoint",
+      {
+        title: "Change a project endpoint port",
+        description:
+          "Change a pending reservation or health-gate an active endpoint onto another project-owned loopback port. Active proxy changes automatically restore the previous target on failure.",
+        inputSchema: updateProjectEndpointToolSchema,
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: true,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
+      },
+      async (input, context) => {
+        const confirmation = await requireSiteActionConfirmation(
+          actor,
+          confirmationManager,
+          {
+            context,
+            domain: input.domain,
+            tool: "panelavo_update_project_endpoint",
+            arguments: input,
+            message: `Allow the AI assistant to move endpoint ${input.endpointDomain} to project port ${input.targetPort}? The old proxy will be restored if the health gate fails.`,
+          },
+        );
+        if (confirmation) return confirmation;
+        return runTool(
+          actor,
+          "panelavo_update_project_endpoint",
+          { type: "site", id: input.domain },
+          {
+            endpointDomain: input.endpointDomain,
+            targetPort: input.targetPort,
+          },
+          () =>
+            updateProjectEndpointForActor(
+              actor,
+              input.domain,
+              input.endpointDomain,
+              { targetPort: input.targetPort },
+            ),
+        );
+      },
+    );
+
+    server.registerTool(
+      "panelavo_verify_project_endpoint",
+      {
+        title: "Verify a project endpoint",
+        description:
+          "Recheck endpoint ownership and HTTP health. A healthy pending reservation is activated as a real reverse-proxy website with domains and SSL; an unhealthy endpoint remains non-public.",
+        inputSchema: projectEndpointSchema,
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: true,
+        },
+      },
+      async (input, context) => {
+        const confirmation = await requireSiteActionConfirmation(
+          actor,
+          confirmationManager,
+          {
+            context,
+            domain: input.domain,
+            tool: "panelavo_verify_project_endpoint",
+            arguments: input,
+            message: `Allow Panelavo to verify ${input.endpointDomain} and activate it if its reserved project port is healthy?`,
+          },
+        );
+        if (confirmation) return confirmation;
+        return runTool(
+          actor,
+          "panelavo_verify_project_endpoint",
+          { type: "site", id: input.domain },
+          { endpointDomain: input.endpointDomain },
+          async () =>
+            verifyProjectEndpointForActor(
+              actor,
+              input.domain,
+              input.endpointDomain,
+              { serverIp: await getServerPublicIp() },
+            ),
+        );
+      },
+    );
+
+    server.registerTool(
+      "panelavo_delete_project_endpoint",
+      {
+        title: "Delete a project endpoint",
+        description:
+          "Delete a pending reservation or its linked reverse-proxy website. The parent project, application data, and other endpoints remain unchanged.",
+        inputSchema: projectEndpointSchema,
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: true,
+          idempotentHint: false,
+          openWorldHint: true,
+        },
+      },
+      async (input, context) => {
+        const confirmation = await requireSiteActionConfirmation(
+          actor,
+          confirmationManager,
+          {
+            context,
+            domain: input.domain,
+            tool: "panelavo_delete_project_endpoint",
+            arguments: input,
+            message: `Delete project endpoint ${input.endpointDomain}? Type the exact endpoint domain to continue.`,
+            confirmationPhrase: input.endpointDomain,
+          },
+        );
+        if (confirmation) return confirmation;
+        return runTool(
+          actor,
+          "panelavo_delete_project_endpoint",
+          { type: "site", id: input.domain },
+          { endpointDomain: input.endpointDomain },
+          () =>
+            deleteProjectEndpointForActor(
+              actor,
+              input.domain,
+              input.endpointDomain,
+            ),
         );
       },
     );
@@ -2239,7 +2503,7 @@ export function createPanelavoMcpServer(actor: PanelActor) {
       {
         title: "Delete a website",
         description:
-          "Permanently delete a website after checking linked services. Panelavo asks the signed-in user for a separate, exact-domain confirmation before deletion.",
+          "Permanently delete a website after checking project endpoints. Panelavo asks the signed-in user for a separate, exact-domain confirmation before deletion.",
         inputSchema: z.object({
           domain: domainSchema,
         }),

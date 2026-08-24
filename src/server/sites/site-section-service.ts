@@ -101,7 +101,7 @@ async function assertSectionAvailable(domain: string, section: string) {
   if (meta?.parent && !SERVICE_SECTIONS.has(section))
     throw new AppError(
       "INVALID_REQUEST",
-      "That tool belongs to the parent website, not this linked service.",
+      "That tool belongs to the parent website, not this project endpoint.",
       409,
     );
 }

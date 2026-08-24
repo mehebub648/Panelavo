@@ -155,12 +155,19 @@ export const createLinkedServiceSchema = z
       ),
     targetPort: z.coerce.number().int().min(1024).max(65535),
     aliases: aliasList,
+    allowPending: z.boolean().default(true),
   })
   .strict();
 
 export type ValidCreateLinkedServiceInput = z.infer<
   typeof createLinkedServiceSchema
 >;
+
+export const updateProjectEndpointSchema = z
+  .object({
+    targetPort: z.coerce.number().int().min(1024).max(65535),
+  })
+  .strict();
 
 const siteDirectory = z
   .string()

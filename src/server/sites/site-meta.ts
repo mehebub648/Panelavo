@@ -42,6 +42,10 @@ export type SiteMeta = {
   // the parent's lowercase system domain, `serviceName` the operator label.
   parent?: string;
   serviceName?: string;
+  // Pending project endpoints reserve their derived identity and target port
+  // without creating a CloudPanel site or a public reverse proxy.
+  targetPort?: number;
+  pending?: boolean;
 };
 
 type Store = { sites: Record<string, SiteMeta> };
@@ -82,7 +86,7 @@ export async function getSiteMeta(domain: string): Promise<SiteMeta | null> {
   return (await store.load()).sites[domain.toLowerCase()] ?? null;
 }
 
-/** Linked services of a parent site, keyed by their lowercase system domain. */
+/** Project endpoints of a parent site, keyed by lowercase system domain. */
 export async function getLinkedServiceMeta(
   parentDomain: string,
 ): Promise<Record<string, SiteMeta>> {

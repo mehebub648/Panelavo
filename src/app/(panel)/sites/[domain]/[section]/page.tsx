@@ -66,7 +66,7 @@ export default async function SiteSectionPage({
   const { session, site } = await requireAccessibleSiteOrRedirect(domain, {
     allowDuringUpdate: true,
   });
-  // Linked services are proxy-only sites: everything operational (files,
+  // Project endpoints are proxy-only sites: everything operational (files,
   // databases, operations, backups, …) lives on their parent website.
   const siteMeta = await getSiteMeta(domain);
   if (siteMeta?.parent && !SERVICE_SECTIONS.has(section)) notFound();
@@ -85,7 +85,7 @@ export default async function SiteSectionPage({
     };
     const isService = Boolean(siteMeta?.parent);
     // Environment values are secrets: they are only loaded and rendered for
-    // users who can already manage this website's files. Linked services run
+    // users who can already manage this website's files. Project endpoints run
     // no app of their own, so they get no environment section.
     const env = canWrite && !isService
       ? await cloudPanel

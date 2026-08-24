@@ -62,7 +62,12 @@ export async function POST(request: NextRequest, context: Context) {
       ...result.prepared,
     });
     return ok(
-      { site: result.site, warnings: result.warnings },
+      {
+        site: result.site,
+        endpoint: result.endpoint,
+        warnings: result.warnings,
+        verification: result.verification,
+      },
       { status: 201 },
     );
   } catch (error) {
