@@ -122,6 +122,8 @@ Broker protocol 19 makes website creation return the authoritative CloudPanel si
 
 Broker protocol 20 adds fingerprinted fresh-PHP-site scaffold replacement during Git clone. Existing installations must run trusted `sudo bash setup.sh` before deploying a protocol 20 application release. Only unchanged creation-time regular files are eligible; the bridge preserves ACME state, clones into staging first, restores the scaffold on promotion failure, and keeps every other non-empty root blocked.
 
+Broker protocol 21 adds the site-scoped Operations port-source repair. Existing installations must run trusted `sudo bash setup.sh` before deploying a protocol 21 application release. The bridge edits only one unique numeric `.env` `PORT` or literal short Compose entry mapping, refuses conflicting/ambiguous evidence and non-port Compose safety failures, validates a staged source, retains a verified root-owned backup, installs the source atomically, and never restarts the website automatically.
+
 S3-compatible backup destinations require an HTTPS endpoint and `CREDENTIALS_ENCRYPTION_KEY` (or the existing 32-character-or-longer `SESSION_SECRET`). The configured bucket credentials need list, read, write, and delete access only under the chosen site prefix. No bucket credentials are installed into the root broker.
 
 SMTP and webhook notification settings use the same credential-encryption key. Permit outbound TCP to the configured SMTP host/port and outbound HTTPS to the webhook receiver; Panelavo does not require an inbound notification port.

@@ -112,6 +112,7 @@ const deployOperationSchema = z
   .strict();
 
 export const operationFixCommands = [
+  "align-application-port",
   "initialize-rootless-docker",
   "initialize-rootless-runtime",
   "install-docker",

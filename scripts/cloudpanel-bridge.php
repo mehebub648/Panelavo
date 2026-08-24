@@ -29,11 +29,12 @@ use App\Site\Updater\StaticSite as StaticSiteUpdater;
 use Symfony\Component\Dotenv\Dotenv;
 
 const CLOUDPANEL_ROOT = '/home/clp/htdocs/app/files';
-const PANELAVO_BROKER_PROTOCOL_VERSION = 20;
+const PANELAVO_BROKER_PROTOCOL_VERSION = 21;
 const PANELAVO_BROKER_MAX_INPUT_BYTES = 100663296;
 const PANELAVO_ROOTLESS_MIGRATION_ROOT = '/var/lib/panelavo/rootless-migrations';
 const PANELAVO_ROOTLESS_MIGRATION_TTL = 86400;
 const PANELAVO_FRESH_SITE_SCAFFOLD_ROOT = '/var/lib/panelavo/fresh-site-scaffolds';
+const PANELAVO_PORT_BACKUP_ROOT = '/var/lib/panelavo/port-source-backups';
 
 function respond(array $value, int $status = 0): never
 {
@@ -1951,6 +1952,136 @@ function composeCapability(Site $site, string $root, ?string $file): array
     return $capability;
 }
 
+function textMentionsPort(string $text, int $port): bool
+{
+    return preg_match('/(?<!\d)' . preg_quote((string) $port, '/') . '(?!\d)/', $text) === 1;
+}
+
+function directPortSourceHints(string $root, int $port, ?array $package, ?string $ecosystem): array
+{
+    $hints = [];
+    foreach (['.env', '.env.local', '.env.production'] as $name) {
+        $path = $root . '/' . $name;
+        $content = !is_link($path) && is_file($path) && filesize($path) <= 262144 ? (string) @file_get_contents($path) : '';
+        if ($content !== '' && preg_match('/^\s*(?:export\s+)?PORT\s*=/mi', $content)) {
+            $hints[] = $name . ' PORT';
+        }
+    }
+    if ($ecosystem) {
+        $ecosystemPath = $root . '/' . $ecosystem;
+        $content = !is_link($ecosystemPath) && is_file($ecosystemPath)
+            ? (string) @file_get_contents($ecosystemPath, false, null, 0, 262144)
+            : '';
+        if (preg_match('/\bPORT\b\s*[:=]/i', $content)) {
+            $hints[] = $ecosystem . ' PORT';
+        }
+    }
+    foreach (($package['scripts'] ?? []) as $command) {
+        if (is_string($command) && preg_match('/(?:^|\s)(?:--port(?:=|\s)|-p(?:=|\s)|PORT\s*=)/i', $command)) {
+            $hints[] = 'package.json script';
+            break;
+        }
+    }
+    foreach (array_merge(['Dockerfile'], glob($root . '/Dockerfile.*') ?: []) as $candidate) {
+        $path = str_starts_with($candidate, '/') ? $candidate : $root . '/' . $candidate;
+        if (!is_link($path) && is_file($path) && filesize($path) <= 262144 && textMentionsPort((string) @file_get_contents($path), $port)) {
+            $hints[] = basename($path);
+        }
+    }
+    return array_values(array_unique($hints));
+}
+
+function portRepairCapability(
+    Site $site,
+    string $root,
+    array $port,
+    ?string $composeFile,
+    ?array $compose,
+    ?array $package,
+    ?string $ecosystem,
+): array {
+    $expected = isset($port['expected']) && is_numeric($port['expected']) ? (int) $port['expected'] : null;
+    if (!$expected) return ['canApply' => false, 'detail' => 'This website has no configurable local application port.'];
+
+    if ($composeFile !== null) {
+        if (!is_array($compose) || ($compose['configValid'] ?? false) !== true) {
+            return ['canApply' => false, 'expectedPort' => $expected, 'file' => $composeFile,
+                'detail' => 'Validate the Compose configuration first; Panelavo will not edit an unresolved port mapping.'];
+        }
+        if (!empty($compose['portMatches'])) {
+            return ['canApply' => false, 'expectedPort' => $expected, 'file' => $composeFile,
+                'detail' => 'The Compose source already publishes the CloudPanel port on loopback.'];
+        }
+        if (($compose['safe'] ?? false) !== true) {
+            return ['canApply' => false, 'expectedPort' => $expected, 'file' => $composeFile,
+                'detail' => 'Resolve the reported Compose host-safety violation before changing its port mapping. Panelavo will not partially rewrite an unsafe project.'];
+        }
+        $service = (string) ($compose['entryService'] ?? '');
+        $container = (int) ($compose['containerPort'] ?? 0);
+        $published = (int) ($compose['publishedPort'] ?? 0);
+        $source = !is_link($root . '/' . $composeFile) && is_file($root . '/' . $composeFile) && filesize($root . '/' . $composeFile) <= 1048576
+            ? (string) @file_get_contents($root . '/' . $composeFile)
+            : '';
+        $loopback = $source !== '' ? rewriteComposePorts($source) : '';
+        $rewritten = $loopback !== '' && $service !== '' && $container > 0 && $published > 0
+            ? rewriteComposeEntryPort($loopback, $published, $container, $expected)
+            : null;
+        if (!empty($compose['canAutoRemap']) && is_string($rewritten) && $rewritten !== $source) {
+            return [
+                'canApply' => true,
+                'kind' => 'compose',
+                'expectedPort' => $expected,
+                'detectedPort' => $published,
+                'containerPort' => $container,
+                'file' => $composeFile,
+                'detail' => 'Panelavo can update ' . $composeFile . ' so entry service "' . $service . '" publishes container port ' . $container . ' privately as 127.0.0.1:' . $expected . '. Dockerfile EXPOSE and the in-container port remain ' . $container . '.',
+            ];
+        }
+        $instruction = $service !== '' && $container > 0
+            ? 'In ' . $composeFile . ', set entry service "' . $service . '" to `127.0.0.1:' . $expected . ':' . $container . '`. Keep Dockerfile EXPOSE and the in-container PORT at ' . $container . '.'
+            : 'Label exactly one service `io.panelavo.entrypoint=true` and, if needed, `io.panelavo.container-port=<port>`, then map it to `127.0.0.1:' . $expected . ':<container-port>`.';
+        return ['canApply' => false, 'expectedPort' => $expected, 'detectedPort' => $published ?: null, 'file' => $composeFile,
+            'detail' => $instruction . ' Panelavo found no single literal short mapping it could change without guessing, so it made no source edit.'];
+    }
+
+    if (!in_array($site->getType(), [Site::TYPE_NODEJS, Site::TYPE_PYTHON], true)) {
+        return ['canApply' => false, 'expectedPort' => $expected,
+            'detail' => 'Start the application on 127.0.0.1:' . $expected . ' or update the website upstream in Settings.'];
+    }
+    if (!empty($port['listening'])) {
+        return ['canApply' => false, 'expectedPort' => $expected,
+            'detail' => 'The application is already listening on the CloudPanel port.'];
+    }
+
+    $envPath = $root . '/.env';
+    $source = !is_link($envPath) && is_file($envPath) && filesize($envPath) <= 262144 ? (string) @file_get_contents($envPath) : '';
+    $dotenv = $source !== '' ? rewriteDotenvPort($source, $expected) : null;
+    $from = is_array($dotenv) ? (int) $dotenv['from'] : 0;
+    $hints = $from > 0 ? directPortSourceHints($root, $from, $package, $ecosystem) : [];
+    $blockingHints = array_values(array_filter($hints, static fn(string $hint): bool => $hint !== '.env PORT' && !str_starts_with($hint, 'Dockerfile')));
+    $detected = array_values(array_filter((array) ($port['detected'] ?? []), 'is_numeric'));
+    $listenerMatches = !$detected || (count($detected) === 1 && (int) $detected[0] === $from);
+    if (is_array($dotenv) && $from !== $expected && !$blockingHints && $listenerMatches) {
+        return [
+            'canApply' => true,
+            'kind' => 'dotenv',
+            'expectedPort' => $expected,
+            'detectedPort' => $from,
+            'file' => '.env',
+            'detail' => 'Panelavo can update the one unambiguous .env PORT assignment from ' . $from . ' to ' . $expected . '. The application must read PORT; restart it after the edit.',
+        ];
+    }
+    $observed = $hints ?: array_map(static fn($value): string => 'listener ' . (int) $value, $detected);
+    $where = $observed ? ' Detected: ' . implode(', ', $observed) . '.' : '';
+    return [
+        'canApply' => false,
+        'expectedPort' => $expected,
+        'detectedPort' => $from ?: (isset($detected[0]) ? (int) $detected[0] : null),
+        'file' => !is_link($envPath) && is_file($envPath) ? '.env' : null,
+        'detail' => 'Set `PORT=' . $expected . '` in .env, remove any hard-coded `--port`/`-p` or ecosystem PORT override, and make the application read PORT before restarting it.' . $where . ' Panelavo found more than one possible authority or no unique editable setting, so it made no change.',
+    ];
+}
+
 // One server-owned snapshot of everything Operations needs: manifests,
 // lockfiles, runtimes, managers, and the Compose capability. The same
 // snapshot backs the preflight response and every execution precondition, so
@@ -1990,6 +2121,8 @@ function operationsState(Site $site, User $user): array
     $pythonManifest = is_file($root . '/requirements.txt') || is_file($root . '/pyproject.toml') || is_file($root . '/Pipfile');
     $listeners = hostListeningPorts($site);
     $port = sitePortCapability($site, $listeners);
+    $compose = $composeFile !== null ? composeCapability($site, $root, $composeFile) : null;
+    $portRepair = portRepairCapability($site, $root, $port, $composeFile, $compose, $package, $ecosystem);
     return [
         'type' => $site->getType(),
         'path' => $root,
@@ -1998,6 +2131,7 @@ function operationsState(Site $site, User $user): array
         'reverseProxyUrl' => $site->getReverseProxyUrl(),
         'expectedPort' => $port['expected'],
         'port' => $port,
+        'portRepair' => $portRepair,
         'listeners' => array_values(array_map(
             static fn(array $item): array => ['port' => (int) $item['port'], 'address' => (string) $item['address'], 'process' => (string) $item['process']],
             array_filter($listeners, static fn(array $item): bool => !empty($item['siteOwned'])),
@@ -2026,7 +2160,7 @@ function operationsState(Site $site, User $user): array
         'packageManager' => $package !== null ? detectNodeManager($root, $package, $home) : null,
         'pythonManager' => $pythonManifest ? detectPythonManager($root, $home) : null,
         'tools' => $tools,
-        'compose' => $composeFile !== null ? composeCapability($site, $root, $composeFile) : null,
+        'compose' => $compose,
         'permissions' => [
             'manage' => in_array($user->getRole(), [User::ROLE_ADMIN, User::ROLE_SITE_MANAGER], true),
             'docker' => $user->getRole() === User::ROLE_ADMIN,
@@ -3353,6 +3487,9 @@ function recoverRootlessMigration(Site $site): array
 function executeFix(Site $site, string $fix, array &$results): void
 {
     switch ($fix) {
+        case 'align-application-port':
+            alignApplicationPort($site, $results);
+            return;
         case 'initialize-rootless-runtime':
             // Site-write self-service: per-user daemon bring-up only. No host
             // package installs or subordinate-range changes ever run here.
@@ -3485,6 +3622,75 @@ function rewriteComposePorts(string $text): string
     return implode("\n", $lines);
 }
 
+// Changes exactly one literal short-syntax entry mapping. The container port
+// and protocol stay intact; only the host-side publication is aligned with
+// CloudPanel and restricted to IPv4 loopback. Variables, ranges, flow syntax,
+// and duplicate matches are intentionally left for operator instructions.
+function rewriteComposeEntryPort(string $text, int $published, int $container, int $expected): ?string
+{
+    $lines = explode("\n", $text);
+    $portsIndent = null;
+    $candidates = [];
+    foreach ($lines as $index => $rawLine) {
+        $eol = '';
+        $line = $rawLine;
+        if (str_ends_with($line, "\r")) { $eol = "\r"; $line = substr($line, 0, -1); }
+        $indent = strlen($line) - strlen(ltrim($line, ' '));
+        $trimmed = trim($line);
+        if ($portsIndent !== null && $trimmed !== '' && $indent <= $portsIndent) $portsIndent = null;
+        if ($portsIndent === null) {
+            if (preg_match('/^(\s*)ports:\s*(#.*)?$/', $line, $match)) $portsIndent = strlen($match[1]);
+            continue;
+        }
+        if ($indent <= $portsIndent
+            || !preg_match('/^(\s*-\s*)(["\']?)([^"\'#]+?)\2(\s*(?:#.*)?)$/', $line, $match)) continue;
+        $value = trim($match[3]);
+        $protocol = '';
+        if (($slash = strrpos($value, '/')) !== false) {
+            $protocol = substr($value, $slash);
+            $value = substr($value, 0, $slash);
+        }
+        if (str_contains($value, '[')) continue;
+        $parts = explode(':', $value);
+        if (count($parts) === 2) [$host, $source, $target] = ['', $parts[0], $parts[1]];
+        elseif (count($parts) === 3) [$host, $source, $target] = $parts;
+        else continue;
+        if (!ctype_digit($source) || !ctype_digit($target)
+            || (int) $source !== $published || (int) $target !== $container) continue;
+        $replacement = '127.0.0.1:' . $expected . ':' . $container . $protocol;
+        $candidates[] = [$index, $match[1] . $match[2] . $replacement . $match[2] . $match[4] . $eol];
+    }
+    if (count($candidates) !== 1) return null;
+    [$index, $replacement] = $candidates[0];
+    $lines[$index] = $replacement;
+    return implode("\n", $lines);
+}
+
+// Rewrites only one plain numeric PORT assignment while preserving its
+// spacing, export prefix, quoting, comments, and every unrelated line.
+function rewriteDotenvPort(string $text, int $expected): ?array
+{
+    $lines = explode("\n", $text);
+    $candidates = [];
+    foreach ($lines as $index => $rawLine) {
+        $eol = '';
+        $line = $rawLine;
+        if (str_ends_with($line, "\r")) { $eol = "\r"; $line = substr($line, 0, -1); }
+        if (!preg_match('/^(\s*(?:export\s+)?PORT\s*=\s*)(["\']?)(\d{1,5})\2(\s*(?:#.*)?)$/', $line, $match)) continue;
+        $port = (int) $match[3];
+        if ($port < 1 || $port > 65535) return null;
+        $candidates[] = [
+            'index' => $index,
+            'from' => $port,
+            'line' => $match[1] . $match[2] . $expected . $match[2] . $match[4] . $eol,
+        ];
+    }
+    if (count($candidates) !== 1) return null;
+    $candidate = $candidates[0];
+    $lines[$candidate['index']] = $candidate['line'];
+    return ['from' => $candidate['from'], 'text' => implode("\n", $lines)];
+}
+
 function composeDiffSummary(string $before, string $after): string
 {
     $old = explode("\n", $before);
@@ -3500,59 +3706,161 @@ function composeDiffSummary(string $before, string $after): string
     return $changes ? implode("\n", $changes) : '(no line changes)';
 }
 
-// Site-scoped repair for the "publishes a port without binding it to
-// 127.0.0.1" host-safety blocker. The edited file is validated with
-// `docker compose config` and re-scanned against the full safety policy; the
-// change is committed only when the result is fully safe, so the file is never
-// left broken or still-unsafe. A one-time backup is written next to it.
-function bindComposePortsToLoopback(Site $site, array &$results): void
+function portRepairPlanForSite(Site $site): array
 {
-    $fix = 'bind-ports-loopback';
     $root = siteRootPath($site);
-    $compose = findComposeFile($root);
-    if (!$compose) { syntheticFixStep($results, $fix, 'Locate Compose file', 'find compose file', false, 'No Compose file was found in the site root or a subfolder.'); return; }
-    $path = $root . '/' . $compose;
+    $composeFile = findComposeFile($root);
+    $compose = $composeFile !== null ? composeCapability($site, $root, $composeFile) : null;
+    $package = is_file($root . '/package.json') ? json_decode((string) @file_get_contents($root . '/package.json'), true) : null;
+    $package = is_array($package) ? $package : null;
+    $ecosystem = null;
+    foreach (['ecosystem.config.js', 'ecosystem.config.cjs', 'ecosystem.config.json'] as $candidate) {
+        if (is_file($root . '/' . $candidate)) { $ecosystem = $candidate; break; }
+    }
+    $port = sitePortCapability($site, hostListeningPorts($site));
+    return portRepairCapability($site, $root, $port, $composeFile, $compose, $package, $ecosystem);
+}
+
+function portBackupDirectory(Site $site, bool $create): ?string
+{
+    $base = PANELAVO_PORT_BACKUP_ROOT;
+    $parent = dirname($base);
+    if (is_link($parent)) return null;
+    if (!is_dir($parent) && (!$create || !@mkdir($parent, 0755, true))) return null;
+    $parentReal = realpath($parent);
+    $parentStat = @lstat($parent);
+    if ($parentReal !== $parent || !is_array($parentStat) || (int) ($parentStat['uid'] ?? -1) !== 0) return null;
+    if (is_link($base)) return null;
+    if (!is_dir($base) && (!$create || !@mkdir($base, 0700, true))) return null;
+    $real = realpath($base);
+    $stat = @lstat($base);
+    if ($real !== $base || !is_array($stat) || (int) ($stat['uid'] ?? -1) !== 0) return null;
+    @chmod($base, 0700);
+    $directory = $base . '/' . hash('sha256', strtolower((string) $site->getId() . "\n" . (string) $site->getDomainName()));
+    if (is_link($directory)) return null;
+    if (!is_dir($directory) && (!$create || !@mkdir($directory, 0700))) return null;
+    $real = realpath($directory);
+    $stat = @lstat($directory);
+    if ($real !== $directory || !is_array($stat) || (int) ($stat['uid'] ?? -1) !== 0) return null;
+    @chmod($directory, 0700);
+    return $directory;
+}
+
+function commitPortSourceRewrite(
+    Site $site,
+    array &$results,
+    string $relative,
+    string $path,
+    string $staged,
+    string $original,
+    string $rewritten,
+): bool {
+    $fix = 'align-application-port';
+    if (is_link($path) || !is_file($path) || hash_file('sha256', $path) !== hash('sha256', $original)) {
+        @unlink($staged);
+        return syntheticFixStep($results, $fix, 'Revalidate source file', 'verify ' . $relative, false,
+            'The source file changed while the repair was being prepared. Refresh preflight and try again; no change was made.');
+    }
+    $backupDirectory = portBackupDirectory($site, true);
+    if (!$backupDirectory) {
+        @unlink($staged);
+        return syntheticFixStep($results, $fix, 'Create protected backup', 'backup ' . $relative, false,
+            'The root-owned backup directory could not be prepared; no change was made.');
+    }
+    $backup = $backupDirectory . '/' . gmdate('Ymd-His') . '-' . hash('sha256', $relative) . '.bak';
+    if (file_exists($backup)) $backup .= '-' . bin2hex(random_bytes(3));
+    $backupOk = @file_put_contents($backup, $original, LOCK_EX) !== false
+        && hash_file('sha256', $backup) === hash('sha256', $original);
+    if (!$backupOk) {
+        @unlink($backup);
+        @unlink($staged);
+        return syntheticFixStep($results, $fix, 'Create protected backup', 'backup ' . $relative, false,
+            'The source backup could not be verified; no change was made.');
+    }
+    @chmod($backup, 0600);
+    $sourceStat = @lstat($path);
+    $prepared = is_array($sourceStat)
+        && @chmod($staged, (int) $sourceStat['mode'] & 0777)
+        && @chown($staged, (int) $sourceStat['uid'])
+        && @chgrp($staged, (int) $sourceStat['gid']);
+    if (!$prepared) {
+        @unlink($backup);
+        @unlink($staged);
+        return syntheticFixStep($results, $fix, 'Preserve source ownership', 'prepare ' . $relative, false,
+            'The staged file could not preserve the original mode and numeric ownership; the original file was left unchanged.');
+    }
+    $committed = @rename($staged, $path);
+    if (!$committed) {
+        @unlink($backup);
+        @unlink($staged);
+    }
+    return syntheticFixStep($results, $fix, 'Save aligned port source', 'edit ' . $relative, $committed,
+        $committed
+            ? 'Updated ' . $relative . ' after validation. A verified root-owned backup was retained. Restart or deploy the website to apply the new source setting.' . "\n" . composeDiffSummary($original, $rewritten)
+            : 'The validated source could not be atomically installed; the original file was left unchanged.');
+}
+
+// Site-scoped source repair. It never guesses: the preflight plan and this
+// execution pass must independently find the same unique literal setting.
+// Compose is resolved and safety-scanned before the staged file replaces the
+// source; dotenv rewrites preserve every unrelated byte. No service restarts.
+function alignApplicationPort(Site $site, array &$results): void
+{
+    $fix = 'align-application-port';
+    $root = siteRootPath($site);
+    $plan = portRepairPlanForSite($site);
+    if (empty($plan['canApply']) || !in_array($plan['kind'] ?? null, ['compose', 'dotenv'], true)) {
+        syntheticFixStep($results, $fix, 'Revalidate port repair', 'inspect detected port sources', false,
+            (string) ($plan['detail'] ?? 'No unambiguous source setting is available.'));
+        return;
+    }
+    $relative = (string) $plan['file'];
+    $path = $root . '/' . $relative;
+    if (!pathIsContained($path, $root) || is_link($path) || !is_file($path)) {
+        syntheticFixStep($results, $fix, 'Revalidate source file', 'verify ' . $relative, false, 'The planned source file is unavailable or unsafe; no change was made.');
+        return;
+    }
     $original = (string) @file_get_contents($path);
-    if ($original === '') { syntheticFixStep($results, $fix, 'Read Compose file', 'read ' . $compose, false, 'The Compose file could not be read.'); return; }
+    $expected = (int) $plan['expectedPort'];
+    $directoryRelative = dirname($relative) === '.' ? '' : dirname($relative) . '/';
+    $stagedRelative = $directoryRelative . '.panelavo-port-check-' . bin2hex(random_bytes(6)) . (($plan['kind'] ?? '') === 'compose' ? '.yaml' : '.env');
+    $staged = $root . '/' . $stagedRelative;
 
-    $rewritten = rewriteComposePorts($original);
-    if ($rewritten === $original) {
-        syntheticFixStep($results, $fix, 'Rewrite published ports', 'edit ' . $compose, false,
-            'Panelavo could not automatically rewrite the published ports — they may use the long mapping or flow syntax. Bind each published port manually: short syntax "127.0.0.1:8080:80", or long syntax with "host_ip: 127.0.0.1".');
+    if ($plan['kind'] === 'compose') {
+        $rewritten = rewriteComposeEntryPort(
+            rewriteComposePorts($original),
+            (int) $plan['detectedPort'],
+            (int) $plan['containerPort'],
+            $expected,
+        );
+        if (!is_string($rewritten) || $rewritten === $original || @file_put_contents($staged, $rewritten, LOCK_EX) === false) {
+            @unlink($staged);
+            syntheticFixStep($results, $fix, 'Stage Compose port repair', 'rewrite ' . $relative, false, 'The unique Compose mapping could not be reproduced; no change was made.');
+            return;
+        }
+        @chown($staged, $site->getUser()); @chgrp($staged, $site->getUser());
+        $config = runRootlessDockerCommand($site, ['docker', 'compose', '-f', $stagedRelative, '-p', composeProjectName($site), 'config', '--format', 'json'], 60, $root);
+        $parsed = $config['code'] === 0 ? json_decode($config['stdout'], true) : null;
+        $routing = is_array($parsed) ? composePortRouting($expected, $parsed) : [];
+        $safety = is_array($parsed) ? composeSafetyScan($parsed, $root) : ['safe' => false];
+        $valid = $config['code'] === 0 && !empty($routing['portMatches']) && !empty($safety['safe']);
+        syntheticFixStep($results, $fix, 'Validate aligned Compose', 'docker compose config and host-safety scan', $valid,
+            $valid ? 'The staged source resolves to the CloudPanel port on loopback and passes the host-safety policy.' : 'The staged Compose source did not resolve to one safe matching loopback entry. No change was made.');
+        if (!$valid) { @unlink($staged); return; }
+        commitPortSourceRewrite($site, $results, $relative, $path, $staged, $original, $rewritten);
         return;
     }
 
-    $tmpName = '.panelavo-compose-check.yaml';
-    $tmpPath = $root . '/' . $tmpName;
-    if (@file_put_contents($tmpPath, $rewritten) === false) {
-        syntheticFixStep($results, $fix, 'Stage rewritten Compose', 'write ' . $tmpName, false, 'A temporary Compose file could not be written to the site root.');
+    $dotenv = rewriteDotenvPort($original, $expected);
+    $rewritten = is_array($dotenv) ? (string) $dotenv['text'] : '';
+    $valid = $rewritten !== '' && (parseEnvContent($rewritten)['PORT'] ?? null) === (string) $expected;
+    if (!$valid || @file_put_contents($staged, $rewritten, LOCK_EX) === false) {
+        @unlink($staged);
+        syntheticFixStep($results, $fix, 'Stage .env port repair', 'rewrite .env PORT', false, 'The unique .env PORT assignment could not be reproduced; no change was made.');
         return;
     }
-    @chown($tmpPath, $site->getUser());
-    @chgrp($tmpPath, $site->getUser());
-    try {
-        $config = runSiteCommand($site, ['docker', 'compose', '-f', $tmpName, '-p', composeProjectName($site), 'config', '--format', 'json'], 60, true);
-        if ($config['code'] !== 0) {
-            syntheticFixStep($results, $fix, 'Validate rewritten Compose', 'docker compose config', false,
-                (trim($config['stderr'] !== '' ? $config['stderr'] : $config['stdout']) ?: 'The rewritten Compose file failed validation.') . "\nNo changes were made.");
-            return;
-        }
-        $parsed = json_decode($config['stdout'], true);
-        $scan = is_array($parsed) ? composeSafetyScan($parsed, $root) : ['safe' => false, 'detail' => 'The rewritten configuration could not be parsed.'];
-        if (($scan['safe'] ?? false) !== true) {
-            syntheticFixStep($results, $fix, 'Verify host-safety policy', 're-scan resolved config', false,
-                'The automatic rewrite did not fully satisfy the host-safety policy' . (!empty($scan['detail']) ? ': ' . $scan['detail'] : '') . ". No changes were made; please adjust the Compose file manually.");
-            return;
-        }
-        @copy($path, $path . '.panelavo.bak');
-        $ok = @file_put_contents($path, $rewritten) !== false;
-        if ($ok) { @chown($path, $site->getUser()); @chgrp($path, $site->getUser()); }
-        syntheticFixStep($results, $fix, 'Bind published ports to 127.0.0.1', 'edit ' . $compose, $ok,
-            $ok ? "Updated $compose (backup saved as $compose.panelavo.bak).\n" . composeDiffSummary($original, $rewritten)
-                : 'The validated Compose file could not be written back.');
-    } finally {
-        @unlink($tmpPath);
-    }
+    syntheticFixStep($results, $fix, 'Validate aligned .env', 'parse .env PORT', true, 'The staged .env contains exactly one numeric PORT matching CloudPanel.');
+    commitPortSourceRewrite($site, $results, $relative, $path, $staged, $original, $rewritten);
 }
 
 function readMeminfo(): array
@@ -5550,6 +5858,13 @@ function runComposePortSelfTest(): never
     $assert((int) ($config['services']['frontend']['ports'][0]['published'] ?? 0) === 3000, 'source config must not be mutated');
     $assert(array_key_exists('ipam', $config['networks']['default']), 'source network config must not be mutated');
 
+    $source = "services:\n  frontend:\n    ports:\n      - \"3000:3000\" # public entry\n    environment:\n      PORT: 3000\n";
+    $aligned = rewriteComposeEntryPort(rewriteComposePorts($source), 3000, 3000, 24001);
+    $assert(is_string($aligned) && str_contains($aligned, '"127.0.0.1:24001:3000" # public entry'), 'one literal entry mapping should align to the CloudPanel port');
+    $assert(str_contains((string) $aligned, 'PORT: 3000'), 'the in-container application port must remain unchanged');
+    $duplicate = $source . "  worker:\n    ports:\n      - \"3000:3000\"\n";
+    $assert(rewriteComposeEntryPort(rewriteComposePorts($duplicate), 3000, 3000, 24001) === null, 'duplicate source mappings must remain ambiguous');
+
     $ambiguous = composePortRouting(24001, ['services' => [
         'alpha' => ['ports' => [['target' => 8000, 'published' => '8000']]],
         'beta' => ['ports' => [['target' => 9000, 'published' => '9000']]],
@@ -5605,6 +5920,19 @@ function runEnvSelfTest(): never
     $assert(str_contains($rendered, 'ADDED="has spaces \\"and\\" quotes"'), 'unsafe values should be quoted and escaped');
     $assert(parseEnvContent($rendered)['ADDED'] === 'has spaces "and" quotes', 'rendered files should round-trip');
     $assert(renderEnvFile('', []) === '', 'an empty save should produce an empty file');
+    $port = rewriteDotenvPort("# keep\nexport PORT=\"3000\" # app\nAPP_URL=https://example.com\n", 24001);
+    $assert(is_array($port) && ($port['from'] ?? null) === 3000, 'one numeric PORT assignment should be detected');
+    $assert(str_contains((string) ($port['text'] ?? ''), 'export PORT="24001" # app'), 'only the PORT value should be rewritten');
+    $assert(rewriteDotenvPort("PORT=3000\nPORT=4000\n", 24001) === null, 'duplicate PORT assignments must remain ambiguous');
+    $temporary = sys_get_temp_dir() . '/panelavo-port-source-self-test-' . bin2hex(random_bytes(4));
+    mkdir($temporary, 0700);
+    file_put_contents($temporary . '/.env', "PORT=3000\n");
+    file_put_contents($temporary . '/.env.production', "PORT=4000\n");
+    $hints = directPortSourceHints($temporary, 3000, ['scripts' => ['start' => 'node server.js --port 4000']], null);
+    $assert(in_array('.env PORT', $hints, true), 'the primary dotenv source should be detected');
+    $assert(in_array('.env.production PORT', $hints, true), 'a conflicting dotenv authority should be detected regardless of its value');
+    $assert(in_array('package.json script', $hints, true), 'a hard-coded package script port should be detected regardless of its value');
+    deleteTree($temporary);
     echo "Environment management self-test passed.\n";
     exit(0);
 }
@@ -5940,6 +6268,8 @@ try {
             if ($deleteResult['code'] !== 0) finishClpctl($deleteResult);
             $scaffoldPath = freshSiteScaffoldPath($site, false);
             if ($scaffoldPath) @unlink($scaffoldPath);
+            $portBackupDirectory = portBackupDirectory($site, false);
+            if ($portBackupDirectory && is_dir($portBackupDirectory)) deleteTree($portBackupDirectory);
             finishClpctl($deleteResult);
 
         case 'clpctl-db-add':
@@ -6515,10 +6845,10 @@ try {
                     // requesting site user's own daemon (never apt/usermod), so a
                     // site-write user may run it — the manage-section gate above
                     // already proved site-write access — and it is serialized per
-                    // site like any other operation. Every other fix changes
-                    // shared APT/systemd host state and stays Super Admin-only,
-                    // serialized host-wide.
-                    $selfService = $fix === 'initialize-rootless-runtime';
+                    // site like the contained port-source repair. Every other fix
+                    // changes shared APT/systemd host state and stays Super
+                    // Admin-only, serialized host-wide.
+                    $selfService = in_array($fix, ['initialize-rootless-runtime', 'align-application-port'], true);
                     if (!$selfService && $user->getRole() !== User::ROLE_ADMIN) respond(['ok' => false, 'code' => 'FORBIDDEN']);
                     $lockPath = $selfService
                         ? '/var/lock/panelavo-operations-' . $site->getUser() . '.lock'

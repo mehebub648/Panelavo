@@ -70,6 +70,12 @@ describe("operationsRequestSchema", () => {
         fix: "initialize-rootless-docker",
       }),
     ).toEqual({ action: "fix", fix: "initialize-rootless-docker" });
+    expect(
+      operationsRequestSchema.parse({
+        action: "fix",
+        fix: "align-application-port",
+      }),
+    ).toEqual({ action: "fix", fix: "align-application-port" });
     expect(() =>
       operationsRequestSchema.parse({ action: "fix", fix: "install-anything" }),
     ).toThrow();

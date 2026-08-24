@@ -147,6 +147,16 @@ export type SitePortCapability = {
   detail: string;
 };
 
+export type PortRepairCapability = {
+  canApply: boolean;
+  kind?: "compose" | "dotenv";
+  expectedPort?: number;
+  detectedPort?: number;
+  containerPort?: number;
+  file?: string;
+  detail: string;
+};
+
 export type OperationStepResult = {
   command: string;
   label: string;
@@ -176,6 +186,7 @@ export type RawOperationsData = {
   reverseProxyUrl?: string;
   expectedPort?: number;
   port?: SitePortCapability;
+  portRepair?: PortRepairCapability;
   checkedAt?: string;
   hasPackageJson?: boolean;
   hasPackageLock?: boolean;
@@ -221,6 +232,7 @@ export type ArchitectureDetection = {
 };
 
 export type OperationFixId =
+  | "align-application-port"
   | "initialize-rootless-docker"
   | "initialize-rootless-runtime"
   | "install-docker"
@@ -229,8 +241,8 @@ export type OperationFixId =
   | "install-composer";
 
 // A server-owned remediation for a failed preflight check: one click runs an
-// allow-listed, host-scoped repair (for installs: latest release from the
-// official upstream source, never a stale distribution package).
+// allow-listed site or host repair. Installs use the latest release from the
+// official upstream source, never a stale distribution package.
 export type OperationFix = {
   id: OperationFixId;
   label: string;

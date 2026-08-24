@@ -29,7 +29,7 @@ import {
 import { getSiteTypeOverrides } from "@/server/sites/site-type-overlay";
 import { AppError } from "./errors";
 
-export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 20;
+export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 21;
 export const CLOUDPANEL_BROKER_PATH =
   "/usr/local/libexec/panelavo/panelavo-broker";
 

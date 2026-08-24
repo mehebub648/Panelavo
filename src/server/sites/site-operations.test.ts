@@ -289,6 +289,16 @@ describe("normalizeOperationsData", () => {
             },
           ],
         },
+        portRepair: {
+          canApply: true,
+          kind: "compose",
+          expectedPort: 24001,
+          detectedPort: 3000,
+          containerPort: 3000,
+          file: "compose.yaml",
+          detail:
+            'Panelavo can update compose.yaml to publish entry service "frontend" as 127.0.0.1:24001:3000.',
+        },
       },
       { typeOverride: "docker", panelAdmin: true },
     );
@@ -296,7 +306,11 @@ describe("normalizeOperationsData", () => {
     expect(data.preflight.status).toBe("warning");
     expect(
       data.preflight.checks.find((item) => item.id === "entry-port"),
-    ).toMatchObject({ status: "warning", blocker: false });
+    ).toMatchObject({
+      status: "warning",
+      blocker: false,
+      fix: { id: "align-application-port", scope: "site", status: "ready" },
+    });
     expect(data.plan).toMatchObject({ id: "compose", status: "ready" });
     expect(data.plan?.warnings.join(" ")).toContain("127.0.0.1:24001");
   });
@@ -346,6 +360,14 @@ describe("normalizeOperationsData", () => {
         detail:
           "CloudPanel expects port 24001, but site-owned processes currently listen on 3000.",
       },
+      portRepair: {
+        canApply: true,
+        kind: "dotenv",
+        expectedPort: 24001,
+        detectedPort: 3000,
+        file: ".env",
+        detail: "Panelavo can update the unique .env PORT assignment.",
+      },
       hasPackageJson: true,
       hasStartScript: true,
       packageManager: {
@@ -358,7 +380,11 @@ describe("normalizeOperationsData", () => {
 
     expect(
       data.preflight.checks.find((item) => item.id === "runtime-port"),
-    ).toMatchObject({ status: "warning", blocker: false });
+    ).toMatchObject({
+      status: "warning",
+      blocker: false,
+      fix: { id: "align-application-port", scope: "site", status: "ready" },
+    });
     expect(data.plan).toMatchObject({ id: "node", status: "ready" });
     expect(data.plan?.steps.at(-1)?.command).toBe("runtime-port-verify");
     expect(data.plan?.warnings.join(" ")).toContain("listen on 3000");
@@ -595,6 +621,9 @@ describe("normalizeOperationsData", () => {
 
     expect(
       data.preflight.checks.find((item) => item.id === "compose-safety")?.fix,
+    ).toBeUndefined();
+    expect(
+      data.preflight.checks.find((item) => item.id === "entry-port")?.fix,
     ).toBeUndefined();
   });
 

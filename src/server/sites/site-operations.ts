@@ -218,6 +218,20 @@ const FIXES: Record<
   OperationFix["id"],
   Omit<OperationFix, "status" | "blockedBy">
 > = {
+  "align-application-port": {
+    id: "align-application-port",
+    label: "Fix port configuration",
+    description:
+      "Align one verified source port setting with CloudPanel and keep a timestamped backup.",
+    risk: "disruptive",
+    scope: "site",
+    confirmation: {
+      title: "Fix this website's port configuration?",
+      message:
+        "Panelavo will edit only the verified Compose host mapping or .env PORT assignment shown in preflight, restrict published Compose ports to loopback, validate the result, and retain a timestamped backup. It will not rewrite Dockerfile container ports, guess ambiguous settings, or restart the website.",
+      confirmText: "Fix port configuration",
+    },
+  },
   "initialize-rootless-docker": {
     id: "initialize-rootless-docker",
     label: "Initialize rootless Docker",
@@ -462,11 +476,14 @@ function preflightChecks(raw: RawOperationsData, type: string) {
           !raw.compose?.portMatches &&
           !raw.compose?.canAutoRemap,
         remediation:
-          raw.compose?.configValid !== true ||
-          raw.compose?.portMatches ||
-          raw.compose?.canAutoRemap
+          raw.compose?.configValid !== true || raw.compose?.portMatches
             ? undefined
-            : "Label exactly one service io.panelavo.entrypoint=true and, when it exposes multiple container ports, set io.panelavo.container-port=<port>.",
+            : raw.portRepair?.detail ||
+              "Label exactly one service io.panelavo.entrypoint=true and, when it exposes multiple container ports, set io.panelavo.container-port=<port>.",
+        fix:
+          !raw.compose?.portMatches && raw.portRepair?.canApply
+            ? makeFix(raw, FIXES["align-application-port"])
+            : undefined,
       },
       check(
         "docker-permission",
@@ -632,8 +649,14 @@ function preflightChecks(raw: RawOperationsData, type: string) {
         raw.port.listening,
         raw.port.detail,
         raw.port.detail,
-        `The deployment will provide PORT=${raw.port.expected} and verify 127.0.0.1:${raw.port.expected}. If an ecosystem file overrides PORT, update it to match the configured port.`,
-        { warning: true },
+        raw.portRepair?.detail ||
+          `The deployment will provide PORT=${raw.port.expected} and verify 127.0.0.1:${raw.port.expected}. If an ecosystem file overrides PORT, update it to match the configured port.`,
+        {
+          warning: true,
+          fix: raw.portRepair?.canApply
+            ? makeFix(raw, FIXES["align-application-port"])
+            : undefined,
+        },
       ),
     );
   } else if (type === "reverse-proxy" && raw.port?.expected) {
