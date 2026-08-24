@@ -8,7 +8,7 @@ import { getServerPublicIp } from "@/server/network/server-ip";
 import { getBaseDomain } from "@/server/settings/store";
 import { removeBackupSchedule } from "@/server/backups/schedule";
 import { removeOffsiteDestination } from "@/server/backups/offsite";
-import { issueSiteSsl, planSiteSsl } from "@/server/sites/ensure-ssl";
+import { secureCreatedSite } from "@/server/sites/initial-site-ssl";
 import {
   getLabelsForSites,
   getSiteLabel,
@@ -220,21 +220,13 @@ export async function createManagedSite(
       );
     }
   }
-  const plan = await planSiteSsl({
-    userId: actor.user.id,
-    systemDomain: domain,
-    aliases,
-    serverIp,
-    autoPoint: true,
-  });
-  warnings.push(...plan.warnings);
-  void issueSiteSsl(actor.cloudPanel, domain, plan.san).catch(
-    (error: unknown) => {
-      console.error(
-        `Let's Encrypt issuance failed for new site ${domain}:`,
-        error,
-      );
-    },
+  warnings.push(
+    ...(await secureCreatedSite(actor.cloudPanel, {
+      userId: actor.user.id,
+      systemDomain: domain,
+      aliases,
+      serverIp,
+    })),
   );
 
   return {
