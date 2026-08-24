@@ -94,6 +94,9 @@ remove_ssh_guard() {
   elif [ "${FAIL2BAN_SSH_GUARD_ADDED}" = "true" ]; then
     fail2ban-client set sshd delignoreip "${SSH_CLIENT_IP}" >/dev/null 2>&1 || true
   fi
+  if [ -n "${SETUP_CREDENTIALS_FILE:-}" ] && [ -f "${SETUP_CREDENTIALS_FILE}" ]; then
+    warn "Setup did not finish; generated credentials remain in ${SETUP_CREDENTIALS_FILE} (root-only). Rerun setup to continue."
+  fi
 }
 trap remove_ssh_guard EXIT INT TERM
 
@@ -279,10 +282,47 @@ if [ -n "${PANEL_BASE_DOMAIN}" ]; then
     die "The sslip.io hostname ${WILDCARD_PROBE} did not resolve to ${SERVER_IP}. Check outbound DNS and try again."
   fi
 fi
-ADMIN_USER="${ADMIN_USER:-admin}"
+SETUP_CREDENTIALS_FILE="/root/.panelavo-setup-credentials"
+PENDING_ADMIN_USER=""
+PENDING_ADMIN_PASSWORD=""
+PENDING_SITE_USER=""
+PENDING_SITE_USER_PASSWORD=""
+if [ -e "${SETUP_CREDENTIALS_FILE}" ]; then
+  [ "$(stat -c '%u:%a' "${SETUP_CREDENTIALS_FILE}")" = "0:600" ] || die "Refusing unsafe setup credential handoff: ${SETUP_CREDENTIALS_FILE} must be root-owned with mode 600."
+  PENDING_ADMIN_USER="$(sed -n 's/^ADMIN_USER_B64=//p' "${SETUP_CREDENTIALS_FILE}" | head -1 | base64 -d)"
+  PENDING_ADMIN_PASSWORD="$(sed -n 's/^ADMIN_PASSWORD_B64=//p' "${SETUP_CREDENTIALS_FILE}" | head -1 | base64 -d)"
+  PENDING_SITE_USER="$(sed -n 's/^SITE_USER_B64=//p' "${SETUP_CREDENTIALS_FILE}" | head -1 | base64 -d)"
+  PENDING_SITE_USER_PASSWORD="$(sed -n 's/^SITE_USER_PASSWORD_B64=//p' "${SETUP_CREDENTIALS_FILE}" | head -1 | base64 -d)"
+fi
+
+ADMIN_PASSWORD_EXPLICIT=false
+[ -n "${ADMIN_PASSWORD:-}" ] && ADMIN_PASSWORD_EXPLICIT=true
+ADMIN_USER="${ADMIN_USER:-${PENDING_ADMIN_USER:-admin}}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@${PANEL_DOMAIN}}"
+if [ -z "${ADMIN_PASSWORD:-}" ] && [ "${PENDING_ADMIN_USER}" = "${ADMIN_USER}" ]; then
+  ADMIN_PASSWORD="${PENDING_ADMIN_PASSWORD}"
+fi
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 16)!Aa1}"
 log "panelavo domain: ${PANEL_DOMAIN} — Super Admin: ${ADMIN_USER}"
+
+write_setup_credentials() {
+  local temporary="${SETUP_CREDENTIALS_FILE}.tmp"
+  (
+    umask 077
+    {
+      if [ "${ADMIN_PASSWORD}" != "(unchanged)" ]; then
+        printf 'ADMIN_USER_B64=%s\n' "$(printf '%s' "${ADMIN_USER}" | base64 -w0)"
+        printf 'ADMIN_PASSWORD_B64=%s\n' "$(printf '%s' "${ADMIN_PASSWORD}" | base64 -w0)"
+      fi
+      if [ -n "${SITE_USER_PASSWORD:-}" ] && [ "${SITE_USER_PASSWORD}" != "(unchanged)" ]; then
+        printf 'SITE_USER_B64=%s\n' "$(printf '%s' "${SITE_USER}" | base64 -w0)"
+        printf 'SITE_USER_PASSWORD_B64=%s\n' "$(printf '%s' "${SITE_USER_PASSWORD}" | base64 -w0)"
+      fi
+    } > "${temporary}"
+  )
+  chmod 600 "${temporary}"
+  mv -f "${temporary}" "${SETUP_CREDENTIALS_FILE}"
+}
 
 # ---------------------------------------------------------------------------
 # 4. CloudPanel
@@ -327,8 +367,15 @@ EXISTING_EMAIL_STATUS="$(printf '%s\n' "${CLOUDPANEL_USERS}" | awk -F'|' -v want
 if [ -n "${EXISTING_USERNAME_ROLE}" ]; then
   [ "${EXISTING_USERNAME_ROLE}" = "admin" ] || die "CloudPanel user '${ADMIN_USER}' already exists without the Admin role. Choose a different ADMIN_USER."
   [ "${EXISTING_USERNAME_STATUS}" = "active" ] || die "CloudPanel Admin '${ADMIN_USER}' is not active. Activate it or choose a different ADMIN_USER."
-  log "Super Admin '${ADMIN_USER}' already exists — leaving the account untouched."
-  ADMIN_PASSWORD="(unchanged)"
+  if [ "${ADMIN_PASSWORD_EXPLICIT}" = "true" ]; then
+    log "Resetting the existing Super Admin '${ADMIN_USER}' password requested through ADMIN_PASSWORD ..."
+    clpctl user:reset:password --userName="${ADMIN_USER}" --password="${ADMIN_PASSWORD}"
+  elif [ "${PENDING_ADMIN_USER}" = "${ADMIN_USER}" ] && [ -n "${PENDING_ADMIN_PASSWORD}" ]; then
+    log "Super Admin '${ADMIN_USER}' already exists — reusing the pending setup credential."
+  else
+    log "Super Admin '${ADMIN_USER}' already exists — leaving the account untouched."
+    ADMIN_PASSWORD="(unchanged)"
+  fi
 elif [ -n "${EXISTING_EMAIL_USER}" ]; then
   [ "${EXISTING_EMAIL_ROLE}" = "admin" ] || die "CloudPanel email '${ADMIN_EMAIL}' already belongs to a non-Admin user. Choose a different ADMIN_EMAIL."
   [ "${EXISTING_EMAIL_STATUS}" = "active" ] || die "CloudPanel Admin '${EXISTING_EMAIL_USER}' is not active. Activate it or choose a different ADMIN_EMAIL."
@@ -337,6 +384,7 @@ elif [ -n "${EXISTING_EMAIL_USER}" ]; then
   ADMIN_PASSWORD="(unchanged)"
 else
   log "Creating Super Admin '${ADMIN_USER}' in CloudPanel ..."
+  write_setup_credentials
   clpctl user:add \
     --userName="${ADMIN_USER}" \
     --email="${ADMIN_EMAIL}" \
@@ -408,12 +456,19 @@ log "PM2 $(/usr/local/bin/pm2 -v | tail -1) available system-wide."
 # 7. CloudPanel site owned by the panelavo system user
 # ---------------------------------------------------------------------------
 SITE_ROOT="/home/${SITE_USER}/htdocs/${PANEL_DOMAIN}"
-SITE_USER_PASSWORD="$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 16)!Aa1"
+if [ "${PENDING_SITE_USER}" = "${SITE_USER}" ] && [ -n "${PENDING_SITE_USER_PASSWORD}" ]; then
+  SITE_USER_PASSWORD="${PENDING_SITE_USER_PASSWORD}"
+else
+  SITE_USER_PASSWORD="$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 16)!Aa1"
+fi
 if [ -d "${SITE_ROOT}" ]; then
   log "Site ${PANEL_DOMAIN} already exists — skipping site creation."
-  SITE_USER_PASSWORD="(unchanged)"
+  if [ "${PENDING_SITE_USER}" != "${SITE_USER}" ] || [ -z "${PENDING_SITE_USER_PASSWORD}" ]; then
+    SITE_USER_PASSWORD="(unchanged)"
+  fi
 else
   log "Creating Node.js site ${PANEL_DOMAIN} (site user: ${SITE_USER}) ..."
+  write_setup_credentials
   clpctl site:add:nodejs \
     --domainName="${PANEL_DOMAIN}" \
     --nodejsVersion="${NODEJS_SITE_VERSION}" \
@@ -833,3 +888,4 @@ cat <<EOF
  Manage the process as ${SITE_USER}: pm2 status | pm2 logs panelavo
 ============================================================
 EOF
+rm -f "${SETUP_CREDENTIALS_FILE}"

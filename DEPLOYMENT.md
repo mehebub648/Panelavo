@@ -10,6 +10,8 @@ document is for manual operation and updates afterwards. Run all commands as
 the panel's site user from the application directory
 (`/home/<site-user>/htdocs/<panel-domain>`).
 
+Generated Admin and site-user credentials are staged in `/root/.panelavo-setup-credentials` with mode 0600 before their accounts are created. If a later installation step fails, rerunning setup reuses the pending credentials; the file is deleted only after the successful summary is printed. An explicitly supplied `ADMIN_PASSWORD` resets the matching existing active Admin during a retry.
+
 ---
 
 ## Prerequisites (one time)
