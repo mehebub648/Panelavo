@@ -450,7 +450,9 @@ fi
 chmod a+rx /usr/local/lib/node_modules
 chmod -R a+rX "${PM2_ROOT}"
 sudo -u nobody test -x /usr/local/bin/pm2 || die "Shared PM2 is not executable by non-root users."
-log "PM2 $(/usr/local/bin/pm2 -v | tail -1) available system-wide."
+PM2_VERSION="$("${SHARED_NODE_ROOT}/bin/node" -p "require('${PM2_ROOT}/package.json').version")"
+[ -n "${PM2_VERSION}" ] || die "Shared PM2 version could not be read."
+log "PM2 ${PM2_VERSION} available system-wide."
 
 # ---------------------------------------------------------------------------
 # 7. CloudPanel site owned by the panelavo system user
