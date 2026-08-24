@@ -29,7 +29,7 @@ use App\Site\Updater\StaticSite as StaticSiteUpdater;
 use Symfony\Component\Dotenv\Dotenv;
 
 const CLOUDPANEL_ROOT = '/home/clp/htdocs/app/files';
-const PANELAVO_BROKER_PROTOCOL_VERSION = 16;
+const PANELAVO_BROKER_PROTOCOL_VERSION = 17;
 const PANELAVO_BROKER_MAX_INPUT_BYTES = 100663296;
 const PANELAVO_ROOTLESS_MIGRATION_ROOT = '/var/lib/panelavo/rootless-migrations';
 const PANELAVO_ROOTLESS_MIGRATION_TTL = 86400;
@@ -4886,6 +4886,441 @@ function manageSiteRecovery(Site $site, User $user, array $operation): array
     return ['run' => recoveryRun($action, $steps, $startedAt)];
 }
 
+// Selective LanceDB snapshots deliberately operate at whole-table directory
+// boundaries. Lance tables are versioned physical trees; copying individual
+// files can create a manifest/data mismatch. Compose is stopped for creation
+// and restore so no writer or cached table handle survives a table swap.
+function lanceDatastoreDirectory(Site $site, string $relative): array
+{
+    $relative = safeReleaseRelativePath($relative);
+    $root = realpath(siteRootPath($site));
+    $directory = $root ? realpath($root . '/' . $relative) : false;
+    if (!$root || !$directory || !is_dir($directory) || is_link($root . '/' . $relative)
+        || ($directory !== $root && !pathIsContained($directory, $root))) {
+        respond(['ok' => false, 'code' => 'INVALID_REQUEST', 'message' => 'The LanceDB path must be a physical directory inside the configured application root.']);
+    }
+    $cursor = $root;
+    foreach (explode('/', $relative) as $part) {
+        $cursor .= '/' . $part;
+        if (is_link($cursor)) respond(['ok' => false, 'code' => 'INVALID_REQUEST', 'message' => 'The LanceDB path cannot contain symbolic links.']);
+    }
+    return ['root' => $root, 'relative' => $relative, 'directory' => $directory];
+}
+
+function lanceTableSummary(string $directory, string $name): array
+{
+    $path = $directory . '/' . $name . '.lance';
+    $validName = preg_match('/^[A-Za-z0-9_.-]{1,100}$/', $name) === 1;
+    $valid = $validName && is_dir($path) && !is_link($path);
+    foreach (['_transactions', '_versions', 'data'] as $required) {
+        if (!$valid || !is_dir($path . '/' . $required) || is_link($path . '/' . $required)) $valid = false;
+    }
+    $bytes = 0; $entries = 0;
+    if ($valid) {
+        $iterator = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($path, FilesystemIterator::SKIP_DOTS),
+            RecursiveIteratorIterator::SELF_FIRST,
+        );
+        foreach ($iterator as $entry) {
+            if (++$entries > 200000 || $entry->isLink()) { $valid = false; break; }
+            if ($entry->isFile()) $bytes += max(0, (int) $entry->getSize());
+        }
+    }
+    return ['name' => $name, 'valid' => $valid, 'bytes' => $bytes, 'entries' => $entries];
+}
+
+function lanceTableInventory(string $directory): array
+{
+    $tables = [];
+    foreach (glob($directory . '/*.lance', GLOB_ONLYDIR) ?: [] as $path) {
+        $base = basename($path);
+        $name = substr($base, 0, -6);
+        $tables[] = lanceTableSummary($directory, $name);
+    }
+    usort($tables, static fn(array $a, array $b): int => strcmp($a['name'], $b['name']));
+    return $tables;
+}
+
+function lancePatterns(array $operation, string $key, array $default): array
+{
+    if (!array_key_exists($key, $operation)) return $default;
+    $value = $operation[$key];
+    if (!is_array($value) || count($value) > 100) invalidBrokerRequest();
+    $patterns = [];
+    foreach ($value as $pattern) {
+        if (!is_string($pattern) || preg_match('/^[A-Za-z0-9_.*?-]{1,100}$/', $pattern) !== 1) invalidBrokerRequest();
+        $patterns[] = $pattern;
+    }
+    return array_values(array_unique($patterns));
+}
+
+function selectLanceTables(array $tables, array $include, array $exclude): array
+{
+    $selected = [];
+    foreach ($tables as $table) {
+        $name = is_array($table) ? (string) ($table['name'] ?? '') : (string) $table;
+        $included = false;
+        foreach ($include as $pattern) if (fnmatch($pattern, $name, FNM_NOESCAPE)) { $included = true; break; }
+        if (!$included) continue;
+        foreach ($exclude as $pattern) if (fnmatch($pattern, $name, FNM_NOESCAPE)) { $included = false; break; }
+        if ($included) $selected[] = $name;
+    }
+    sort($selected, SORT_STRING);
+    if (!$selected || count($selected) > 1000) {
+        respond(['ok' => false, 'code' => 'INVALID_REQUEST', 'message' => !$selected
+            ? 'The include/exclude rules did not select any LanceDB tables.'
+            : 'A selective snapshot can contain at most 1,000 LanceDB tables.']);
+    }
+    return $selected;
+}
+
+function lanceSnapshotRoot(Site $site): string
+{
+    return '/home/' . $site->getUser() . '/backups/datastores';
+}
+
+function writeLanceManifest(Site $site, string $path, array $manifest): bool
+{
+    $temporary = $path . '.tmp-' . bin2hex(random_bytes(4));
+    $encoded = json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+    $ok = is_string($encoded) && @file_put_contents($temporary, $encoded . "\n", LOCK_EX) !== false
+        && @chown($temporary, $site->getUser()) && @chgrp($temporary, $site->getUser())
+        && @chmod($temporary, 0600) && @rename($temporary, $path);
+    if (!$ok) @unlink($temporary);
+    return $ok;
+}
+
+function lanceSnapshotManifest(Site $site, string $snapshotId, ?string $relative = null): array
+{
+    if (preg_match('/^[A-Za-z0-9-]{1,64}$/', $snapshotId) !== 1) invalidBrokerRequest();
+    $root = lanceSnapshotRoot($site);
+    $directory = realpath($root . '/' . $snapshotId);
+    if (!$directory || dirname($directory) !== realpath($root) || is_link($directory)) {
+        respond(['ok' => false, 'code' => 'SITE_NOT_FOUND', 'message' => 'The selective datastore snapshot was not found.']);
+    }
+    $manifestPath = $directory . '/manifest.json';
+    $archive = $directory . '/tables.tar.gz';
+    $manifest = json_decode((string) @file_get_contents($manifestPath), true);
+    if (!is_array($manifest) || ($manifest['driver'] ?? null) !== 'lancedb'
+        || ($manifest['snapshotId'] ?? null) !== $snapshotId || !is_file($archive) || is_link($archive)
+        || ($relative !== null && ($manifest['path'] ?? null) !== $relative)) {
+        respond(['ok' => false, 'code' => 'INVALID_REQUEST', 'message' => 'The datastore snapshot manifest is invalid or belongs to another path.']);
+    }
+    $actual = @hash_file('sha256', $archive);
+    if (!is_string($actual) || !hash_equals((string) ($manifest['sha256'] ?? ''), $actual)) {
+        respond(['ok' => false, 'code' => 'INVALID_REQUEST', 'message' => 'The datastore snapshot checksum does not match its manifest.']);
+    }
+    return ['directory' => $directory, 'archive' => $archive, 'manifest' => $manifest];
+}
+
+function listLanceSnapshots(Site $site, string $relative): array
+{
+    $root = lanceSnapshotRoot($site);
+    $items = [];
+    foreach (glob($root . '/*', GLOB_ONLYDIR) ?: [] as $directory) {
+        $id = basename($directory);
+        if (preg_match('/^[A-Za-z0-9-]{1,64}$/', $id) !== 1 || is_link($directory)) continue;
+        $manifest = json_decode((string) @file_get_contents($directory . '/manifest.json'), true);
+        if (!is_array($manifest) || ($manifest['driver'] ?? null) !== 'lancedb' || ($manifest['path'] ?? null) !== $relative) continue;
+        $items[] = [
+            'snapshotId' => $id,
+            'createdAt' => (string) ($manifest['createdAt'] ?? ''),
+            'tables' => array_values((array) ($manifest['tables'] ?? [])),
+            'bytes' => (int) ($manifest['bytes'] ?? 0),
+            'sha256' => (string) ($manifest['sha256'] ?? ''),
+        ];
+    }
+    usort($items, static fn(array $a, array $b): int => strcmp($b['createdAt'], $a['createdAt']));
+    return array_slice($items, 0, 100);
+}
+
+function lanceComposeSteps(Site $site, User $user): array
+{
+    $state = operationsState($site, $user);
+    if (empty($state['hasCompose']) || empty($state['compose']['safe']) || empty($state['compose']['daemonAvailable'])) {
+        respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => 'Selective LanceDB operations require a safe, ready rootless Compose project.']);
+    }
+    $start = [resolveOperationStep($state, 'compose-up', [])];
+    if (!empty($state['expectedPort'])) $start[] = resolveOperationStep($state, 'compose-port-verify', []);
+    return ['stop' => [resolveOperationStep($state, 'compose-down', [])], 'start' => $start];
+}
+
+function stepsSucceeded(array $steps): bool
+{
+    if (!$steps) return false;
+    foreach ($steps as $step) if ((int) ($step['exitCode'] ?? 1) !== 0) return false;
+    return true;
+}
+
+function lanceReadyCheck(Site $site, string $path): array
+{
+    if (preg_match('#^/[A-Za-z0-9._~!$&\'()*+,;=:@%/-]*(\?[A-Za-z0-9._~!$&\'()*+,;=:@%/?-]*)?$#', $path) !== 1) invalidBrokerRequest();
+    $domain = (string) $site->getDomainName();
+    return runSiteCommand($site, [
+        'curl', '--fail', '--silent', '--show-error', '--output', '/dev/null',
+        '--retry', '12', '--retry-delay', '5', '--retry-all-errors',
+        '--connect-timeout', '3', '--max-time', '90',
+        '--resolve', $domain . ':443:127.0.0.1',
+        'https://' . $domain . $path,
+    ], 120);
+}
+
+function lanceDataChecks(Site $site, array $checks): array
+{
+    if (count($checks) > 10) invalidBrokerRequest();
+    $domain = (string) $site->getDomainName();
+    $results = [];
+    foreach ($checks as $check) {
+        if (!is_array($check)) invalidBrokerRequest();
+        $path = brokerString($check, 'path', 1, 500, '#^/[A-Za-z0-9._~!$&\'()*+,;=:@%/-]*(\?[A-Za-z0-9._~!$&\'()*+,;=:@%/?-]*)?$#');
+        $field = brokerString($check, 'field', 1, 160, '/^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/');
+        $comparison = brokerString($check, 'comparison', 1, 16, '/^(equal|minimum)$/');
+        $expected = $check['expected'] ?? null;
+        if (!is_int($expected) && !is_float($expected)) invalidBrokerRequest();
+        $probe = runSiteCommand($site, [
+            'curl', '--fail', '--silent', '--show-error', '--connect-timeout', '3', '--max-time', '30',
+            '--resolve', $domain . ':443:127.0.0.1', 'https://' . $domain . $path,
+        ], 45);
+        $json = $probe['code'] === 0 ? json_decode(trim($probe['stdout']), true) : null;
+        $value = $json;
+        foreach (explode('.', $field) as $part) $value = is_array($value) && array_key_exists($part, $value) ? $value[$part] : null;
+        $passed = is_int($value) || is_float($value);
+        if ($passed) $passed = $comparison === 'equal' ? (float) $value === (float) $expected : (float) $value >= (float) $expected;
+        $results[] = ['path' => $path, 'field' => $field, 'comparison' => $comparison, 'expected' => $expected, 'actual' => $value, 'passed' => $passed];
+    }
+    return $results;
+}
+
+function createLanceSnapshot(Site $site, User $user, array $paths, array $operation): array
+{
+    $inventory = lanceTableInventory($paths['directory']);
+    $include = lancePatterns($operation, 'include', ['*']);
+    $exclude = lancePatterns($operation, 'exclude', []);
+    $selected = selectLanceTables($inventory, $include, $exclude);
+    $byName = array_column($inventory, null, 'name');
+    foreach ($selected as $name) if (empty($byName[$name]['valid'])) {
+        respond(['ok' => false, 'code' => 'INVALID_REQUEST', 'message' => 'A selected LanceDB table is not a valid physical table tree: ' . $name]);
+    }
+    $readyPath = brokerString($operation, 'readyPath', 1, 500, '#^/[A-Za-z0-9._~!$&\'()*+,;=:@%/-]*(\?[A-Za-z0-9._~!$&\'()*+,;=:@%/?-]*)?$#');
+    $compose = lanceComposeSteps($site, $user);
+    $root = lanceSnapshotRoot($site);
+    if (!is_dir($root) && !@mkdir($root, 0750, true)) respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED']);
+    @chown(dirname($root), $site->getUser()); @chgrp(dirname($root), $site->getUser()); @chmod(dirname($root), 0750);
+    @chown($root, $site->getUser()); @chgrp($root, $site->getUser()); @chmod($root, 0750);
+    $snapshotId = 'ds-' . gmdate('YmdHis') . '-' . bin2hex(random_bytes(4));
+    $partial = $root . '/.partial-' . $snapshotId;
+    $final = $root . '/' . $snapshotId;
+    if (!@mkdir($partial, 0700)) respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED']);
+    @chown($partial, $site->getUser()); @chgrp($partial, $site->getUser());
+    $lock = @fopen('/var/lock/panelavo-operations-' . $site->getUser() . '.lock', 'c');
+    if (!$lock || !flock($lock, LOCK_EX | LOCK_NB)) { deleteTree($partial); respond(['ok' => false, 'code' => 'OPERATION_BUSY']); }
+    try {
+        $stopped = executeOperationSteps($site, $compose['stop']);
+        if (!stepsSucceeded($stopped)) { deleteTree($partial); respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED', 'message' => 'The rootless Compose project could not be quiesced safely.']); }
+        $archive = $partial . '/tables.tar.gz';
+        $entries = array_map(static fn(string $name): string => $name . '.lance', $selected);
+        $tar = runSiteCommand($site, array_merge(['/usr/bin/tar', 'czf', $archive, '--'], $entries), 900, false, [], $paths['directory']);
+        $started = executeOperationSteps($site, $compose['start']);
+        $ready = stepsSucceeded($started) ? lanceReadyCheck($site, $readyPath) : ['code' => 1, 'stderr' => 'Compose restart failed.'];
+        if ($tar['code'] !== 0 || !stepsSucceeded($started) || $ready['code'] !== 0) {
+            deleteTree($partial);
+            respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED', 'message' => $tar['code'] !== 0
+                ? 'The selected LanceDB tables could not be archived; the website restart was still attempted.'
+                : 'The snapshot completed but the website did not pass its restart/readiness gate.']);
+        }
+        $sha256 = @hash_file('sha256', $archive);
+        $manifest = [
+            'version' => 1,
+            'snapshotId' => $snapshotId,
+            'driver' => 'lancedb',
+            'path' => $paths['relative'],
+            'tables' => $selected,
+            'createdAt' => gmdate(DATE_ATOM),
+            'bytes' => (int) (@filesize($archive) ?: 0),
+            'sha256' => is_string($sha256) ? $sha256 : '',
+        ];
+        if (!$manifest['sha256'] || !writeLanceManifest($site, $partial . '/manifest.json', $manifest) || !@rename($partial, $final)) {
+            deleteTree($partial);
+            respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED']);
+        }
+        return ['snapshot' => $manifest, 'stop' => $stopped, 'start' => $started, 'ready' => true];
+    } finally {
+        flock($lock, LOCK_UN); fclose($lock);
+    }
+}
+
+function inspectLanceSnapshotArchive(Site $site, string $archive, array $tables): void
+{
+    $allowed = array_fill_keys(array_map(static fn(string $name): string => $name . '.lance', $tables), true);
+    $names = runSiteCommand($site, ['/usr/bin/tar', 'tzf', $archive], 300, false, [], dirname($archive));
+    $listing = runSiteCommand($site, ['/usr/bin/tar', 'tvzf', $archive], 300, false, [], dirname($archive));
+    if ($names['code'] !== 0 || $listing['code'] !== 0
+        || str_contains($names['stdout'], '[stdout truncated by Panelavo]')
+        || str_contains($listing['stdout'], '[stdout truncated by Panelavo]')) {
+        respond(['ok' => false, 'code' => 'INVALID_REQUEST', 'message' => 'The datastore snapshot archive is invalid or too large to inspect safely.']);
+    }
+    $count = 0;
+    foreach (preg_split('/\R/', trim($names['stdout'])) ?: [] as $entry) {
+        if ($entry === '') continue;
+        if (++$count > 200000) respond(['ok' => false, 'code' => 'INVALID_REQUEST', 'message' => 'The datastore snapshot contains too many filesystem entries.']);
+        $normalized = str_replace('\\', '/', $entry);
+        if (str_starts_with($normalized, '/') || str_contains($normalized, "\0") || preg_match('/[\x00-\x1f\x7f]/', $normalized)) invalidBrokerRequest();
+        $parts = array_values(array_filter(explode('/', trim($normalized, '/')), static fn(string $part): bool => $part !== '' && $part !== '.'));
+        if (!$parts || !isset($allowed[$parts[0]])) invalidBrokerRequest();
+        foreach ($parts as $part) if ($part === '..') invalidBrokerRequest();
+    }
+    if ($count === 0) invalidBrokerRequest();
+    foreach (preg_split('/\R/', trim($listing['stdout'])) ?: [] as $entry) {
+        if ($entry !== '' && !in_array($entry[0], ['-', 'd'], true)) {
+            respond(['ok' => false, 'code' => 'INVALID_REQUEST', 'message' => 'Datastore snapshots reject links and special filesystem entries.']);
+        }
+    }
+}
+
+function prepareLanceRestoreOwnership(Site $site, string $datastore, string $staging, array $tables): void
+{
+    $identity = siteIdentity($site);
+    $subuid = subordinateRange('/etc/subuid', $identity['user']);
+    $subgid = subordinateRange('/etc/subgid', $identity['user']);
+    $setfacl = findSiteTool('/root', 'setfacl', true);
+    if (!$setfacl) respond(['ok' => false, 'code' => 'TOOL_UNAVAILABLE', 'message' => 'Selective datastore restore requires the acl package.']);
+    foreach ($tables as $name) {
+        $target = $datastore . '/' . $name . '.lance';
+        $source = is_dir($target) && !is_link($target) ? $target : $datastore;
+        $stat = @lstat($source);
+        if (!is_array($stat)) invalidBrokerRequest();
+        $uid = (int) $stat['uid']; $gid = (int) $stat['gid'];
+        $uidAllowed = $uid === (int) $identity['uid'] || ($subuid && $uid >= $subuid['start'] && $uid < $subuid['start'] + $subuid['count']);
+        $gidAllowed = $gid === (int) $identity['gid'] || ($subgid && $gid >= $subgid['start'] && $gid < $subgid['start'] + $subgid['count']);
+        if (!$uidAllowed || !$gidAllowed) {
+            respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => 'A selected table has ownership outside this rootless site user mapping. Repair or migrate ownership before restoring it.']);
+        }
+        $result = runSiteCommand($site, [
+            '/usr/bin/chown', '-R', '--', $uid . ':' . $gid, $staging . '/' . $name . '.lance',
+        ], 900, true, [], $staging);
+        if ($result['code'] !== 0) respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED', 'message' => 'The staged table ownership could not be prepared safely.']);
+        $table = $staging . '/' . $name . '.lance';
+        $access = runSiteCommand($site, [
+            $setfacl, '--physical', '--recursive', '--modify', 'u:' . $identity['user'] . ':rwX,m::rwX', $table,
+        ], 900, true, [], $staging);
+        $inheritance = runSiteCommand($site, [
+            '/usr/bin/find', '-P', $table, '-type', 'd', '-exec', $setfacl,
+            '--modify', 'd:u:' . $identity['user'] . ':rwx,d:m::rwx', '{}', '+',
+        ], 900, true, [], $staging);
+        if ($access['code'] !== 0 || $inheritance['code'] !== 0) {
+            respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED', 'message' => 'The staged table ACL invariant could not be prepared safely.']);
+        }
+    }
+}
+
+function restoreLanceSnapshot(Site $site, User $user, array $paths, array $operation): array
+{
+    $snapshotId = brokerString($operation, 'snapshotId', 1, 64, '/^[A-Za-z0-9-]+$/');
+    $snapshot = lanceSnapshotManifest($site, $snapshotId, $paths['relative']);
+    $include = lancePatterns($operation, 'include', ['*']);
+    $exclude = lancePatterns($operation, 'exclude', []);
+    $selected = selectLanceTables((array) ($snapshot['manifest']['tables'] ?? []), $include, $exclude);
+    $readyPath = brokerString($operation, 'readyPath', 1, 500, '#^/[A-Za-z0-9._~!$&\'()*+,;=:@%/-]*(\?[A-Za-z0-9._~!$&\'()*+,;=:@%/?-]*)?$#');
+    $checks = $operation['checks'] ?? [];
+    if (!is_array($checks)) invalidBrokerRequest();
+    $compose = lanceComposeSteps($site, $user);
+    $manifestTables = (array) ($snapshot['manifest']['tables'] ?? []);
+    foreach ($manifestTables as $name) if (!is_string($name) || preg_match('/^[A-Za-z0-9_.-]{1,100}$/', $name) !== 1) invalidBrokerRequest();
+    inspectLanceSnapshotArchive($site, $snapshot['archive'], $manifestTables);
+    $staging = dirname($paths['directory']) . '/.panelavo-lancedb-stage-' . bin2hex(random_bytes(6));
+    if (!@mkdir($staging, 0700)) respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED']);
+    @chown($staging, $site->getUser()); @chgrp($staging, $site->getUser());
+    $entries = array_map(static fn(string $name): string => $name . '.lance', $selected);
+    $extract = runSiteCommand($site, array_merge([
+        '/usr/bin/tar', 'xzf', $snapshot['archive'], '--no-same-owner', '--no-same-permissions', '-C', $staging, '--',
+    ], $entries), 900, false, [], $staging);
+    if ($extract['code'] !== 0) { deleteTree($staging); respond(['ok' => false, 'code' => 'INVALID_REQUEST', 'message' => 'The validated snapshot could not be staged.']); }
+    foreach ($selected as $name) if (empty(lanceTableSummary($staging, $name)['valid'])) {
+        deleteTree($staging); respond(['ok' => false, 'code' => 'INVALID_REQUEST', 'message' => 'A staged LanceDB table failed structural validation: ' . $name]);
+    }
+    prepareLanceRestoreOwnership($site, $paths['directory'], $staging, $selected);
+    $lock = @fopen('/var/lock/panelavo-operations-' . $site->getUser() . '.lock', 'c');
+    if (!$lock || !flock($lock, LOCK_EX | LOCK_NB)) { deleteTree($staging); respond(['ok' => false, 'code' => 'OPERATION_BUSY']); }
+    $rollback = [];
+    try {
+        $stopped = executeOperationSteps($site, $compose['stop']);
+        if (!stepsSucceeded($stopped)) { deleteTree($staging); respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED', 'message' => 'The rootless Compose project could not be quiesced safely.']); }
+        $swapOk = true;
+        foreach ($selected as $name) {
+            $target = $paths['directory'] . '/' . $name . '.lance';
+            $prior = $paths['directory'] . '/.panelavo-prior-' . $snapshotId . '-' . $name . '.lance';
+            if (file_exists($prior) || is_link($prior)) { $swapOk = false; break; }
+            $hadPrior = is_dir($target) && !is_link($target);
+            if ((file_exists($target) || is_link($target)) && !$hadPrior) { $swapOk = false; break; }
+            if ($hadPrior && !@rename($target, $prior)) { $swapOk = false; break; }
+            if (!@rename($staging . '/' . $name . '.lance', $target)) {
+                if ($hadPrior) @rename($prior, $target);
+                $swapOk = false; break;
+            }
+            $rollback[] = ['target' => $target, 'prior' => $prior, 'hadPrior' => $hadPrior];
+        }
+        if (!$swapOk) {
+            foreach (array_reverse($rollback) as $entry) {
+                deleteTree($entry['target']);
+                if ($entry['hadPrior']) @rename($entry['prior'], $entry['target']);
+            }
+            executeOperationSteps($site, $compose['start']);
+            deleteTree($staging);
+            respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED', 'message' => 'The table swap could not be completed; the original tables were restored.']);
+        }
+        $started = executeOperationSteps($site, $compose['start']);
+        $ready = stepsSucceeded($started) ? lanceReadyCheck($site, $readyPath) : ['code' => 1];
+        $dataChecks = $ready['code'] === 0 ? lanceDataChecks($site, $checks) : [];
+        $validated = stepsSucceeded($started) && $ready['code'] === 0
+            && count(array_filter($dataChecks, static fn(array $check): bool => empty($check['passed']))) === 0;
+        if (!$validated) {
+            executeOperationSteps($site, $compose['stop']);
+            foreach (array_reverse($rollback) as $entry) {
+                deleteTree($entry['target']);
+                if ($entry['hadPrior']) @rename($entry['prior'], $entry['target']);
+            }
+            $rollbackStart = executeOperationSteps($site, $compose['start']);
+            $rollbackReady = stepsSucceeded($rollbackStart) ? lanceReadyCheck($site, $readyPath) : ['code' => 1];
+            deleteTree($staging);
+            respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED', 'message' => $rollbackReady['code'] === 0
+                ? 'The restored tables failed readiness or data validation, so Panelavo restored the previous tables.'
+                : 'The restored tables failed validation and the previous tables were put back, but the website did not recover its readiness gate.']);
+        }
+        foreach ($rollback as $entry) if ($entry['hadPrior']) deleteTree($entry['prior']);
+        deleteTree($staging);
+        return ['snapshotId' => $snapshotId, 'restoredTables' => $selected, 'ready' => true, 'checks' => $dataChecks, 'stop' => $stopped, 'start' => $started];
+    } finally {
+        flock($lock, LOCK_UN); fclose($lock);
+    }
+}
+
+function manageSiteDatastore(Site $site, User $user, array $operation): array
+{
+    if (($operation['driver'] ?? null) !== 'lancedb') invalidBrokerRequest();
+    $action = (string) ($operation['action'] ?? '');
+    $path = brokerString($operation, 'path', 1, 240, '/^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/');
+    $paths = lanceDatastoreDirectory($site, $path);
+    if ($action === 'inspect') return [
+        'driver' => 'lancedb',
+        'path' => $paths['relative'],
+        'tables' => lanceTableInventory($paths['directory']),
+        'snapshots' => listLanceSnapshots($site, $paths['relative']),
+    ];
+    if ($action === 'create-snapshot') return createLanceSnapshot($site, $user, $paths, $operation);
+    if ($action === 'restore-snapshot') return restoreLanceSnapshot($site, $user, $paths, $operation);
+    invalidBrokerRequest();
+}
+
+function runDatastoreSelfTest(): never
+{
+    $assert = static function (bool $condition, string $message): void { if (!$condition) throw new RuntimeException($message); };
+    $tables = [['name' => 'common_users'], ['name' => 'donors_Dhaka_O_'], ['name' => 'imported_donors']];
+    $assert(selectLanceTables($tables, ['*'], ['common_*']) === ['donors_Dhaka_O_', 'imported_donors'], 'exclude rules must remove matching tables');
+    $assert(selectLanceTables($tables, ['donors_*', 'imported_*'], ['*_Dhaka_*']) === ['imported_donors'], 'include and exclude rules must compose deterministically');
+    echo "LanceDB datastore self-test passed.\n";
+    exit(0);
+}
+
 function runComposePortSelfTest(): never
 {
     $config = ['services' => [
@@ -5013,6 +5448,7 @@ function runRootlessSelfTest(): never
 if (($argv[1] ?? '') === '--self-test-ports') runComposePortSelfTest();
 if (($argv[1] ?? '') === '--self-test-env') runEnvSelfTest();
 if (($argv[1] ?? '') === '--self-test-rootless') runRootlessSelfTest();
+if (($argv[1] ?? '') === '--self-test-datastore') runDatastoreSelfTest();
 
 try {
     $encodedInput = stream_get_contents(STDIN, PANELAVO_BROKER_MAX_INPUT_BYTES + 1);
@@ -6058,6 +6494,17 @@ try {
             $operation = $input['operation'] ?? null;
             if (!is_array($operation) || count($operation) !== 1) invalidBrokerRequest();
             respond(['ok' => true, 'data' => manageSiteRecovery($site, $user, $operation)]);
+
+        case 'site-datastore':
+            $site = requireSiteWriter(
+                $manager,
+                $user,
+                brokerDomainValue($input['domain'] ?? null),
+                !empty($input['panelAdmin']),
+            );
+            $operation = $input['operation'] ?? null;
+            if (!is_array($operation) || count($operation) > 10) invalidBrokerRequest();
+            respond(['ok' => true, 'data' => manageSiteDatastore($site, $user, $operation)]);
 
         case 'update-site':
             $site = authorizedSite($manager, $user, (string) ($input['domain'] ?? ''));

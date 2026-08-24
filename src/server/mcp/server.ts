@@ -279,6 +279,45 @@ const siteRecoveryActionSchema = z.enum([
   "recover-rootless-migration",
 ]);
 
+const datastorePathSchema = z
+  .string()
+  .min(1)
+  .max(240)
+  .regex(/^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/)
+  .describe("A physical LanceDB directory relative to the application root.");
+
+const datastoreTablePatternSchema = z
+  .string()
+  .min(1)
+  .max(100)
+  .regex(/^[A-Za-z0-9_.*?-]+$/)
+  .describe("A table-name glob using only * and ? wildcards.");
+
+const datastoreSelectionSchema = {
+  include: z
+    .array(datastoreTablePatternSchema)
+    .max(100)
+    .default(["*"])
+    .describe("Tables matching at least one include pattern are selected."),
+  exclude: z
+    .array(datastoreTablePatternSchema)
+    .max(100)
+    .default([])
+    .describe("Matching tables are removed from the selected set."),
+};
+
+const datastoreCheckSchema = z.object({
+  path: healthPathSchema.describe("A same-site public JSON endpoint."),
+  field: z
+    .string()
+    .min(1)
+    .max(160)
+    .regex(/^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/)
+    .describe("A dot-separated numeric field in the JSON response."),
+  comparison: z.enum(["equal", "minimum"]),
+  expected: z.number().finite().min(0),
+});
+
 const beginArtifactUploadToolSchema = z.object({
   domain: domainSchema,
   name: z
@@ -1270,6 +1309,222 @@ export function createPanelavoMcpServer(actor: PanelActor) {
                   { signal },
                 );
                 await log("The controlled recovery finished.");
+                return value;
+              },
+            );
+          },
+        );
+      },
+    );
+
+    server.registerTool(
+      "panelavo_inspect_lancedb",
+      {
+        title: "Inspect a LanceDB datastore",
+        description:
+          "Inventory valid LanceDB table directories and Panelavo selective snapshots inside one writable Docker website. The path stays physically inside the configured application root.",
+        inputSchema: z.object({
+          domain: domainSchema,
+          path: datastorePathSchema.default("data/lancedb"),
+        }),
+        annotations: {
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
+      },
+      async ({ domain, path }) =>
+        runTool(
+          actor,
+          "panelavo_inspect_lancedb",
+          { type: "site", id: domain },
+          { path },
+          async () => {
+            const { client } = await writableSiteForActor(actor, domain);
+            return client.manageSiteDatastore(actor.cloudPanel, domain, {
+              action: "inspect",
+              driver: "lancedb",
+              path,
+            });
+          },
+        ),
+    );
+
+    server.registerTool(
+      "panelavo_create_lancedb_snapshot",
+      {
+        title: "Create a selective LanceDB snapshot",
+        description:
+          "Briefly stop the website's allow-listed rootless Compose project, snapshot only LanceDB tables selected by include/exclude rules, restart the same project, and return a background job ID.",
+        inputSchema: z.object({
+          domain: domainSchema,
+          path: datastorePathSchema.default("data/lancedb"),
+          ...datastoreSelectionSchema,
+          readyPath: healthPathSchema.default("/"),
+          timeoutSeconds: z.number().int().min(30).max(1_800).default(1_800),
+        }),
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: true,
+          idempotentHint: false,
+          openWorldHint: true,
+        },
+      },
+      async (
+        { domain, path, include, exclude, readyPath, timeoutSeconds },
+        context,
+      ) => {
+        const argumentsValue = {
+          domain,
+          path,
+          include,
+          exclude,
+          readyPath,
+          timeoutSeconds,
+        };
+        await writableSiteForActor(actor, domain);
+        const confirmation = await requireSiteActionConfirmation(
+          actor,
+          confirmationManager,
+          {
+            context,
+            domain,
+            tool: "panelavo_create_lancedb_snapshot",
+            arguments: argumentsValue,
+            message: `Create a consistent selective LanceDB snapshot for ${domain}? Panelavo will briefly stop and restart only this site's rootless Compose project.`,
+          },
+        );
+        if (confirmation) return confirmation;
+        return runTool(
+          actor,
+          "panelavo_create_lancedb_snapshot",
+          { type: "site", id: domain },
+          { path, include, exclude },
+          async () => {
+            const { client } = await writableSiteForActor(actor, domain);
+            return startMcpJob(
+              actor,
+              {
+                domain,
+                kind: "selective LanceDB snapshot",
+                timeoutSeconds,
+                cancellable: false,
+              },
+              async ({ log }) => {
+                await log("Quiescing the rootless Compose project and creating the selected table snapshot.");
+                const value = await client.manageSiteDatastore(
+                  actor.cloudPanel,
+                  domain,
+                  {
+                    action: "create-snapshot",
+                    driver: "lancedb",
+                    path,
+                    include,
+                    exclude,
+                    readyPath,
+                  },
+                );
+                await log("The selected tables were checksummed and the website restarted.");
+                return value;
+              },
+            );
+          },
+        );
+      },
+    );
+
+    server.registerTool(
+      "panelavo_restore_lancedb_snapshot",
+      {
+        title: "Restore a selective LanceDB snapshot",
+        description:
+          "Validate and atomically swap selected LanceDB table directories from a Panelavo snapshot while the rootless Compose project is stopped. Restart, readiness, and numeric JSON checks gate success; failure restores the prior tables automatically.",
+        inputSchema: z.object({
+          domain: domainSchema,
+          path: datastorePathSchema.default("data/lancedb"),
+          snapshotId: z.string().regex(/^[A-Za-z0-9-]{1,64}$/),
+          ...datastoreSelectionSchema,
+          readyPath: healthPathSchema.default("/"),
+          checks: z.array(datastoreCheckSchema).max(10).default([]),
+          timeoutSeconds: z.number().int().min(30).max(1_800).default(1_800),
+        }),
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: true,
+          idempotentHint: false,
+          openWorldHint: true,
+        },
+      },
+      async (
+        {
+          domain,
+          path,
+          snapshotId,
+          include,
+          exclude,
+          readyPath,
+          checks,
+          timeoutSeconds,
+        },
+        context,
+      ) => {
+        const argumentsValue = {
+          domain,
+          path,
+          snapshotId,
+          include,
+          exclude,
+          readyPath,
+          checks,
+          timeoutSeconds,
+        };
+        await writableSiteForActor(actor, domain);
+        const confirmation = await requireSiteActionConfirmation(
+          actor,
+          confirmationManager,
+          {
+            context,
+            domain,
+            tool: "panelavo_restore_lancedb_snapshot",
+            arguments: argumentsValue,
+            confirmationPhrase: snapshotId,
+            message: `Restore selected LanceDB tables from ${snapshotId} for ${domain}? Panelavo will restart the site and automatically restore the current tables if readiness or data checks fail.`,
+          },
+        );
+        if (confirmation) return confirmation;
+        return runTool(
+          actor,
+          "panelavo_restore_lancedb_snapshot",
+          { type: "site", id: domain },
+          { path, snapshotId, include, exclude, checks: checks.length },
+          async () => {
+            const { client } = await writableSiteForActor(actor, domain);
+            return startMcpJob(
+              actor,
+              {
+                domain,
+                kind: `restore LanceDB snapshot ${snapshotId}`,
+                timeoutSeconds,
+                cancellable: false,
+              },
+              async ({ log }) => {
+                await log("Validating the snapshot and staging the selected LanceDB tables.");
+                const value = await client.manageSiteDatastore(
+                  actor.cloudPanel,
+                  domain,
+                  {
+                    action: "restore-snapshot",
+                    driver: "lancedb",
+                    path,
+                    snapshotId,
+                    include,
+                    exclude,
+                    readyPath,
+                    checks,
+                  },
+                );
+                await log("The table swap passed readiness and data validation.");
                 return value;
               },
             );

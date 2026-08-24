@@ -31,6 +31,7 @@ type McpJobRecord = {
   credentialId: string;
   domain: string;
   kind: string;
+  cancellable?: boolean;
   status: McpJobStatus;
   timeoutSeconds: number;
   createdAt: string;
@@ -45,7 +46,9 @@ type McpJobRecord = {
 
 type McpJobStore = { jobs: McpJobRecord[] };
 
-export type McpJob = Omit<McpJobRecord, "ownerUserId" | "credentialId">;
+export type McpJob = Omit<McpJobRecord, "ownerUserId" | "credentialId"> & {
+  cancellable: boolean;
+};
 
 type JobWork = (helpers: {
   signal: AbortSignal;
@@ -87,7 +90,10 @@ function actorCredential(actor: PanelActor) {
 }
 
 function publicJob(job: McpJobRecord): McpJob {
-  const value = { ...job } as Partial<McpJobRecord>;
+  const value = {
+    ...job,
+    cancellable: job.cancellable !== false,
+  } as Partial<McpJobRecord> & { cancellable: boolean };
   delete value.ownerUserId;
   delete value.credentialId;
   return value as McpJob;
@@ -264,6 +270,7 @@ export async function startMcpJob(
     domain: string;
     kind: string;
     timeoutSeconds: number;
+    cancellable?: boolean;
   },
   work: JobWork,
 ) {
@@ -291,6 +298,7 @@ export async function startMcpJob(
       credentialId,
       domain,
       kind: input.kind.slice(0, 100),
+      cancellable: input.cancellable !== false,
       status: "queued",
       timeoutSeconds,
       createdAt: now,
@@ -346,6 +354,12 @@ export async function cancelMcpJob(actor: PanelActor, id: string) {
     const state = await store.load();
     const current = matchingJob(state, actor, id);
     if (!isActive(current.status)) return publicJob(current);
+    if (current.cancellable === false)
+      throw new AppError(
+        "INVALID_REQUEST",
+        "This consistency-critical job cannot be cancelled after it starts.",
+        409,
+      );
     const now = new Date().toISOString();
     current.status = "cancelling";
     current.cancelRequestedAt = now;

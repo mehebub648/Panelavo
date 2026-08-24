@@ -69,6 +69,38 @@ export type SiteRecoveryOperation =
         | "recover-rootless-migration";
     };
 
+export type SiteDatastoreCheck = {
+  path: string;
+  field: string;
+  comparison: "equal" | "minimum";
+  expected: number;
+};
+
+export type SiteDatastoreOperation =
+  | {
+      action: "inspect";
+      driver: "lancedb";
+      path: string;
+    }
+  | {
+      action: "create-snapshot";
+      driver: "lancedb";
+      path: string;
+      include: string[];
+      exclude: string[];
+      readyPath: string;
+    }
+  | {
+      action: "restore-snapshot";
+      driver: "lancedb";
+      path: string;
+      snapshotId: string;
+      include: string[];
+      exclude: string[];
+      readyPath: string;
+      checks: SiteDatastoreCheck[];
+    };
+
 export interface CloudPanelSite {
   id: string;
   domain: string;
@@ -369,6 +401,12 @@ export interface CloudPanelClient {
     session: CloudPanelSession,
     domain: string,
     operation: SiteRecoveryOperation,
+    execution?: SiteSectionExecutionOptions,
+  ): Promise<unknown>;
+  manageSiteDatastore(
+    session: CloudPanelSession,
+    domain: string,
+    operation: SiteDatastoreOperation,
     execution?: SiteSectionExecutionOptions,
   ): Promise<unknown>;
   getServerResources(session: CloudPanelSession): Promise<ServerResources>;

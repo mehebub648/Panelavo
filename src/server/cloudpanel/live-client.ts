@@ -12,6 +12,7 @@ import type {
   ServerStorageBreakdown,
   ServerStorageCleanupResult,
   SiteCreationOptions,
+  SiteDatastoreOperation,
   SiteReleaseOperation,
   SiteRecoveryOperation,
   SiteSectionExecutionOptions,
@@ -26,7 +27,7 @@ import {
 import { getSiteTypeOverrides } from "@/server/sites/site-type-overlay";
 import { AppError } from "./errors";
 
-export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 16;
+export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 17;
 export const CLOUDPANEL_BROKER_PATH =
   "/usr/local/libexec/panelavo/panelavo-broker";
 
@@ -983,6 +984,30 @@ export class LiveCloudPanelClient implements CloudPanelClient {
     const result = await this.bridge(
       {
         action: "site-recovery",
+        username: this.sessionUser(session),
+        domain,
+        panelAdmin,
+        applicationRootDirectory,
+        operation,
+      },
+      SITE_SECTION_TIMEOUTS.actions,
+      execution,
+    );
+    if (!result.ok) throw siteSectionBridgeError(result);
+    return result.data;
+  }
+
+  async manageSiteDatastore(
+    session: CloudPanelSession,
+    domain: string,
+    operation: SiteDatastoreOperation,
+    execution?: SiteSectionExecutionOptions,
+  ) {
+    const { panelAdmin } = await this.requireSiteAccess(session, domain);
+    const applicationRootDirectory = await getSiteRootOverride(domain);
+    const result = await this.bridge(
+      {
+        action: "site-datastore",
         username: this.sessionUser(session),
         domain,
         panelAdmin,

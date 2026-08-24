@@ -62,6 +62,7 @@ jobs:
           php -l scripts/cloudpanel-bridge.php
           php scripts/cloudpanel-bridge.php --self-test-ports
           php scripts/cloudpanel-bridge.php --self-test-env
+          php scripts/cloudpanel-bridge.php --self-test-datastore
 
       - name: Validate shell syntax
         run: bash -n setup.sh scripts/self-update.sh scripts/verify-broker-contract.sh

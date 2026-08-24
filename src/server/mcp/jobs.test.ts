@@ -126,4 +126,30 @@ describe("MCP background jobs", () => {
     release();
     await waitForStatus(subject, started.id, "succeeded");
   });
+
+  it("refuses cancellation for a consistency-critical job", async () => {
+    const subject = actor();
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = await startMcpJob(
+      subject,
+      {
+        domain: "site.example",
+        kind: "datastore swap",
+        timeoutSeconds: 30,
+        cancellable: false,
+      },
+      () => pending,
+    );
+    await waitForStatus(subject, started.id, "running");
+    expect((await getMcpJob(subject, started.id)).cancellable).toBe(false);
+    await expect(cancelMcpJob(subject, started.id)).rejects.toMatchObject({
+      code: "INVALID_REQUEST",
+      status: 409,
+    });
+    release();
+    await waitForStatus(subject, started.id, "succeeded");
+  });
 });
