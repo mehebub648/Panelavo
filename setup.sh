@@ -393,10 +393,15 @@ fi
 sudo -u nobody env PATH="/usr/local/bin:/usr/bin:/bin" node --version >/dev/null 2>&1 || die "Shared Node.js runtime is not executable by non-root users."
 sudo -u nobody env PATH="/usr/local/bin:/usr/bin:/bin" npx --version >/dev/null 2>&1 || die "Shared npx is not executable by non-root users."
 
-if [ ! -x /usr/local/bin/pm2 ]; then
+PM2_ROOT="/usr/local/lib/node_modules/pm2"
+if ! sudo -u nobody test -x /usr/local/bin/pm2; then
   log "Installing shared PM2 into /usr/local ..."
-  "${SHARED_NODE_ROOT}/bin/npm" install -g --prefix /usr/local pm2 >/dev/null
+  (umask 022; "${SHARED_NODE_ROOT}/bin/npm" install -g --prefix /usr/local pm2 >/dev/null)
 fi
+[ -d "${PM2_ROOT}" ] || die "Shared PM2 installation is missing: ${PM2_ROOT}"
+chmod a+rx /usr/local/lib/node_modules
+chmod -R a+rX "${PM2_ROOT}"
+sudo -u nobody test -x /usr/local/bin/pm2 || die "Shared PM2 is not executable by non-root users."
 log "PM2 $(/usr/local/bin/pm2 -v | tail -1) available system-wide."
 
 # ---------------------------------------------------------------------------
