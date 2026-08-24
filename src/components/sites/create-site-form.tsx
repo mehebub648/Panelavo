@@ -32,6 +32,7 @@ import { Select } from "@/components/ui/select";
 import { normalizeDomain } from "@/schemas/sites";
 import { cn } from "@/lib/utils";
 import { localSiteProxyUrl } from "@/lib/site-url";
+import { defaultPhpVhostTemplate } from "@/lib/php-vhost-template";
 
 const types = [
   {
@@ -149,7 +150,7 @@ export function CreateSiteForm() {
           phpVersion: next.phpVersions[0] || "",
           nodeVersion: next.nodeVersions[0] || "",
           pythonVersion: next.pythonVersions[0] || "",
-          vhostTemplate: next.vhostTemplates[0] || "",
+          vhostTemplate: defaultPhpVhostTemplate(next.vhostTemplates),
         }));
       } catch (reason) {
         setLoadError(

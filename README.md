@@ -249,7 +249,7 @@ NOPASSWD: /usr/local/libexec/panelavo/panelavo-broker
 
 Never grant raw PHP, `clpctl`, `bash`, `sh`, or unrestricted sudo to the panel service user. The broker and bridge are root-owned, accept no command-line arguments, validate a versioned JSON protocol, and cannot be replaced by self-update.
 
-PHP versions are discovered from `/etc/php`. CloudPanel 2.5.4 compatibility fallbacks for Node.js, Python, and the Generic vhost template are isolated in the live adapter because no authenticated options page was available during discovery. Validate these against the target server before production use.
+PHP versions are discovered from `/etc/php`. The create form deliberately prefers CloudPanel's Generic PHP vhost template, independent of the order returned by the server. CloudPanel 2.5.4 compatibility fallbacks for Node.js and Python are isolated in the live adapter because no authenticated options page was available during discovery. Validate these against the target server before production use.
 
 ## Security assumptions and limitations
 
