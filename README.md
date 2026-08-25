@@ -144,9 +144,9 @@ The website list is grouped in the configured Project-category order, with exter
 
 ### Site identity: categories, ids, and domains
 
-panelavo chooses each website's primary system domain. On creation the user picks a project category; the next free id in that category's range becomes the site id, the application port, and the site user:
+panelavo chooses each website's primary system domain. On creation the user picks a project category; the next free id in that category's range becomes the stable site id and site user. Port-based applications use a separate deterministic port (`site id + 10000`) so CloudPanel's PHP-FPM pool in the 20000 range cannot take the same socket:
 
-| Category                   |    Port range |
+| Category                   | Site id range |
 | -------------------------- | ------------: |
 | Client projects            | `20000-20999` |
 | Personal projects          | `21000-21999` |
@@ -156,7 +156,7 @@ panelavo chooses each website's primary system domain. On creation the user pick
 | Internal tools             | `25000-25999` |
 | Reserved/Future            | `26000-29999` |
 
-A site with id `23223` is created as `site-23223.<server-ip>.<base domain>` with site user `site-23223` listening on port `23223`. In the default sslip.io mode this becomes `site-23223.<server-ip>.sslip.io`; the panel and database manager use `panel.<server-ip>.sslip.io` and `database.<server-ip>.sslip.io`. Custom mode uses the operator's base domain and one wildcard A record. The address mode is reconfigurable later from Settings, and changes apply to future sites. Every hostname receives its own HTTP-01 certificate; site creation waits for the initial Let's Encrypt attempt to finish and reports a visible retry action if DNS or ACME prevents issuance. sslip.io is not used for wildcard certificates. Reservations live in `.data/site-meta.json`; the port is movable from the site's Settings tab.
+A site with id `23223` is created as `site-23223.<server-ip>.<base domain>` with site user `site-23223`; Node.js, Python, Docker, and an omitted local reverse-proxy target default to loopback port `33223`. In the default sslip.io mode this becomes `site-23223.<server-ip>.sslip.io`; the panel and database manager use `panel.<server-ip>.sslip.io` and `database.<server-ip>.sslip.io`. Custom mode uses the operator's base domain and one wildcard A record. The address mode is reconfigurable later from Settings, and changes apply to future sites. Every hostname receives its own HTTP-01 certificate; site creation waits for the initial Let's Encrypt attempt to finish and reports a visible retry action if DNS or ACME prevents issuance. sslip.io is not used for wildcard certificates. Identity reservations live in `.data/site-meta.json`; changing a runtime port never changes that identity, system domain, or Unix user.
 
 Customer-entered domains are aliases: the Domains tab and create form add them to the vhost `server_name`, point DNS through the user's connected Cloudflare token when it manages the zone, and issue Let's Encrypt certificates covering selected domains. Site creation, SSL preparation, and the explicit DNS action share one A-record policy for the primary name and applicable `www` companion. The system subdomain can be blocked with 403 or redirected to an alias; ACME challenge paths stay reachable so renewals keep working.
 
@@ -178,7 +178,9 @@ Operations follow the configured CloudPanel site type; Panelavo's Docker overlay
 
 CloudPanel's configured upstream/app port is the required website entry port. Operations shows that expected port, the site-owned ports currently listening, and any mismatch. Node/Python launches receive the expected port and loopback host; reverse-proxy and deployment plans verify the endpoint before reporting success. For Compose, Panelavo finds one entry service from explicit labels or unambiguous configuration/dependency evidence, keeps its container port, and maps it privately to `127.0.0.1:<site-port>` in an ephemeral runtime configuration. The temporary resolved model removes Compose-generated null or empty network IPAM placeholders while preserving configured IPAM mappings so it remains valid when loaded for execution. A warning offers **Fix port configuration** when exactly one literal short Compose mapping can be aligned; this persists `127.0.0.1:<site-port>:<container-port>`, restricts other published mappings to loopback, validates the resolved configuration and host-safety policy, and leaves Dockerfile EXPOSE/in-container ports unchanged. Direct Node/Python sites receive the same fix only for one unique numeric `.env` `PORT` with no conflicting managed dotenv, ecosystem, package-script, or live-listener evidence. Every successful source edit keeps a verified root-owned backup and requires a later restart/deploy; Panelavo never restarts automatically. Ambiguous, variable-driven, long/flow-syntax, hard-coded, or otherwise unsafe cases show exact instructions and make no edit. Additional service ports are reported for exposure through connected reverse-proxy sites.
 
-New reverse-proxy sites default their upstream to `http://127.0.0.1:<site-id>`, matching the reserved CloudPanel port. Operators can still replace it with another HTTP or HTTPS target when required.
+A listener counts as ready only when the broker proves it is a safe loopback socket owned by this site's Unix boundary. A foreign listener on the configured number is a blocking collision; start/deploy actions recheck that ownership and the final HTTP probe cannot succeed against another website by accident.
+
+New reverse-proxy sites default their upstream to `http://127.0.0.1:<site-id + 10000>`, matching the separately reserved CloudPanel application port. Operators can still replace it with another HTTP or HTTPS target when required.
 
 ### Project endpoints
 

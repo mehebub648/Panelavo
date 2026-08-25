@@ -116,10 +116,11 @@ export function PanelSettingsForm({
 
       <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-card">
         <div className="border-b border-slate-100 bg-slate-50/60 px-5 py-4 sm:px-6">
-          <h3 className="font-bold">Site id &amp; port ranges</h3>
+          <h3 className="font-bold">Site id ranges</h3>
           <p className="text-sm text-slate-500">
-            Each website reserves one id from its category; the id is also the
-            application port and the site user name (site-&lt;id&gt;).
+            Each website reserves one identity from its category and uses the
+            site user name site-&lt;id&gt;. Port-based applications receive a
+            separate collision-checked port in 30000–39999.
           </p>
         </div>
         <div className="divide-y divide-slate-100 text-sm">

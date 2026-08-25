@@ -304,9 +304,9 @@ export function SiteSettings({
                 className="mt-1.5 transition-all focus:ring-2 focus:ring-panel-500/50 bg-white/70"
               />
               <p className="mt-1.5 text-xs text-slate-400">
-                For panel-created sites the port is the reserved site id — pick a
-                free port inside a category range (20000–29999) to move the
-                reservation. The system domain keeps its original id.
+                This is the private loopback port CloudPanel sends traffic to.
+                Changing it never changes the website id, user, or system domain;
+                the server rejects ports already owned by another service.
               </p>
             </div>
           )}

@@ -17,8 +17,6 @@ import {
 } from "@/server/sites/site-labels";
 import {
   allocateSiteId,
-  assertSiteIdChange,
-  changeSiteId,
   getAllSiteMeta,
   getLinkedServiceMeta,
   getSiteMeta,
@@ -34,7 +32,11 @@ import {
   removeSiteRootOverride,
   setSiteRootOverride,
 } from "@/server/sites/site-root-overlay";
-import { localSiteProxyUrl } from "@/lib/site-url";
+import {
+  localSiteProxyUrl,
+  managedApplicationPort,
+  managedSiteIdForApplicationPort,
+} from "@/lib/site-url";
 import type { ValidCreateSiteInput } from "@/schemas/sites";
 import type { z } from "zod";
 import { updateSiteSchema } from "@/schemas/sites";
@@ -103,9 +105,15 @@ export async function getSiteCreationDetails(actor: PanelActor) {
   ]);
   const reserved = [
     ...Object.values(meta).map((item) => item.id),
-    ...sites
-      .map((site) => site.appPort)
-      .filter((port): port is number => typeof port === "number"),
+    ...[
+      ...sites
+        .map((site) => site.appPort)
+        .filter((port): port is number => typeof port === "number"),
+      ...options.reservedPorts,
+    ].flatMap((port) => {
+      const siteId = managedSiteIdForApplicationPort(port);
+      return siteId === null ? [] : [siteId];
+    }),
   ];
   return {
     options,
@@ -140,11 +148,21 @@ export async function createManagedSite(
     );
 
   const client = getCloudPanelClient();
-  const existingSites = await client.listSites(actor.cloudPanel);
-  const externalPorts = existingSites
-    .map((site) => site.appPort)
-    .filter((port): port is number => typeof port === "number");
-  const { id, category } = await allocateSiteId(input.category, externalPorts);
+  const [existingSites, creationOptions] = await Promise.all([
+    client.listSites(actor.cloudPanel),
+    client.getSiteCreationOptions(actor.cloudPanel),
+  ]);
+  const reservedIds = [
+    ...existingSites
+      .map((site) => site.appPort)
+      .filter((port): port is number => typeof port === "number"),
+    ...creationOptions.reservedPorts,
+  ].flatMap((port) => {
+    const siteId = managedSiteIdForApplicationPort(port);
+    return siteId === null ? [] : [siteId];
+  });
+  const { id, category } = await allocateSiteId(input.category, reservedIds);
+  const appPort = managedApplicationPort(id)!;
   const domain = systemDomainFor(id, serverIp, baseDomain);
   const siteUser = siteUserForId(id);
   const aliases = Array.from(
@@ -168,14 +186,14 @@ export async function createManagedSite(
             type: "nodejs",
             ...shared,
             nodeVersion: input.nodeVersion,
-            appPort: id,
+            appPort,
           }
         : input.type === "python"
           ? {
               type: "python",
               ...shared,
               pythonVersion: input.pythonVersion,
-              appPort: id,
+              appPort,
             }
           : input.type === "reverse-proxy"
             ? {
@@ -184,7 +202,7 @@ export async function createManagedSite(
                 reverseProxyUrl: input.reverseProxyUrl || localSiteProxyUrl(id),
               }
             : input.type === "docker"
-              ? { type: "docker", ...shared, appPort: id }
+              ? { type: "docker", ...shared, appPort }
               : { type: "static", ...shared };
 
   const site = await client.createSite(actor.cloudPanel, createInput);
@@ -267,12 +285,6 @@ export async function updateManagedSite(
       "Change a project endpoint through the parent project's endpoint controls so ownership, health checks, and rollback remain enforced.",
       409,
     );
-  const previousId = meta?.id;
-  const movingId =
-    input.appPort !== undefined &&
-    previousId !== undefined &&
-    input.appPort !== previousId;
-  if (movingId) await assertSiteIdChange(domain, input.appPort!);
   const upstreamSettings = {
     ...otherSettings,
     applicationRootDirectory,
@@ -283,16 +295,6 @@ export async function updateManagedSite(
   )
     ? await client.updateSite(actor.cloudPanel, domain, upstreamSettings)
     : accessibleSite;
-  if (movingId) {
-    try {
-      await changeSiteId(domain, input.appPort!);
-    } catch (error) {
-      await client
-        .updateSite(actor.cloudPanel, domain, { appPort: previousId })
-        .catch(() => undefined);
-      throw error;
-    }
-  }
   if (applicationRootDirectory !== undefined)
     await setSiteRootOverride(domain, applicationRootDirectory);
   if (label !== undefined) await setSiteLabel(domain, site.id, label);

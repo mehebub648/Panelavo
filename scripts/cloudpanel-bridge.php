@@ -29,7 +29,7 @@ use App\Site\Updater\StaticSite as StaticSiteUpdater;
 use Symfony\Component\Dotenv\Dotenv;
 
 const CLOUDPANEL_ROOT = '/home/clp/htdocs/app/files';
-const PANELAVO_BROKER_PROTOCOL_VERSION = 21;
+const PANELAVO_BROKER_PROTOCOL_VERSION = 22;
 const PANELAVO_BROKER_MAX_INPUT_BYTES = 100663296;
 const PANELAVO_ROOTLESS_MIGRATION_ROOT = '/var/lib/panelavo/rootless-migrations';
 const PANELAVO_ROOTLESS_MIGRATION_TTL = 86400;
@@ -1440,6 +1440,48 @@ function expectedSitePort(Site $site): ?int
     return is_numeric($port) && (int) $port >= 1 && (int) $port <= 65535 ? (int) $port : null;
 }
 
+function hostReservedPorts($manager): array
+{
+    $ports = [];
+    foreach ($manager->getRepository(Site::class)->findAll() as $site) {
+        if (!$site instanceof Site) continue;
+        $port = expectedSitePort($site);
+        if ($port !== null) $ports[$port] = true;
+    }
+    foreach (glob('/etc/php/*/fpm/pool.d/*.conf') ?: [] as $pool) {
+        if (is_link($pool) || !is_file($pool)) continue;
+        foreach (preg_split('/\R/', (string) @file_get_contents($pool)) ?: [] as $line) {
+            if (!preg_match('/^\s*listen\s*=\s*(?:\[[^]]+\]|[^:;\s]+)?:(\d{1,5})\s*(?:;.*)?$/', $line, $match)
+                && !preg_match('/^\s*listen\s*=\s*(\d{1,5})\s*(?:;.*)?$/', $line, $match)) continue;
+            $port = (int) $match[1];
+            if ($port >= 1 && $port <= 65535) $ports[$port] = true;
+        }
+    }
+    foreach (['/proc/net/tcp', '/proc/net/tcp6'] as $table) {
+        foreach (array_slice(preg_split('/\R/', (string) @file_get_contents($table)) ?: [], 1) as $line) {
+            $columns = preg_split('/\s+/', trim($line));
+            if (count($columns) < 4 || $columns[3] !== '0A' || !str_contains($columns[1], ':')) continue;
+            $port = hexdec((string) substr(strrchr($columns[1], ':'), 1));
+            if ($port >= 1 && $port <= 65535) $ports[$port] = true;
+        }
+    }
+    $result = array_map('intval', array_keys($ports));
+    sort($result);
+    return $result;
+}
+
+function requestedSitePort(array $siteInput): ?int
+{
+    if (isset($siteInput['appPort'])) return brokerPortValue($siteInput['appPort']);
+    $url = $siteInput['reverseProxyUrl'] ?? null;
+    if (!is_string($url)) return null;
+    $parts = parse_url($url);
+    $host = strtolower(trim((string) ($parts['host'] ?? ''), '[]'));
+    if (!in_array($host, ['127.0.0.1', 'localhost', '::1'], true)) return null;
+    $port = $parts['port'] ?? (($parts['scheme'] ?? '') === 'https' ? 443 : 80);
+    return is_numeric($port) ? brokerPortValue($port) : null;
+}
+
 // Read listening sockets once from the host and mark the processes that are
 // owned by this site's Unix user. The UI receives only port numbers and a safe
 // summary; PIDs and command lines never leave the bridge.
@@ -1586,12 +1628,32 @@ function sitePortCapability(Site $site, array $listeners): array
         array_filter($listeners, static fn(array $item): bool => !empty($item['siteOwned'])),
     )));
     sort($sitePorts);
-    $listening = $expected !== null && count(array_filter($listeners, static fn(array $item): bool => (int) $item['port'] === $expected)) > 0;
+    $matching = $expected === null ? [] : array_values(array_filter(
+        $listeners,
+        static fn(array $item): bool => (int) $item['port'] === $expected,
+    ));
+    $owned = array_values(array_filter(
+        $matching,
+        static fn(array $item): bool => !empty($item['siteOwned'])
+            && isSafeEndpointAddress((string) $item['address'], (int) $item['port']),
+    ));
+    $occupied = count($matching) > 0;
+    $listening = count($owned) > 0;
+    $conflict = $occupied && !$listening;
     if ($expected === null) $detail = 'This CloudPanel site is served directly and has no application upstream port.';
-    elseif ($listening) $detail = "A process is listening on the configured upstream port $expected.";
+    elseif ($listening) $detail = "This site's process owns the configured loopback upstream port $expected.";
+    elseif ($conflict) $detail = "CloudPanel expects port $expected, but another website or system process already owns it.";
     elseif ($sitePorts) $detail = 'CloudPanel expects port ' . $expected . ', but site-owned processes currently listen on ' . implode(', ', $sitePorts) . '.';
     else $detail = "CloudPanel expects port $expected, but no process is listening there yet.";
-    return ['expected' => $expected, 'listening' => $listening, 'detected' => $sitePorts, 'detail' => $detail];
+    return [
+        'expected' => $expected,
+        'listening' => $listening,
+        'occupied' => $occupied,
+        'owned' => $listening,
+        'conflict' => $conflict,
+        'detected' => $sitePorts,
+        'detail' => $detail,
+    ];
 }
 
 function composeLabels(array $service): array
@@ -2352,6 +2414,7 @@ function resolveOperationStep(array $state, string $command, array $operation): 
         }
         if (in_array($command, ['compose-up', 'compose-deploy'], true)) {
             $require(!empty($compose['portMatches']) || !empty($compose['canAutoRemap']));
+            $require(empty($state['port']['conflict']), 'PORT_IN_USE');
         }
         $mapped = !empty($compose['runtimeOverride']) && is_array($compose['_runtimeConfig'] ?? null);
         return [
@@ -2498,7 +2561,7 @@ function resolveOperationStep(array $state, string $command, array $operation): 
                 'Verify configured upstream port',
                 ['curl', '--silent', '--show-error', '--output', '/dev/null', '--retry', '12', '--retry-delay', '5', '--retry-all-errors', '--connect-timeout', '3', '--max-time', '90', '--write-out', 'HTTP %{http_code} from 127.0.0.1:' . $expected . "\n", 'http://127.0.0.1:' . $expected . '/'],
                 120,
-            );
+            ) + ['verifyOwnedPort' => $expected];
         case 'pm2-start':
             $require($available('pm2'), 'TOOL_UNAVAILABLE');
             if ($state['ecosystemFile'] !== null) {
@@ -2655,7 +2718,27 @@ function executeOperationSteps(Site $site, array $steps): array
             $displayArgs = array_map(static fn(string $arg): string => $arg === '@PANELAVO_COMPOSE_CONFIG@' ? '[ephemeral port-mapped config]' : $arg, $displayArgs);
         }
         try {
-            $result = runSiteCommand($site, $args, $stepDefinition['timeout'], !empty($stepDefinition['asRoot']), (array) ($stepDefinition['env'] ?? []));
+            if (isset($stepDefinition['verifyOwnedPort'])) {
+                $expectedPort = (int) $stepDefinition['verifyOwnedPort'];
+                $capability = null;
+                for ($attempt = 0; $attempt < 12; $attempt++) {
+                    $capability = sitePortCapability($site, hostListeningPorts($site));
+                    if (!empty($capability['listening']) || !empty($capability['conflict'])) break;
+                    usleep(5000000);
+                }
+                if (!empty($capability['conflict']) || empty($capability['listening'])) {
+                    $result = [
+                        'code' => 1,
+                        'timedOut' => false,
+                        'stdout' => '',
+                        'stderr' => (string) ($capability['detail'] ?? ('Port ' . $expectedPort . ' did not become site-owned.')),
+                    ];
+                } else {
+                    $result = runSiteCommand($site, $args, $stepDefinition['timeout'], !empty($stepDefinition['asRoot']), (array) ($stepDefinition['env'] ?? []));
+                }
+            } else {
+                $result = runSiteCommand($site, $args, $stepDefinition['timeout'], !empty($stepDefinition['asRoot']), (array) ($stepDefinition['env'] ?? []));
+            }
         } finally {
             if ($temporaryCompose !== null) @unlink($temporaryCompose);
         }
@@ -6196,7 +6279,10 @@ try {
                 $name = trim((string) (explode('|', $line)[1] ?? ''));
                 if ($name !== '' && preg_match('/^[A-Za-z0-9 ._-]{1,100}$/', $name)) $templates[] = $name;
             }
-            respond(['ok' => true, 'data' => ['templates' => array_values(array_unique($templates))]]);
+            respond(['ok' => true, 'data' => [
+                'templates' => array_values(array_unique($templates)),
+                'reservedPorts' => hostReservedPorts($manager),
+            ]]);
 
         case 'clpctl-site-create':
             $panelAdmin = ($input['panelAdmin'] ?? false) === true;
@@ -6221,6 +6307,27 @@ try {
             $domain = brokerDomainValue($siteInput['domain'] ?? null);
             $siteUser = $siteInput['siteUser'] ?? null;
             if (!is_string($siteUser) || preg_match('/^[A-Za-z_][A-Za-z0-9._-]{1,63}$/', $siteUser) !== 1) invalidBrokerRequest();
+            $requestedPort = requestedSitePort($siteInput);
+            if ($requestedPort !== null && in_array($requestedPort, hostReservedPorts($manager), true)) {
+                respond([
+                    'ok' => false,
+                    'code' => 'INVALID_REQUEST',
+                    'message' => 'Application port ' . $requestedPort . ' is already reserved or listening on this server.',
+                ]);
+            }
+            if ($type === 'php') {
+                foreach ($manager->getRepository(Site::class)->findAll() as $existingSite) {
+                    if (!$existingSite instanceof Site || $existingSite->getType() === Site::TYPE_PHP) continue;
+                    $legacyPort = expectedSitePort($existingSite);
+                    if ($legacyPort !== null && $legacyPort >= 20000 && $legacyPort <= 29999) {
+                        respond([
+                            'ok' => false,
+                            'code' => 'INVALID_REQUEST',
+                            'message' => 'Migrate legacy application port ' . $legacyPort . ' outside the CloudPanel PHP-FPM allocation range before creating another PHP website.',
+                        ]);
+                    }
+                }
+            }
             $args = [
                 'site:add:' . $type,
                 '--domainName=' . $domain,
@@ -7173,6 +7280,17 @@ try {
             }
             [$model, $updater] = siteModel($site);
             $settings = $input['settings'] ?? [];
+            if (!is_array($settings)) invalidBrokerRequest();
+            $requestedPort = requestedSitePort($settings);
+            if ($requestedPort !== null
+                && $requestedPort !== expectedSitePort($site)
+                && in_array($requestedPort, hostReservedPorts($manager), true)) {
+                respond([
+                    'ok' => false,
+                    'code' => 'INVALID_REQUEST',
+                    'message' => 'Application port ' . $requestedPort . ' is already reserved or listening on this server.',
+                ]);
+            }
             $runtimeChanged = false;
             if (array_key_exists('applicationRootDirectory', $input) && !is_dir(siteRootPath($site))) {
                 respond(['ok' => false, 'code' => 'INVALID_REQUEST', 'message' => 'The root directory does not exist.']);
@@ -7204,7 +7322,7 @@ try {
                 }
             }
             if (array_key_exists('appPort', $settings)) {
-                $port = (int) $settings['appPort'];
+                $port = brokerPortValue($settings['appPort']);
                 if ($model instanceof NodejsSiteModel) $site->getNodejsSettings()->setPort($port);
                 if ($model instanceof PythonSiteModel) $site->getPythonSettings()->setPort($port);
             }

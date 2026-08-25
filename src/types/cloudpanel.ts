@@ -159,6 +159,7 @@ export interface SiteCreationOptions {
   nodeVersions: string[];
   pythonVersions: string[];
   vhostTemplates: string[];
+  reservedPorts: number[];
 }
 
 export type CreateSiteInput =

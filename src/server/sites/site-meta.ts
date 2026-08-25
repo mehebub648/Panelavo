@@ -2,7 +2,7 @@ import { AppError } from "@/server/cloudpanel/errors";
 import { jsonStore } from "@/server/storage/json-store";
 
 // Panel-managed site metadata that CloudPanel has no concept of: the reserved
-// site id (which doubles as the application port), the project category the id
+// site id, the project category the id
 // was allocated from, customer-facing alias domains, and how the system
 // subdomain (site-<id>.<ip>.<base>) should behave once an alias is live.
 // Mirrors the panel-roles / site-types overlays.
@@ -112,9 +112,8 @@ export async function removeSiteMeta(domain: string) {
 }
 
 /**
- * Next free id in a category. Ids reserved in the meta store and any ports the
- * caller already knows to be taken (e.g. appPorts of existing CloudPanel
- * sites) are skipped.
+ * Next free id in a category. Ids reserved in the meta store and any additional
+ * ids whose derived application ports are unavailable are skipped.
  */
 export function nextFreeId(
   category: SiteCategory,
@@ -129,7 +128,7 @@ export function nextFreeId(
 
 /**
  * Allocate the next id for a category, considering the meta store plus any
- * externally used ports. Throws when the category range is exhausted.
+ * additional unavailable ids. Throws when the category range is exhausted.
  */
 export async function allocateSiteId(
   categoryId: string,
@@ -154,8 +153,8 @@ export async function allocateSiteId(
 }
 
 /**
- * Move a site's reservation to a new id/port (site settings port change). The
- * new id must be inside one of the category ranges and not taken.
+ * Move a site's identity reservation to another category id. Runtime port
+ * changes do not call this helper and never change site identity.
  */
 export async function changeSiteId(
   domain: string,
@@ -164,7 +163,12 @@ export async function changeSiteId(
 ) {
   const value = await store.load();
   const key = domain.toLowerCase();
-  const meta = validateSiteIdChange(value.sites, key, newId, externallyUsedPorts);
+  const meta = validateSiteIdChange(
+    value.sites,
+    key,
+    newId,
+    externallyUsedPorts,
+  );
   if (meta.id === newId) return meta;
   const category = SITE_CATEGORIES.find(
     (item) => newId >= item.start && newId <= item.end,
@@ -196,7 +200,7 @@ export function validateSiteIdChange(
   if (!category)
     throw new AppError(
       "INVALID_REQUEST",
-      "Choose a port inside one of the project category ranges (20000–29999).",
+      "Choose a site id inside one of the project category ranges (20000–29999).",
       400,
     );
   const taken = new Set([
@@ -208,7 +212,7 @@ export function validateSiteIdChange(
   if (taken.has(newId))
     throw new AppError(
       "INVALID_REQUEST",
-      `Port ${newId} is already reserved by another website.`,
+      `Site id ${newId} is already reserved by another website.`,
       409,
     );
   return meta;

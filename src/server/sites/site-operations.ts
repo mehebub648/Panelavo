@@ -461,11 +461,13 @@ function preflightChecks(raw: RawOperationsData, type: string) {
         status:
           raw.compose?.configValid !== true
             ? "warning"
-            : raw.compose?.portMatches
-              ? "ready"
-              : raw.compose?.canAutoRemap
-                ? "warning"
-                : "blocked",
+            : raw.port?.conflict
+              ? "blocked"
+              : raw.compose?.portMatches
+                ? "ready"
+                : raw.compose?.canAutoRemap
+                  ? "warning"
+                  : "blocked",
         detail:
           raw.compose?.configValid !== true
             ? "Entry-service and port matching will run after the Compose configuration can be resolved."
@@ -473,10 +475,11 @@ function preflightChecks(raw: RawOperationsData, type: string) {
               "Panelavo could not match a Compose service to the configured upstream port.",
         blocker:
           raw.compose?.configValid === true &&
-          !raw.compose?.portMatches &&
-          !raw.compose?.canAutoRemap,
-        remediation:
-          raw.compose?.configValid !== true || raw.compose?.portMatches
+          (Boolean(raw.port?.conflict) ||
+            (!raw.compose?.portMatches && !raw.compose?.canAutoRemap)),
+        remediation: raw.port?.conflict
+          ? `Choose an unused loopback application port; do not stop the other website or system process using ${raw.port.expected}.`
+          : raw.compose?.configValid !== true || raw.compose?.portMatches
             ? undefined
             : raw.portRepair?.detail ||
               "Label exactly one service io.panelavo.entrypoint=true and, when it exposes multiple container ports, set io.panelavo.container-port=<port>.",
@@ -485,6 +488,38 @@ function preflightChecks(raw: RawOperationsData, type: string) {
             ? makeFix(raw, FIXES["align-application-port"])
             : undefined,
       },
+      ...(raw.compose?.entryService &&
+      (raw.runtime?.containers?.length ?? 0) > 0
+        ? [
+            (() => {
+              const entry = raw.runtime?.containers?.find(
+                (container) => container.service === raw.compose?.entryService,
+              );
+              const running = entry?.state.toLowerCase() === "running";
+              const healthy =
+                !entry?.health || entry.health.toLowerCase() === "healthy";
+              return {
+                id: "entry-runtime",
+                label: "Entry service runtime",
+                status:
+                  running && healthy
+                    ? ("ready" as const)
+                    : ("warning" as const),
+                detail:
+                  running && healthy
+                    ? `Entry service ${raw.compose?.entryService} is running${entry?.health ? " and healthy" : ""}.`
+                    : entry
+                      ? `Entry service ${raw.compose?.entryService} is ${entry.status || entry.state}${entry.health ? ` (${entry.health})` : ""}.`
+                      : `Entry service ${raw.compose?.entryService} has no container yet.`,
+                blocker: false,
+                remediation:
+                  running && healthy
+                    ? undefined
+                    : "Review the entry-service logs, then deploy or restart the project after resolving its runtime failure.",
+              };
+            })(),
+          ]
+        : []),
       check(
         "docker-permission",
         "Site-user Docker boundary",
@@ -652,7 +687,7 @@ function preflightChecks(raw: RawOperationsData, type: string) {
         raw.portRepair?.detail ||
           `The deployment will provide PORT=${raw.port.expected} and verify 127.0.0.1:${raw.port.expected}. If an ecosystem file overrides PORT, update it to match the configured port.`,
         {
-          warning: true,
+          warning: !raw.port.conflict,
           fix: raw.portRepair?.canApply
             ? makeFix(raw, FIXES["align-application-port"])
             : undefined,
@@ -1132,8 +1167,10 @@ function actionGroups(
           ]
         : []),
     ];
+    const portBlockers = raw.port?.conflict ? [raw.port.detail] : [];
     const daemonBlockers = [
       ...configBlockers,
+      ...portBlockers,
       ...(!raw.compose?.daemonAvailable
         ? ["The Docker daemon is unavailable."]
         : []),

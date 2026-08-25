@@ -195,6 +195,7 @@ describe("actor-aware linked services", () => {
         category: "business",
         aliases: [],
         block: "none",
+        targetPort: 22005,
       },
     });
 

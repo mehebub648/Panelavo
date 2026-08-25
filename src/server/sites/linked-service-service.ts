@@ -90,13 +90,13 @@ function isPortClaimed(
 ) {
   const current = currentEndpoint?.toLowerCase();
   const metadataConflict = Object.entries(allMeta).find(
-    ([domain, meta]) =>
-      domain !== current && (meta.id === port || meta.targetPort === port),
+    ([domain, meta]) => domain !== current && meta.targetPort === port,
   );
   const siteConflict = sites.find(
     (site) =>
       site.domain.toLowerCase() !== current &&
-      (site.appPort === port || portFromProxyUrl(site.reverseProxyUrl) === port),
+      (site.appPort === port ||
+        portFromProxyUrl(site.reverseProxyUrl) === port),
   );
   return Boolean(metadataConflict || siteConflict);
 }
@@ -192,7 +192,8 @@ export async function listLinkedServicesForActor(
   const canInspectPorts = canWriteSites(actor.user);
   let detectedPorts: SiteEndpointPort[] = [];
   if (canInspectPorts)
-    detectedPorts = (await inspectPorts(client, actor, parentDomain)).ports ?? [];
+    detectedPorts =
+      (await inspectPorts(client, actor, parentDomain)).ports ?? [];
   const services = Object.entries(children).map(([domain, meta]) =>
     endpointView(
       domain,

@@ -48,8 +48,9 @@ const runtime = z
   .min(1)
   .max(32)
   .regex(/^[a-zA-Z0-9._-]+$/);
-// The panel derives the primary (system) domain, site user, and application
-// port from the reserved site id — the user only picks a category and,
+// The panel derives the primary (system) domain, site user, and a separate
+// collision-checked application port from the reserved site id. The user picks
+// a category and,
 // optionally, their own customer-facing domains, which become aliases.
 const categoryId = z
   .string()

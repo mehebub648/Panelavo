@@ -29,7 +29,7 @@ import {
 import { getSiteTypeOverrides } from "@/server/sites/site-type-overlay";
 import { AppError } from "./errors";
 
-export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 21;
+export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 22;
 export const CLOUDPANEL_BROKER_PATH =
   "/usr/local/libexec/panelavo/panelavo-broker";
 
@@ -659,6 +659,17 @@ export class LiveCloudPanelClient implements CloudPanelClient {
           (value): value is string => typeof value === "string",
         )
       : [];
+    const reservedPorts = Array.isArray(
+      (templates.data as { reservedPorts?: unknown } | undefined)
+        ?.reservedPorts,
+    )
+      ? (templates.data as { reservedPorts: unknown[] }).reservedPorts.filter(
+          (value): value is number =>
+            Number.isInteger(value) &&
+            Number(value) >= 1 &&
+            Number(value) <= 65535,
+        )
+      : [];
     return {
       allowedTypes: [
         "php",
@@ -672,6 +683,7 @@ export class LiveCloudPanelClient implements CloudPanelClient {
       nodeVersions: ["22", "20", "18", "16", "14", "12"],
       pythonVersions: ["3.12", "3.10", "3.9"],
       vhostTemplates,
+      reservedPorts,
     };
   }
 
@@ -727,8 +739,7 @@ export class LiveCloudPanelClient implements CloudPanelClient {
         );
       return createdSiteFromBridge(result, input.domain);
     } catch (error) {
-      if (error instanceof AppError && error.code === "REQUEST_TIMEOUT")
-        throw error;
+      if (error instanceof AppError) throw error;
       throw new AppError(
         "SITE_CREATION_FAILED",
         "The server could not create the website.",
@@ -758,7 +769,9 @@ export class LiveCloudPanelClient implements CloudPanelClient {
       settings,
       panelAdmin,
     });
-    if (!result.ok || !result.site)
+    if (!result.ok)
+      throw this.privilegedError(result, "The server could not update the website.");
+    if (!result.site)
       throw new AppError(
         "SITE_UPDATE_FAILED",
         "The server could not update the website.",

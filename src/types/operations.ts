@@ -143,6 +143,9 @@ export type ServicePort = {
 export type SitePortCapability = {
   expected?: number;
   listening: boolean;
+  occupied?: boolean;
+  owned?: boolean;
+  conflict?: boolean;
   detected: number[];
   detail: string;
 };

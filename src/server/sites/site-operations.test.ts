@@ -315,6 +315,67 @@ describe("normalizeOperationsData", () => {
     expect(data.plan?.warnings.join(" ")).toContain("127.0.0.1:24001");
   });
 
+  it("blocks deployment when another site owns the configured port", () => {
+    const data = normalizeOperationsData(
+      {
+        ...base,
+        hasCompose: true,
+        expectedPort: 30000,
+        port: {
+          expected: 30000,
+          listening: false,
+          occupied: true,
+          owned: false,
+          conflict: true,
+          detected: [],
+          detail:
+            "CloudPanel expects port 30000, but another website or system process already owns it.",
+        },
+        compose: {
+          file: "compose.yaml",
+          cliAvailable: true,
+          pluginAvailable: true,
+          daemonAvailable: true,
+          rootless: rootlessReady,
+          configValid: true,
+          safe: true,
+          services: ["app"],
+          expectedPort: 30000,
+          entryService: "app",
+          containerPort: 3000,
+          publishedPort: 30000,
+          portMatches: true,
+          canAutoRemap: false,
+        },
+        runtime: {
+          containers: [
+            {
+              name: "project-app-1",
+              service: "app",
+              state: "created",
+              status: "Created",
+            },
+          ],
+        },
+      },
+      { typeOverride: "docker" },
+    );
+
+    expect(data.preflight.status).toBe("blocked");
+    expect(
+      data.preflight.checks.find((item) => item.id === "entry-port"),
+    ).toMatchObject({ status: "blocked", blocker: true });
+    expect(
+      data.preflight.checks.find((item) => item.id === "entry-runtime"),
+    ).toMatchObject({ status: "warning", blocker: false });
+    expect(data.plan).toMatchObject({ status: "blocked" });
+    expect(
+      data.groups
+        .flatMap((group) => group.actions)
+        .find((action) => action.id === "compose-deploy"),
+    ).toMatchObject({ status: "blocked" });
+  });
+
   it("uses the detected Node package manager and includes deterministic build and PM2 steps", () => {
     const data = normalizeOperationsData({
       ...base,

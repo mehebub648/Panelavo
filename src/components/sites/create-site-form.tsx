@@ -31,7 +31,7 @@ import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { normalizeDomain } from "@/schemas/sites";
 import { cn } from "@/lib/utils";
-import { localSiteProxyUrl } from "@/lib/site-url";
+import { localSiteProxyUrl, managedApplicationPort } from "@/lib/site-url";
 import { defaultPhpVhostTemplate } from "@/lib/php-vhost-template";
 
 const types = [
@@ -174,6 +174,7 @@ export function CreateSiteForm() {
       ? `site-${previewId}.${serverIp}.${baseDomain}`
       : null;
   const suggestedProxyUrl = localSiteProxyUrl(previewId);
+  const previewPort = managedApplicationPort(previewId);
   function change(key: keyof Values, value: string) {
     setValues((current) => ({ ...current, [key]: value }));
   }
@@ -459,7 +460,7 @@ export function CreateSiteForm() {
                       Site id <b>{previewId}</b> · site user{" "}
                       <b>site-{previewId}</b>
                       {type && ["nodejs", "python", "docker"].includes(type)
-                        ? ` · application port ${previewId}`
+                        ? ` · application port ${previewPort}`
                         : ""}{" "}
                       — reserved automatically from this category. A DNS record
                       is created for the system domain when Cloudflare is
@@ -468,9 +469,9 @@ export function CreateSiteForm() {
                   </>
                 ) : (
                   <span className="text-slate-500">
-                    The next free id in the category becomes the site id, its
-                    port, the site user (site-&lt;id&gt;), and the system
-                    subdomain.
+                    The next free id becomes the site identity, site user
+                    (site-&lt;id&gt;), and system subdomain. Applications
+                    receive a separate collision-checked loopback port.
                   </span>
                 )}
               </div>
@@ -580,7 +581,7 @@ export function CreateSiteForm() {
                 </Select>
                 <p className="mt-1.5 text-xs text-slate-400">
                   Your app must listen on the reserved port
-                  {previewId ? ` (${previewId})` : ""}.
+                  {previewPort ? ` (${previewPort})` : ""}.
                 </p>
               </div>
             )}
@@ -601,7 +602,7 @@ export function CreateSiteForm() {
                 </Select>
                 <p className="mt-1.5 text-xs text-slate-400">
                   Your app must listen on the reserved port
-                  {previewId ? ` (${previewId})` : ""}.
+                  {previewPort ? ` (${previewPort})` : ""}.
                 </p>
               </div>
             )}
@@ -609,10 +610,10 @@ export function CreateSiteForm() {
               <div className="sm:col-span-2">
                 <p className="rounded-xl bg-sky-50 px-4 py-3 text-xs leading-5 text-sky-800">
                   NGINX will proxy this website to{" "}
-                  <b>http://127.0.0.1:{previewId ?? "<site id>"}</b>. Publish
-                  your container on that port (for example{" "}
+                  <b>http://127.0.0.1:{previewPort ?? "<application port>"}</b>.
+                  Publish your container on that port (for example{" "}
                   <code className="rounded bg-white/70 px-1 py-0.5">
-                    docker run -p {previewId ?? 20000}:80 …
+                    docker run -p {previewPort ?? 30000}:80 …
                   </code>{" "}
                   or a compose file), then use the site&apos;s Actions tab to
                   manage it.
@@ -628,7 +629,7 @@ export function CreateSiteForm() {
                   value={values.reverseProxyUrl || suggestedProxyUrl}
                   onChange={(e) => change("reverseProxyUrl", e.target.value)}
                   placeholder={
-                    suggestedProxyUrl || "http://127.0.0.1:<site id>"
+                    suggestedProxyUrl || "http://127.0.0.1:<application port>"
                   }
                   required
                 />
