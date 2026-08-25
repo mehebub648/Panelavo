@@ -185,6 +185,32 @@ function boundedResult(value: unknown) {
   }
 }
 
+function executionFailure(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return;
+  const run = (value as { run?: unknown }).run;
+  if (!run || typeof run !== "object" || Array.isArray(run)) return;
+  const result = run as {
+    exitCode?: unknown;
+    timedOut?: unknown;
+    steps?: unknown;
+  };
+  if (result.timedOut === true) return "The server operation timed out.";
+  if (typeof result.exitCode === "number" && result.exitCode !== 0)
+    return `The server operation exited with code ${result.exitCode}.`;
+  if (!Array.isArray(result.steps)) return;
+  const failedStep = result.steps.find((step) => {
+    if (!step || typeof step !== "object" || Array.isArray(step)) return false;
+    const current = step as { exitCode?: unknown; timedOut?: unknown };
+    return (
+      current.timedOut === true ||
+      (typeof current.exitCode === "number" && current.exitCode !== 0)
+    );
+  }) as { exitCode?: unknown; timedOut?: unknown } | undefined;
+  if (failedStep?.timedOut === true) return "A server operation step timed out.";
+  if (typeof failedStep?.exitCode === "number")
+    return `A server operation step exited with code ${failedStep.exitCode}.`;
+}
+
 async function finishJob(
   id: string,
   update: Pick<McpJobRecord, "status"> & {
@@ -238,6 +264,16 @@ async function executeJob(record: McpJobRecord, controller: AbortController, wor
     });
     if (controller.signal.aborted)
       throw new AppError("REQUEST_CANCELLED", "The operation was cancelled.", 409);
+    const failure = executionFailure(value);
+    if (failure) {
+      await finishJob(record.id, {
+        status: "failed",
+        result: value,
+        error: failure,
+        log: `${record.kind} failed: ${failure}`,
+      });
+      return;
+    }
     await finishJob(record.id, {
       status: "succeeded",
       result: value,

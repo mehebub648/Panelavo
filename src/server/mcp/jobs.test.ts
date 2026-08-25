@@ -71,6 +71,28 @@ describe("MCP background jobs", () => {
     expect((await listMcpJobs(subject, "site.example")).jobs).toHaveLength(1);
   });
 
+  it("marks a resolved server execution with a nonzero exit code as failed", async () => {
+    const subject = actor();
+    const result = {
+      run: {
+        command: "deploy",
+        exitCode: 7,
+        timedOut: false,
+        steps: [{ command: "port-check", exitCode: 7, timedOut: false }],
+      },
+    };
+    const started = await startMcpJob(
+      subject,
+      { domain: "site.example", kind: "compose deployment", timeoutSeconds: 30 },
+      async () => result,
+    );
+
+    const failed = await waitForStatus(subject, started.id, "failed");
+    expect(failed.error).toBe("The server operation exited with code 7.");
+    expect(failed.result).toEqual(result);
+    expect(failed.logs.at(-1)?.message).toContain("failed");
+  });
+
   it("cancels the running work through its AbortSignal", async () => {
     const subject = actor();
     const started = await startMcpJob(
