@@ -11,13 +11,14 @@ export function UpdateManager({ initialState }: { initialState: UpdateState }) {
   const [state, setState] = useState(initialState);
   const [repository, setRepository] = useState(initialState.repository);
   const [busy, setBusy] = useState<"check" | "save" | "update" | null>(null);
-  const running = state.status === "queued" || state.status === "updating";
+  const running = ["queued", "updating", "reloading"].includes(state.status);
   const configured = Boolean(state.repository);
   const current = Boolean(
     state.installedCommit &&
     state.remoteCommit &&
     state.installedCommit === state.remoteCommit,
   );
+  const installable = state.status === "available";
 
   async function call(url: string, init?: RequestInit) {
     const response = await fetch(url, init);
@@ -84,6 +85,17 @@ export function UpdateManager({ initialState }: { initialState: UpdateState }) {
   }, [running]);
 
   const short = (value?: string) => (value ? value.slice(0, 10) : "unknown");
+  const installLabel = running
+    ? "Updating…"
+    : current
+      ? "Up to date"
+      : state.status === "ahead"
+        ? "Server is newer"
+        : state.status === "diverged"
+          ? "Version conflict"
+          : state.status === "blocked"
+            ? "Broker upgrade required"
+            : "Install latest";
   return (
     <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-card">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 bg-slate-50/60 px-5 py-4 sm:px-6">
@@ -126,20 +138,53 @@ export function UpdateManager({ initialState }: { initialState: UpdateState }) {
             trusted source of Panelavo code.
           </p>
         </div>
-        <dl className="grid gap-3 rounded-xl bg-slate-50 p-4 text-sm sm:grid-cols-3">
+        <dl className="grid gap-3 rounded-xl bg-slate-50 p-4 text-sm sm:grid-cols-2 lg:grid-cols-3">
           <div>
             <dt className="text-slate-500">Installed version</dt>
             <dd className="font-semibold">v{state.currentVersion}</dd>
+          </div>
+          <div>
+            <dt className="text-slate-500">Available release</dt>
+            <dd className="font-semibold">
+              {state.remoteVersion ? `v${state.remoteVersion}` : "Not checked"}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-slate-500">Release commit</dt>
+            <dd className="font-mono">{short(state.remoteCommit)}</dd>
           </div>
           <div>
             <dt className="text-slate-500">Installed commit</dt>
             <dd className="font-mono">{short(state.installedCommit)}</dd>
           </div>
           <div>
-            <dt className="text-slate-500">Latest commit</dt>
-            <dd className="font-mono">{short(state.remoteCommit)}</dd>
+            <dt className="text-slate-500">Installed broker</dt>
+            <dd className="font-semibold">
+              {state.installedBrokerProtocol
+                ? `Protocol ${state.installedBrokerProtocol}`
+                : "Not verified"}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-slate-500">Release requires</dt>
+            <dd className="font-semibold">
+              {state.requiredBrokerProtocol
+                ? `Protocol ${state.requiredBrokerProtocol}`
+                : "Not checked"}
+            </dd>
           </div>
         </dl>
+        {state.notice && (
+          <p
+            className={`rounded-lg p-3 text-sm ${
+              state.status === "blocked" || state.status === "diverged"
+                ? "bg-amber-50 text-amber-800"
+                : "bg-blue-50 text-blue-800"
+            }`}
+          >
+            {state.notice}
+          </p>
+        )}
         {state.error && (
           <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">
             {state.error}
@@ -159,7 +204,7 @@ export function UpdateManager({ initialState }: { initialState: UpdateState }) {
             Check for updates
           </Button>
           <Button
-            disabled={!!busy || running || current || !configured}
+            disabled={!!busy || running || !installable || !configured}
             onClick={() => void update()}
           >
             {running || busy === "update" ? (
@@ -167,7 +212,7 @@ export function UpdateManager({ initialState }: { initialState: UpdateState }) {
             ) : (
               <DownloadCloud className="h-4 w-4" />
             )}{" "}
-            {running ? "Updating…" : current ? "Up to date" : "Install latest"}
+            {installLabel}
           </Button>
         </div>
         <p className="text-xs text-slate-500">

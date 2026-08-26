@@ -51,25 +51,58 @@ echo "[$(date -Is)] Fetching ${REPOSITORY} (${BRANCH})"
 [ "$(node -p "require('${SOURCE}/package.json').name")" = "panelavo" ] || abort "The configured repository is not a Panelavo release."
 [ -f "${SOURCE}/ecosystem.config.js" ] && [ -f "${SOURCE}/pnpm-lock.yaml" ] || abort "The release is missing required Panelavo application files."
 COMMIT="$(/usr/bin/git -C "${SOURCE}" rev-parse HEAD)"
+CURRENT_VERSION="$(node -p "require('${APP_ROOT}/package.json').version ?? ''")"
+RELEASE_VERSION="$(node -p "require('${SOURCE}/package.json').version ?? ''")"
+VERSION_RELATION="$(CURRENT_VERSION="${CURRENT_VERSION}" RELEASE_VERSION="${RELEASE_VERSION}" node <<'NODE'
+const pattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+const current = pattern.exec(process.env.CURRENT_VERSION || '');
+const release = pattern.exec(process.env.RELEASE_VERSION || '');
+if (!current || !release) process.exit(1);
+for (let index = 1; index <= 3; index += 1) {
+  const difference = Number(current[index]) - Number(release[index]);
+  if (difference !== 0) {
+    process.stdout.write(difference < 0 ? 'newer' : 'older');
+    process.exit(0);
+  }
+}
+process.stdout.write('same');
+NODE
+)" || abort "Panelavo could not compare the installed and repository release versions."
+if [ "${VERSION_RELATION}" = "older" ]; then
+  abort "The configured update repository offers v${RELEASE_VERSION}, older than installed v${CURRENT_VERSION}. Install latest will not downgrade Panelavo."
+fi
+if [ "${VERSION_RELATION}" = "same" ]; then
+  abort "The repository commit differs but still declares installed version v${CURRENT_VERSION}. Publish it with a higher version before updating."
+fi
 
 # Host migrations are root-owned and never run from a configurable update
 # repository. Refuse the release before build/deploy unless its required
 # broker protocol is already installed and healthy.
 EXPECTED_BROKER_PROTOCOL="$(node -p "require('${SOURCE}/package.json').panelavo?.brokerProtocolVersion ?? ''")"
+CURRENT_BROKER_PROTOCOL="$(node -p "require('${APP_ROOT}/package.json').panelavo?.brokerProtocolVersion ?? ''")"
 [[ "${EXPECTED_BROKER_PROTOCOL}" =~ ^[0-9]+$ ]] || abort "The release does not declare a valid broker protocol version."
 [ -x "${BROKER_PATH}" ] || abort "This update requires the root-owned Panelavo broker. Run 'sudo bash setup.sh' from a trusted checkout before updating."
 if ! BROKER_HEALTH="$(printf '{\"protocolVersion\":%s,\"action\":\"broker-health\"}' "${EXPECTED_BROKER_PROTOCOL}" | /usr/bin/sudo -n "${BROKER_PATH}")"; then
   if [[ "${BROKER_HEALTH}" == *'"code":"BROKER_PROTOCOL_MISMATCH"'* ]]; then
-    abort "The installed Panelavo broker is incompatible with this release. Run 'sudo bash setup.sh' from a trusted checkout."
+    INSTALLED_BROKER_PROTOCOL="$(BROKER_HEALTH="${BROKER_HEALTH}" node -e 'try { const value = JSON.parse(process.env.BROKER_HEALTH || "{}").data?.protocolVersion; if (Number.isInteger(value)) process.stdout.write(String(value)); } catch {}')"
+    if [ -z "${INSTALLED_BROKER_PROTOCOL}" ] && [[ "${CURRENT_BROKER_PROTOCOL}" =~ ^[0-9]+$ ]] && [ "${CURRENT_BROKER_PROTOCOL}" != "${EXPECTED_BROKER_PROTOCOL}" ]; then
+      if CURRENT_BROKER_HEALTH="$(printf '{\"protocolVersion\":%s,\"action\":\"broker-health\"}' "${CURRENT_BROKER_PROTOCOL}" | /usr/bin/sudo -n "${BROKER_PATH}")"; then
+        INSTALLED_BROKER_PROTOCOL="$(BROKER_HEALTH="${CURRENT_BROKER_HEALTH}" node -e 'try { const value = JSON.parse(process.env.BROKER_HEALTH || "{}").data?.protocolVersion; if (Number.isInteger(value)) process.stdout.write(String(value)); } catch {}')"
+      fi
+    fi
+    if [ -n "${INSTALLED_BROKER_PROTOCOL}" ]; then
+      abort "Release v${RELEASE_VERSION} requires broker protocol ${EXPECTED_BROKER_PROTOCOL}, but protocol ${INSTALLED_BROKER_PROTOCOL} is installed. Run trusted 'sudo bash setup.sh' for this release first."
+    fi
+    abort "Release v${RELEASE_VERSION} requires broker protocol ${EXPECTED_BROKER_PROTOCOL}, but the installed broker could not be verified. Run trusted 'sudo bash setup.sh' for this release first."
   fi
   abort "The installed Panelavo broker is unavailable. Run 'sudo bash setup.sh' from a trusted checkout."
 fi
-FAILURE_MESSAGE="The installed Panelavo broker is incompatible with this release. Run 'sudo bash setup.sh' from a trusted checkout."
-BROKER_HEALTH="${BROKER_HEALTH}" EXPECTED_BROKER_PROTOCOL="${EXPECTED_BROKER_PROTOCOL}" node <<'NODE'
+FAILURE_MESSAGE="Release v${RELEASE_VERSION} requires a healthy broker protocol ${EXPECTED_BROKER_PROTOCOL}. Run trusted 'sudo bash setup.sh' for this release first."
+BROKER_HEALTH="${BROKER_HEALTH}" EXPECTED_BROKER_PROTOCOL="${EXPECTED_BROKER_PROTOCOL}" RELEASE_VERSION="${RELEASE_VERSION}" node <<'NODE'
 const result = JSON.parse(process.env.BROKER_HEALTH || '{}');
 const data = result.data || {};
 if (!result.ok || data.protocolVersion !== Number(process.env.EXPECTED_BROKER_PROTOCOL) || data.privileged !== true || data.cloudPanelAvailable !== true) {
-  console.error('The installed Panelavo broker is incompatible with this release. Run sudo bash setup.sh from a trusted checkout.');
+  console.error(`Release v${process.env.RELEASE_VERSION} requires a healthy broker protocol ${process.env.EXPECTED_BROKER_PROTOCOL}. Run trusted sudo bash setup.sh for this release first.`);
   process.exit(1);
 }
 NODE

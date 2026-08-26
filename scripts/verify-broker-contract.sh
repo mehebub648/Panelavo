@@ -25,10 +25,11 @@ fi
 grep -Fq '/api/health/ready' "${ROOT}/setup.sh"
 
 check_line="$(grep -n 'EXPECTED_BROKER_PROTOCOL=' "${ROOT}/scripts/self-update.sh" | head -n 1 | cut -d: -f1)"
+version_line="$(grep -n 'VERSION_RELATION=' "${ROOT}/scripts/self-update.sh" | head -n 1 | cut -d: -f1)"
 build_line="$(grep -n 'Installing and building' "${ROOT}/scripts/self-update.sh" | head -n 1 | cut -d: -f1)"
 deploy_line="$(grep -n 'Deploying staged build' "${ROOT}/scripts/self-update.sh" | head -n 1 | cut -d: -f1)"
-if [ "${check_line}" -ge "${build_line}" ] || [ "${check_line}" -ge "${deploy_line}" ]; then
-  echo "self-update checks the broker too late" >&2
+if [ "${version_line}" -ge "${check_line}" ] || [ "${check_line}" -ge "${build_line}" ] || [ "${check_line}" -ge "${deploy_line}" ]; then
+  echo "self-update checks release direction or broker compatibility too late" >&2
   exit 1
 fi
 

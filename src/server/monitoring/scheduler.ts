@@ -53,8 +53,8 @@ async function checkUpdates() {
   const monitor = await getUpdateMonitorState();
   if (!monitor.settings.updatesEnabled || (monitor.state.lastCheckAt && Date.now() - new Date(monitor.state.lastCheckAt).getTime() < UPDATE_INTERVAL_MS)) return;
   const update = await getUpdateState(true);
-  const available = update.remoteCommit && update.installedCommit !== update.remoteCommit;
-  if (available && monitor.state.alertedCommit !== update.remoteCommit) await sendNotification({ title: "Panelavo update available", message: `A newer ${update.branch} commit is available from the configured repository.`, severity: "info", event: "panel.update.available" });
+  const available = update.status === "available" && update.remoteCommit;
+  if (available && monitor.state.alertedCommit !== update.remoteCommit) await sendNotification({ title: "Panelavo update available", message: `Panelavo v${update.remoteVersion || "unknown"} is available from the configured ${update.branch} update channel.`, severity: "info", event: "panel.update.available" });
   await saveUpdateMonitorState({ lastCheckAt: new Date().toISOString(), alertedCommit: available ? update.remoteCommit : undefined });
 }
 
