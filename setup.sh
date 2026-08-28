@@ -713,7 +713,12 @@ else
 fi
 [[ "${DATABASE_GATEWAY_MONITOR_USER}" =~ ^[A-Za-z0-9_-]{8,64}$ ]] || die "The database gateway monitor name is invalid."
 [ "${#DATABASE_GATEWAY_MONITOR_PASSWORD}" -ge 24 ] || die "The database gateway monitor password is invalid."
-MYSQL_TLS_CIPHER="$(mysql_admin -NBe "SHOW SESSION STATUS LIKE 'Ssl_cipher'" 2>/dev/null | awk '{ print $2 }')"
+if mysql --help 2>&1 | grep -q -- '--ssl-mode'; then
+  MYSQL_TLS_OPTIONS=(--ssl-mode=REQUIRED)
+else
+  MYSQL_TLS_OPTIONS=(--ssl)
+fi
+MYSQL_TLS_CIPHER="$(mysql_admin "${MYSQL_TLS_OPTIONS[@]}" -NBe "SHOW SESSION STATUS LIKE 'Ssl_cipher'" 2>/dev/null | awk '{ print $2 }')"
 [ -n "${MYSQL_TLS_CIPHER}" ] || die "The database server must negotiate TLS before Panelavo can provision the gateway monitor."
 mysql_admin <<MYSQLMONITOR >/dev/null
 CREATE USER IF NOT EXISTS '${DATABASE_GATEWAY_MONITOR_USER}'@'127.0.0.1' IDENTIFIED BY '${DATABASE_GATEWAY_MONITOR_PASSWORD}';
