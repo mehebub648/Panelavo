@@ -30,6 +30,7 @@ describe("database gateway production contract", () => {
     expect(setup).toContain("root ALL=(ALL) NOPASSWD: /usr/bin/clpctlWrapper");
     expect(setup).toContain('monitor_username="${DATABASE_GATEWAY_MONITOR_USER}"');
     expect(setup).toContain('monitor_password="${DATABASE_GATEWAY_MONITOR_PASSWORD}"');
+    expect(setup).toContain("SHOW SESSION STATUS LIKE 'Ssl_cipher'");
     expect(setup).toContain('hostgroup=10 ; max_connections=1024 ; use_ssl=1');
     expect(setup).toContain("UFW_CONSOLE_RECOVERY_READY=true");
 
