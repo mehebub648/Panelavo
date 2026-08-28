@@ -29,6 +29,7 @@ import {
   writableSiteForActor,
 } from "@/server/auth/site-access";
 import { manageSiteSectionForActor } from "@/server/sites/site-section-service";
+import { assertDiskGrowthAllowed } from "@/server/system/storage-hygiene";
 
 export async function getSiteUptimeForActor(actor: PanelActor, domain: string) {
   await accessibleSiteForActor(actor, domain);
@@ -112,6 +113,8 @@ export async function manageSiteOffsiteBackupForActor(
   id: string,
 ) {
   await writableSiteForActor(actor, domain);
+  if (action === "upload" || action === "restore")
+    await assertDiskGrowthAllowed();
   if (action === "upload") await uploadOffsiteBackup(domain, id);
   if (action === "delete") await deleteOffsiteBackup(domain, id);
   if (action === "restore") {

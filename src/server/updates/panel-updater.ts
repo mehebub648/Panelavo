@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { isIP } from "node:net";
 import { AppError } from "@/server/cloudpanel/errors";
 import { getPanelSettings } from "@/server/settings/store";
+import { assertDiskGrowthAllowed } from "@/server/system/storage-hygiene";
 
 export const UPDATE_BRANCH = "main";
 const BROKER_PATH = "/usr/local/libexec/panelavo/panelavo-broker";
@@ -500,6 +501,7 @@ export async function getUpdateState(
 }
 
 export async function queueUpdate() {
+  await assertDiskGrowthAllowed();
   const state = await getUpdateState(true);
   if (["queued", "updating", "reloading"].includes(state.status))
     throw new AppError("INVALID_REQUEST", "An update is already running.", 409);

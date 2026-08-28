@@ -2,11 +2,17 @@ import { connect } from "node:tls";
 import { ensureResourceSampler } from "@/server/system/resource-history";
 import { sendNotification } from "@/server/notifications/send";
 import { getUpdateState } from "@/server/updates/panel-updater";
+import { getHostMaintenanceStatus } from "@/server/cloudpanel/live-client";
 import { claimDueUptime, getUpdateMonitorState, saveUpdateMonitorState, updateSslState, updateUptimeState } from "./store";
 
 const INTERVAL_MS = 60_000;
 const UPDATE_INTERVAL_MS = 6 * 60 * 60_000;
-type State = { timer?: NodeJS.Timeout; running: boolean };
+type State = {
+  timer?: NodeJS.Timeout;
+  running: boolean;
+  maintenanceCheckedAt?: number;
+  maintenanceAlertedAt?: number;
+};
 const globals = globalThis as typeof globalThis & { __panelMonitoringScheduler?: State };
 const state = (globals.__panelMonitoringScheduler ??= { running: false });
 
@@ -58,9 +64,47 @@ async function checkUpdates() {
   await saveUpdateMonitorState({ lastCheckAt: new Date().toISOString(), alertedCommit: available ? update.remoteCommit : undefined });
 }
 
+async function checkHostMaintenance() {
+  const now = Date.now();
+  if (
+    state.maintenanceCheckedAt &&
+    now - state.maintenanceCheckedAt < UPDATE_INTERVAL_MS
+  )
+    return;
+  const maintenance = await getHostMaintenanceStatus();
+  state.maintenanceCheckedAt = now;
+  const needsAttention =
+    maintenance.rebootRequired ||
+    maintenance.securityUpdates > 0 ||
+    !maintenance.unattendedUpgrades;
+  if (
+    needsAttention &&
+    (!state.maintenanceAlertedAt ||
+      now - state.maintenanceAlertedAt >= 24 * 60 * 60_000)
+  ) {
+    state.maintenanceAlertedAt = now;
+    await sendNotification({
+      title: maintenance.rebootRequired
+        ? "Server reboot is required"
+        : "Server maintenance needs attention",
+      message: maintenance.rebootRequired
+        ? "A restart is required to finish installed operating-system updates."
+        : `${maintenance.securityUpdates} security update${maintenance.securityUpdates === 1 ? " is" : "s are"} pending. Automatic security updates are ${maintenance.unattendedUpgrades ? "enabled" : "not fully enabled"}.`,
+      severity: maintenance.rebootRequired ? "critical" : "warning",
+      event: "server.maintenance",
+    });
+  }
+}
+
 export async function runMonitoringScheduler() {
   if (state.running) return; state.running = true;
-  try { await checkUptime(); await checkUpdates().catch(() => undefined); }
+  try {
+    await checkUptime();
+    await Promise.all([
+      checkUpdates().catch(() => undefined),
+      checkHostMaintenance().catch(() => undefined),
+    ]);
+  }
   finally { state.running = false; }
 }
 export function ensureMonitoringScheduler() {

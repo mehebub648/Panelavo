@@ -38,6 +38,11 @@
 #                                   setup must restore it when finished
 #   ENABLE_UFW=true                 Explicitly activate ufw after rules are
 #                                   prepared (default: never activate remotely)
+#   DATABASE_GATEWAY_CERTIFICATE_FILE=/root/wildcard-fullchain.pem
+#   DATABASE_GATEWAY_PRIVATE_KEY_FILE=/root/wildcard-key.pem
+#   DATABASE_GATEWAY_CA_FILE=/root/wildcard-ca.pem
+#                                   optional public wildcard TLS identity;
+#                                   otherwise setup creates a private Panelavo CA
 #
 # The panel listener is private on 127.0.0.1:10443. Public access is available
 # only through the HTTPS CloudPanel/Nginx site once DNS points at the server.
@@ -147,7 +152,16 @@ log "Detected ${PRETTY_NAME} — CloudPanel DB engine: ${DB_ENGINE}"
 # ---------------------------------------------------------------------------
 log "Installing base packages ..."
 apt-get update -y
-apt-get install -y curl wget sudo ca-certificates rsync openssl git acl uidmap dbus-user-session slirp4netns
+apt-get install -y curl wget sudo ca-certificates rsync openssl git acl uidmap dbus-user-session slirp4netns unattended-upgrades
+
+# Security updates install through the OS-maintained mechanism. Reboots remain
+# an operator decision so a package update cannot unexpectedly stop websites.
+cat > /etc/apt/apt.conf.d/52panelavo-unattended-upgrades <<'APTCONF'
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+Unattended-Upgrade::Automatic-Reboot "false";
+APTCONF
+systemctl enable --now apt-daily.timer apt-daily-upgrade.timer >/dev/null 2>&1 || true
 
 # ---------------------------------------------------------------------------
 # 2b. Rootless Docker host provisioning
@@ -247,6 +261,7 @@ PANEL_UPDATE_REPOSITORY="${PANEL_UPDATE_REPOSITORY:-$SOURCE_UPDATE_REPOSITORY}"
 # replacing links into CloudPanel's self-signed, firewalled port 8443).
 PANEL_DOMAIN="${PANEL_DOMAIN:-panel.${SERVER_IP}.${PANEL_BASE_DOMAIN}}"
 DB_MANAGER_DOMAIN="${DB_MANAGER_DOMAIN:-database.${SERVER_IP}.${PANEL_BASE_DOMAIN}}"
+DATABASE_GATEWAY_SUFFIX="${DATABASE_GATEWAY_SUFFIX:-${SERVER_IP}.${PANEL_BASE_DOMAIN}}"
 
 if [ -n "${PANEL_BASE_DOMAIN}" ]; then
   WILDCARD_RECORD="*.${SERVER_IP}.${PANEL_BASE_DOMAIN}"
@@ -588,12 +603,282 @@ PMAINI
 fi
 
 # ---------------------------------------------------------------------------
+# 7b. Private database service + bounded TLS database gateway
+# ---------------------------------------------------------------------------
+log "Provisioning the private database boundary ..."
+
+MYSQL_SERVICE=""
+if [ "$(systemctl show -p LoadState --value mysql.service 2>/dev/null || true)" = "loaded" ]; then MYSQL_SERVICE=mysql
+elif [ "$(systemctl show -p LoadState --value mariadb.service 2>/dev/null || true)" = "loaded" ]; then MYSQL_SERVICE=mariadb
+fi
+[ -n "${MYSQL_SERVICE}" ] || die "A local MySQL-compatible system service is required for the database gateway."
+
+# Do not break an existing remote database client. Connections over the Unix
+# socket and loopback are safe; any other active client must be migrated first.
+REMOTE_DATABASE_CLIENTS="$(mysql --protocol=socket -NBe "SELECT DISTINCT SUBSTRING_INDEX(PROCESSLIST_HOST, ':', 1) FROM performance_schema.threads WHERE TYPE='FOREGROUND' AND PROCESSLIST_USER IS NOT NULL AND PROCESSLIST_USER <> 'event_scheduler' AND PROCESSLIST_HOST IS NOT NULL AND PROCESSLIST_HOST <> ''" 2>/dev/null | grep -Ev '^(localhost|127[.]|::1$)' || true)"
+[ -z "${REMOTE_DATABASE_CLIENTS}" ] || die "Active non-loopback database clients were detected (${REMOTE_DATABASE_CLIENTS//$'\n'/, }). Migrate or stop them before setup makes the main database private."
+
+install -d -o root -g root -m 0755 /etc/mysql/conf.d
+MYSQL_PRIVATE_CONFIG="/etc/mysql/conf.d/zz-panelavo-private.cnf"
+MYSQL_PRIVATE_BACKUP=""
+[ ! -f "${MYSQL_PRIVATE_CONFIG}" ] || { MYSQL_PRIVATE_BACKUP="$(mktemp)"; cp "${MYSQL_PRIVATE_CONFIG}" "${MYSQL_PRIVATE_BACKUP}"; }
+MYSQL_FLAVOR="$(mysql --protocol=socket -NBe 'SELECT @@version_comment, @@version' 2>/dev/null | tr '[:upper:]' '[:lower:]' || true)"
+{
+  echo '[mysqld]'
+  echo 'bind-address=127.0.0.1'
+  case "${MYSQL_FLAVOR}" in *mariadb*) ;; *) echo 'mysqlx-bind-address=127.0.0.1' ;; esac
+} > "${MYSQL_PRIVATE_CONFIG}"
+chmod 0644 "${MYSQL_PRIVATE_CONFIG}"
+if command -v mysqld >/dev/null 2>&1 && mysqld --help --verbose 2>&1 | grep -q -- '--validate-config'; then
+  if ! mysqld --validate-config >/dev/null 2>&1; then
+    [ -z "${MYSQL_PRIVATE_BACKUP}" ] && rm -f "${MYSQL_PRIVATE_CONFIG}" || cp "${MYSQL_PRIVATE_BACKUP}" "${MYSQL_PRIVATE_CONFIG}"
+    rm -f "${MYSQL_PRIVATE_BACKUP}"
+    die "The database server rejected Panelavo's private-listener configuration."
+  fi
+fi
+if ! systemctl restart "${MYSQL_SERVICE}" || ! mysqladmin --protocol=socket ping >/dev/null 2>&1; then
+  [ -z "${MYSQL_PRIVATE_BACKUP}" ] && rm -f "${MYSQL_PRIVATE_CONFIG}" || cp "${MYSQL_PRIVATE_BACKUP}" "${MYSQL_PRIVATE_CONFIG}"
+  systemctl restart "${MYSQL_SERVICE}" >/dev/null 2>&1 || true
+  rm -f "${MYSQL_PRIVATE_BACKUP}"
+  die "The database service did not recover after private-listener configuration; the previous configuration was restored."
+fi
+rm -f "${MYSQL_PRIVATE_BACKUP}"
+if ss -lnt | awk '$4 ~ /:(3306|33060)$/ && $4 !~ /^(127[.]0[.]0[.]1|\[::1\]):/ { found=1 } END { exit found ? 0 : 1 }'; then
+  die "The database service is still listening publicly on port 3306 or 33060."
+fi
+log "The main database listener is private on loopback."
+
+# Install the maintained ProxySQL 3.0 series from its signed vendor repository.
+if ! command -v proxysql >/dev/null 2>&1; then
+  install -d -m 0755 /usr/share/keyrings
+  curl -fsSL 'https://repo.proxysql.com/ProxySQL/proxysql-3.0.x/repo_pub_key.gpg' -o /usr/share/keyrings/proxysql-3.0.x-keyring.gpg
+  chmod 0644 /usr/share/keyrings/proxysql-3.0.x-keyring.gpg
+  PROXYSQL_CODENAME="${VERSION_CODENAME:-$(lsb_release -sc 2>/dev/null || true)}"
+  [ -n "${PROXYSQL_CODENAME}" ] || die "Could not determine the ProxySQL repository codename."
+  echo "deb [signed-by=/usr/share/keyrings/proxysql-3.0.x-keyring.gpg] https://repo.proxysql.com/ProxySQL/proxysql-3.0.x/${PROXYSQL_CODENAME}/ ./" > /etc/apt/sources.list.d/proxysql-panelavo.list
+  apt-get update -y
+  apt-get install -y proxysql
+fi
+systemctl disable --now proxysql.service >/dev/null 2>&1 || true
+id proxysql >/dev/null 2>&1 || die "The ProxySQL package did not create its service account."
+
+DATABASE_GATEWAY_ROOT="/var/lib/panelavo/database-gateway"
+DATABASE_GATEWAY_DATA="${DATABASE_GATEWAY_ROOT}/proxysql"
+DATABASE_GATEWAY_CONFIG="/etc/panelavo-database-gateway.cnf"
+DATABASE_GATEWAY_ADMIN="${DATABASE_GATEWAY_ROOT}/admin-credentials"
+# The gateway daemon needs to traverse its root-owned parent while the other
+# Panelavo state directories remain non-listable and keep their own modes.
+install -d -o root -g root -m 0711 /var/lib/panelavo
+install -d -o root -g proxysql -m 0750 "${DATABASE_GATEWAY_ROOT}"
+install -d -o proxysql -g proxysql -m 0700 "${DATABASE_GATEWAY_DATA}"
+if [ ! -f "${DATABASE_GATEWAY_ADMIN}" ]; then
+  DATABASE_GATEWAY_ADMIN_USER="panelavo$(openssl rand -hex 5)"
+  DATABASE_GATEWAY_ADMIN_PASSWORD="$(openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | head -c 48)"
+  printf '%s:%s\n' "${DATABASE_GATEWAY_ADMIN_USER}" "${DATABASE_GATEWAY_ADMIN_PASSWORD}" > "${DATABASE_GATEWAY_ADMIN}"
+  chmod 0600 "${DATABASE_GATEWAY_ADMIN}"
+else
+  IFS=: read -r DATABASE_GATEWAY_ADMIN_USER DATABASE_GATEWAY_ADMIN_PASSWORD < "${DATABASE_GATEWAY_ADMIN}"
+fi
+[[ "${DATABASE_GATEWAY_ADMIN_USER}" =~ ^[A-Za-z0-9_-]{8,64}$ ]] || die "The database gateway administrator name is invalid."
+[ "${#DATABASE_GATEWAY_ADMIN_PASSWORD}" -ge 24 ] || die "The database gateway administrator password is invalid."
+
+DATABASE_GATEWAY_CERT="${DATABASE_GATEWAY_DATA}/proxysql-cert.pem"
+DATABASE_GATEWAY_KEY="${DATABASE_GATEWAY_DATA}/proxysql-key.pem"
+DATABASE_GATEWAY_CA="${DATABASE_GATEWAY_DATA}/proxysql-ca.pem"
+DATABASE_GATEWAY_TLS_TRUST="panelavo-ca"
+if [ -n "${DATABASE_GATEWAY_CERTIFICATE_FILE:-}" ] || [ -n "${DATABASE_GATEWAY_PRIVATE_KEY_FILE:-}" ]; then
+  [ -f "${DATABASE_GATEWAY_CERTIFICATE_FILE:-}" ] && [ -f "${DATABASE_GATEWAY_PRIVATE_KEY_FILE:-}" ] || die "Both database gateway certificate and private-key files are required."
+  openssl x509 -in "${DATABASE_GATEWAY_CERTIFICATE_FILE}" -noout -checkhost "db-probe.${DATABASE_GATEWAY_SUFFIX}" >/dev/null 2>&1 || die "The supplied database certificate does not cover *.${DATABASE_GATEWAY_SUFFIX}."
+  openssl x509 -in "${DATABASE_GATEWAY_CERTIFICATE_FILE}" -noout -checkend 2592000 >/dev/null 2>&1 || die "The supplied database wildcard certificate expires within 30 days."
+  CERT_PUBLIC="$(openssl x509 -in "${DATABASE_GATEWAY_CERTIFICATE_FILE}" -pubkey -noout | openssl pkey -pubin -outform DER 2>/dev/null | sha256sum | awk '{print $1}')"
+  KEY_PUBLIC="$(openssl pkey -in "${DATABASE_GATEWAY_PRIVATE_KEY_FILE}" -pubout -outform DER 2>/dev/null | sha256sum | awk '{print $1}')"
+  [ -n "${CERT_PUBLIC}" ] && [ "${CERT_PUBLIC}" = "${KEY_PUBLIC}" ] || die "The supplied database wildcard certificate and private key do not match."
+  install -o proxysql -g proxysql -m 0644 "${DATABASE_GATEWAY_CERTIFICATE_FILE}" "${DATABASE_GATEWAY_CERT}"
+  install -o proxysql -g proxysql -m 0600 "${DATABASE_GATEWAY_PRIVATE_KEY_FILE}" "${DATABASE_GATEWAY_KEY}"
+  if [ -f "${DATABASE_GATEWAY_CA_FILE:-}" ]; then
+    install -o proxysql -g proxysql -m 0644 "${DATABASE_GATEWAY_CA_FILE}" "${DATABASE_GATEWAY_CA}"
+  else
+    install -o proxysql -g proxysql -m 0644 "${DATABASE_GATEWAY_CERTIFICATE_FILE}" "${DATABASE_GATEWAY_CA}"
+  fi
+  DATABASE_GATEWAY_TLS_TRUST=public
+elif [ ! -f "${DATABASE_GATEWAY_CERT}" ] || ! openssl x509 -in "${DATABASE_GATEWAY_CERT}" -noout -checkhost "db-probe.${DATABASE_GATEWAY_SUFFIX}" >/dev/null 2>&1 || ! openssl x509 -in "${DATABASE_GATEWAY_CERT}" -noout -checkend 2592000 >/dev/null 2>&1; then
+  log "Generating the fallback Panelavo database client CA ..."
+  rm -f "${DATABASE_GATEWAY_CERT}" "${DATABASE_GATEWAY_KEY}" "${DATABASE_GATEWAY_CA}" "${DATABASE_GATEWAY_ROOT}/panelavo-ca.key" "${DATABASE_GATEWAY_DATA}/panelavo-ca.key" "${DATABASE_GATEWAY_DATA}/gateway.csr"
+  openssl genrsa -out "${DATABASE_GATEWAY_ROOT}/panelavo-ca.key" 4096 >/dev/null 2>&1
+  chmod 0600 "${DATABASE_GATEWAY_ROOT}/panelavo-ca.key"
+  openssl req -x509 -new -key "${DATABASE_GATEWAY_ROOT}/panelavo-ca.key" -sha256 -days 3650 -subj '/CN=Panelavo Database Client CA' -out "${DATABASE_GATEWAY_CA}" >/dev/null 2>&1
+  openssl genrsa -out "${DATABASE_GATEWAY_KEY}" 3072 >/dev/null 2>&1
+  openssl req -new -key "${DATABASE_GATEWAY_KEY}" -subj "/CN=*.${DATABASE_GATEWAY_SUFFIX}" -addext "subjectAltName=DNS:*.${DATABASE_GATEWAY_SUFFIX}" -out "${DATABASE_GATEWAY_DATA}/gateway.csr" >/dev/null 2>&1
+  openssl x509 -req -in "${DATABASE_GATEWAY_DATA}/gateway.csr" -CA "${DATABASE_GATEWAY_CA}" -CAkey "${DATABASE_GATEWAY_ROOT}/panelavo-ca.key" -CAcreateserial -out "${DATABASE_GATEWAY_CERT}" -days 825 -sha256 -extfile <(printf 'subjectAltName=DNS:*.%s\nextendedKeyUsage=serverAuth\n' "${DATABASE_GATEWAY_SUFFIX}") >/dev/null 2>&1
+  rm -f "${DATABASE_GATEWAY_DATA}/gateway.csr" "${DATABASE_GATEWAY_DATA}/proxysql-ca.srl"
+  chown proxysql:proxysql "${DATABASE_GATEWAY_CERT}" "${DATABASE_GATEWAY_KEY}" "${DATABASE_GATEWAY_CA}"
+  chmod 0644 "${DATABASE_GATEWAY_CERT}" "${DATABASE_GATEWAY_CA}"
+  chmod 0600 "${DATABASE_GATEWAY_KEY}" "${DATABASE_GATEWAY_ROOT}/panelavo-ca.key"
+else
+  if openssl x509 -in "${DATABASE_GATEWAY_CERT}" -issuer -noout 2>/dev/null | grep -q 'Panelavo Database Client CA'; then
+    DATABASE_GATEWAY_TLS_TRUST=panelavo-ca
+  else
+    DATABASE_GATEWAY_TLS_TRUST=public
+  fi
+fi
+
+PROXYSQL_INTERFACES=""
+for PORT in $(seq 44000 44255); do
+  [ -z "${PROXYSQL_INTERFACES}" ] || PROXYSQL_INTERFACES+=";"
+  PROXYSQL_INTERFACES+="127.0.0.1:${PORT}"
+done
+cat > "${DATABASE_GATEWAY_CONFIG}" <<EOF
+datadir="${DATABASE_GATEWAY_DATA}"
+admin_variables=
+{
+  admin_credentials="${DATABASE_GATEWAY_ADMIN_USER}:${DATABASE_GATEWAY_ADMIN_PASSWORD}"
+  mysql_ifaces="127.0.0.1:16032"
+  refresh_interval=2000
+}
+mysql_variables=
+{
+  threads=2
+  max_connections=5120
+  default_query_delay=0
+  default_query_timeout=120000
+  poll_timeout=2000
+  interfaces="${PROXYSQL_INTERFACES}"
+  default_schema="information_schema"
+  stacksize=1048576
+  server_version="8.4.0"
+  connect_timeout_server=3000
+  ping_interval_server_msec=120000
+  ping_timeout_server=1000
+  commands_stats=true
+  sessions_sort=true
+  have_ssl=true
+  proxy_protocol_networks="127.0.0.1/32"
+}
+mysql_servers =
+(
+  { address="127.0.0.1" ; port=3306 ; hostgroup=10 ; max_connections=1024 ; use_ssl=0 }
+)
+mysql_users = ()
+mysql_query_rules = ()
+EOF
+chown root:proxysql "${DATABASE_GATEWAY_CONFIG}"
+chmod 0640 "${DATABASE_GATEWAY_CONFIG}"
+
+cat > /etc/systemd/system/panelavo-database-gateway.service <<EOF
+[Unit]
+Description=Panelavo private MySQL endpoint gateway
+After=network.target ${MYSQL_SERVICE}.service
+Requires=${MYSQL_SERVICE}.service
+
+[Service]
+Type=simple
+User=proxysql
+Group=proxysql
+ExecStart=/usr/bin/proxysql -f -c ${DATABASE_GATEWAY_CONFIG} -D ${DATABASE_GATEWAY_DATA}
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=8192
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=${DATABASE_GATEWAY_DATA}
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable --now panelavo-database-gateway.service >/dev/null
+for _ in $(seq 1 30); do
+  if mysql --protocol=tcp -h 127.0.0.1 -P 16032 -u "${DATABASE_GATEWAY_ADMIN_USER}" "-p${DATABASE_GATEWAY_ADMIN_PASSWORD}" -NBe 'SELECT 1' >/dev/null 2>&1; then GATEWAY_ADMIN_READY=true; break; fi
+  sleep 1
+done
+[ "${GATEWAY_ADMIN_READY:-false}" = "true" ] || die "The private database gateway did not become ready."
+mysql --protocol=tcp -h 127.0.0.1 -P 16032 -u "${DATABASE_GATEWAY_ADMIN_USER}" "-p${DATABASE_GATEWAY_ADMIN_PASSWORD}" <<'PROXYSQLSQL' >/dev/null
+DELETE FROM mysql_servers WHERE hostgroup_id=10;
+INSERT INTO mysql_servers (hostgroup_id,hostname,port,status,max_connections,use_ssl) VALUES (10,'127.0.0.1',3306,'ONLINE',1024,0);
+LOAD MYSQL SERVERS TO RUNTIME;
+SAVE MYSQL SERVERS TO DISK;
+UPDATE global_variables SET variable_value='127.0.0.1/32' WHERE variable_name='mysql-proxy_protocol_networks';
+LOAD MYSQL VARIABLES TO RUNTIME;
+SAVE MYSQL VARIABLES TO DISK;
+PROXYSQL RELOAD TLS;
+PROXYSQLSQL
+
+# Preserve endpoint records on reruns while updating only trusted host-level
+# configuration. A suffix cannot change while endpoints exist.
+DATABASE_GATEWAY_STATE="${DATABASE_GATEWAY_ROOT}/endpoints.json"
+DATABASE_GATEWAY_STATE="${DATABASE_GATEWAY_STATE}" DATABASE_GATEWAY_SUFFIX="${DATABASE_GATEWAY_SUFFIX}" DATABASE_GATEWAY_TLS_TRUST="${DATABASE_GATEWAY_TLS_TRUST}" node <<'NODE'
+const fs = require('node:fs');
+const path = process.env.DATABASE_GATEWAY_STATE;
+let existing = {};
+try { existing = JSON.parse(fs.readFileSync(path, 'utf8')); } catch {}
+const endpoints = existing.endpoints && typeof existing.endpoints === 'object' ? existing.endpoints : {};
+if (Object.keys(endpoints).length && existing.suffix && existing.suffix !== process.env.DATABASE_GATEWAY_SUFFIX) {
+  throw new Error('Revoke active database endpoints before changing DATABASE_GATEWAY_SUFFIX.');
+}
+const state = { ...existing, version: 1, enabled: true, suffix: process.env.DATABASE_GATEWAY_SUFFIX, publicPortStart: 43000, proxyPortStart: 44000, slots: 256, tlsTrust: process.env.DATABASE_GATEWAY_TLS_TRUST, endpoints };
+const temporary = `${path}.setup-${process.pid}`;
+fs.writeFileSync(temporary, JSON.stringify(state, null, 2), { mode: 0o600 });
+fs.renameSync(temporary, path);
+NODE
+chown root:root "${DATABASE_GATEWAY_STATE}" "${DATABASE_GATEWAY_ADMIN}"
+chmod 0600 "${DATABASE_GATEWAY_STATE}" "${DATABASE_GATEWAY_ADMIN}"
+
+nginx -V 2>&1 | grep -q -- '--with-stream=dynamic' || die "The CloudPanel Nginx build does not provide the required Stream module."
+[ -f /etc/nginx/modules-enabled/50-mod-stream.conf ] || die "The Nginx Stream module is not enabled."
+install -d -o root -g root -m 0755 /etc/nginx/panelavo-streams
+NGINX_MAIN_BACKUP="$(mktemp)"
+cp /etc/nginx/nginx.conf "${NGINX_MAIN_BACKUP}"
+if ! grep -q 'panelavo-database-stream' /etc/nginx/nginx.conf; then
+  if grep -Eq '^[[:space:]]*stream[[:space:]]*\{' /etc/nginx/nginx.conf; then
+    rm -f "${NGINX_MAIN_BACKUP}"
+    die "An unmanaged Nginx stream block already exists. Merge /etc/nginx/panelavo-streams/*.conf into that block before rerunning setup."
+  fi
+  cat >> /etc/nginx/nginx.conf <<'NGINXSTREAM'
+
+# panelavo-database-stream
+stream {
+    log_format panelavo_database '$remote_addr [$time_local] $protocol $status $bytes_sent $bytes_received $session_time';
+    limit_conn_zone $binary_remote_addr zone=panelavo_database_per_ip:10m;
+    include /etc/nginx/panelavo-streams/*.conf;
+}
+NGINXSTREAM
+fi
+if nginx -t >/dev/null 2>&1; then
+  systemctl reload nginx
+  rm -f "${NGINX_MAIN_BACKUP}"
+else
+  cp "${NGINX_MAIN_BACKUP}" /etc/nginx/nginx.conf
+  rm -f "${NGINX_MAIN_BACKUP}"
+  die "Nginx rejected the database Stream configuration; the previous configuration was restored."
+fi
+cat > /etc/logrotate.d/panelavo-database-gateway <<'LOGROTATE'
+/var/log/nginx/panelavo-database-gateway.log /var/lib/panelavo/database-gateway/proxysql/*.log {
+    daily
+    rotate 14
+    size 50M
+    compress
+    delaycompress
+    missingok
+    notifempty
+    sharedscripts
+    postrotate
+        [ ! -s /run/nginx.pid ] || kill -USR1 $(cat /run/nginx.pid)
+    endscript
+}
+LOGROTATE
+log "Private database gateway provisioned for *.${DATABASE_GATEWAY_SUFFIX}."
+
+# ---------------------------------------------------------------------------
 # 8. Root-owned CloudPanel broker and narrow sudo access
 # ---------------------------------------------------------------------------
 BROKER_ROOT="/usr/local/libexec/panelavo"
 BROKER_PATH="${BROKER_ROOT}/panelavo-broker"
 BROKER_PROTOCOL_VERSION="$(node -p "require('${SRC_DIR}/package.json').panelavo.brokerProtocolVersion")"
-SUDOERS_FILE="/etc/sudoers.d/panelavo-${SITE_USER}"
+SUDOERS_FILE="/etc/sudoers.d/zz-panelavo-${SITE_USER}"
+BOUNDARY_SUDOERS_FILE="/etc/sudoers.d/zz-panelavo-cloudpanel-boundary"
+LEGACY_SUDOERS_FILE="/etc/sudoers.d/panelavo-${SITE_USER}"
 
 # Root must never execute the site-user-owned bridge from the deployed tree.
 install -d -o root -g root -m 0755 "${BROKER_ROOT}"
@@ -601,28 +886,48 @@ install -d -o root -g root -m 0700 /var/lib/panelavo/rootless-migrations
 install -o root -g root -m 0755 "${SRC_DIR}/scripts/panelavo-broker" "${BROKER_PATH}"
 install -o root -g root -m 0644 "${SRC_DIR}/scripts/cloudpanel-bridge.php" "${BROKER_ROOT}/cloudpanel-bridge.php"
 
-# Exercise the exact broker rule before replacing a legacy sudoers file.
-MIGRATION_SUDOERS="/etc/sudoers.d/panelavo-${SITE_USER}-broker-migration"
-cat > "${MIGRATION_SUDOERS}" <<EOF
+BOUNDARY_SUDOERS_TEMP="$(mktemp)"
+cat > "${BOUNDARY_SUDOERS_TEMP}" <<'EOF'
+# CloudPanel's stock policy grants every Unix user an unrestricted clpctl
+# wrapper. Panelavo's browser terminal must never turn that into host control.
+ALL ALL=(ALL) !/usr/bin/clpctlWrapper
+# Preserve the CloudPanel service account's existing administrative boundary.
+clp ALL=(ALL) NOPASSWD: ALL
+EOF
+chmod 0440 "${BOUNDARY_SUDOERS_TEMP}"
+visudo -cf "${BOUNDARY_SUDOERS_TEMP}" >/dev/null || die "Generated CloudPanel boundary sudoers file is invalid."
+install -o root -g root -m 0440 "${BOUNDARY_SUDOERS_TEMP}" "${BOUNDARY_SUDOERS_FILE}"
+rm -f "${BOUNDARY_SUDOERS_TEMP}"
+
+SUDOERS_TEMP="$(mktemp)"
+cat > "${SUDOERS_TEMP}" <<EOF
+# Panelavo may invoke only the root-owned, schema-validating broker.
 ${SITE_USER} ALL=(root) NOPASSWD: ${BROKER_PATH}
 EOF
-chmod 0440 "${MIGRATION_SUDOERS}"
-visudo -cf "${MIGRATION_SUDOERS}" >/dev/null || die "Generated broker migration sudoers file is invalid."
+chmod 0440 "${SUDOERS_TEMP}"
+visudo -cf "${SUDOERS_TEMP}" >/dev/null || die "Generated broker sudoers file is invalid."
+install -o root -g root -m 0440 "${SUDOERS_TEMP}" "${SUDOERS_FILE}"
+rm -f "${SUDOERS_TEMP}"
+visudo -c >/dev/null || die "The combined sudoers policy is invalid."
+if sudo -u "${SITE_USER}" sudo -n -l /usr/bin/clpctlWrapper >/dev/null 2>&1; then
+  die "The Panelavo site user can still invoke CloudPanel's unrestricted wrapper."
+fi
+while IFS=: read -r CLOUDPANEL_UNIX_USER _ _ _ _ CLOUDPANEL_UNIX_HOME _; do
+  case "${CLOUDPANEL_UNIX_HOME}" in /home/*) ;; *) continue ;; esac
+  [ "${CLOUDPANEL_UNIX_USER}" = clp ] && continue
+  if sudo -u "${CLOUDPANEL_UNIX_USER}" sudo -n -l /usr/bin/clpctlWrapper >/dev/null 2>&1; then
+    die "Unix user ${CLOUDPANEL_UNIX_USER} can still invoke CloudPanel's unrestricted wrapper."
+  fi
+done < <(getent passwd)
 
 BROKER_HEALTH="$(printf '{\"protocolVersion\":%s,\"action\":\"broker-health\"}' "${BROKER_PROTOCOL_VERSION}" | sudo -u "${SITE_USER}" sudo -n "${BROKER_PATH}")" || die "The installed CloudPanel broker did not start."
 BROKER_HEALTH="${BROKER_HEALTH}" BROKER_PROTOCOL_VERSION="${BROKER_PROTOCOL_VERSION}" node <<'NODE' || die "The installed CloudPanel broker failed its protocol health check."
 const result = JSON.parse(process.env.BROKER_HEALTH || '{}');
 const data = result.data || {};
-if (!result.ok || data.protocolVersion !== Number(process.env.BROKER_PROTOCOL_VERSION) || data.privileged !== true || data.cloudPanelAvailable !== true) process.exit(1);
+if (!result.ok || data.protocolVersion !== Number(process.env.BROKER_PROTOCOL_VERSION) || data.privileged !== true || data.cloudPanelAvailable !== true || data.directClpctlDenied !== true || data.databaseGatewayReady !== true) process.exit(1);
 NODE
 
-cat > "${SUDOERS_FILE}" <<EOF
-# Panelavo may invoke only the root-owned, schema-validating broker.
-${SITE_USER} ALL=(root) NOPASSWD: ${BROKER_PATH}
-EOF
-chmod 0440 "${SUDOERS_FILE}"
-visudo -cf "${SUDOERS_FILE}" >/dev/null || die "Generated broker sudoers file is invalid."
-rm -f "${MIGRATION_SUDOERS}"
+[ "${LEGACY_SUDOERS_FILE}" = "${SUDOERS_FILE}" ] || rm -f "${LEGACY_SUDOERS_FILE}"
 if grep -Eq 'NOPASSWD:.*(/usr/bin/php|/usr/bin/clpctl)([ ,]|$)' "${SUDOERS_FILE}"; then
   die "Unsafe raw PHP or clpctl sudo access remains in ${SUDOERS_FILE}."
 fi
@@ -654,6 +959,7 @@ CREDENTIALS_ENCRYPTION_KEY=$(openssl rand -base64 48 | tr -d '\n')
 SESSION_MAX_AGE_SECONDS=3600
 ${PANEL_BASE_DOMAIN:+PANEL_BASE_DOMAIN=${PANEL_BASE_DOMAIN}}
 PANEL_ADDRESS_MODE=${PANEL_ADDRESS_MODE}
+DATABASE_GATEWAY_SUFFIX=${DATABASE_GATEWAY_SUFFIX}
 ${PANEL_UPDATE_REPOSITORY:+PANEL_UPDATE_REPOSITORY=${PANEL_UPDATE_REPOSITORY}}
 EOF
 fi
@@ -664,6 +970,9 @@ if [ -n "${PANEL_UPDATE_REPOSITORY}" ] && ! grep -q '^PANEL_UPDATE_REPOSITORY=' 
 fi
 if ! grep -q '^PANEL_ADDRESS_MODE=' "${SITE_ROOT}/.env.local"; then
   echo "PANEL_ADDRESS_MODE=${PANEL_ADDRESS_MODE}" >> "${SITE_ROOT}/.env.local"
+fi
+if ! grep -q '^DATABASE_GATEWAY_SUFFIX=' "${SITE_ROOT}/.env.local"; then
+  echo "DATABASE_GATEWAY_SUFFIX=${DATABASE_GATEWAY_SUFFIX}" >> "${SITE_ROOT}/.env.local"
 fi
 # Record where the database manager actually lives so the panel's links keep
 # working even if the base domain is changed later. Idempotent for reruns and
@@ -688,6 +997,16 @@ sudo -u "${SITE_USER}" bash -c "cd '${SITE_ROOT}' && export PATH=/usr/local/bin:
 # systemd unit so the PM2 process list survives reboots.
 env PATH="/usr/local/bin:${PATH}" /usr/local/bin/pm2 startup systemd -u "${SITE_USER}" --hp "/home/${SITE_USER}" >/dev/null
 sudo -u "${SITE_USER}" /usr/local/bin/pm2 save >/dev/null
+
+# Bound Panelavo and PM2 logs automatically. Hosted-site container logs are
+# bounded separately when each private rootless daemon is initialized.
+if ! sudo -u "${SITE_USER}" -H /usr/local/bin/pm2 describe pm2-logrotate >/dev/null 2>&1; then
+  sudo -u "${SITE_USER}" -H /usr/local/bin/pm2 install pm2-logrotate >/dev/null
+fi
+sudo -u "${SITE_USER}" -H /usr/local/bin/pm2 set pm2-logrotate:max_size 20M >/dev/null
+sudo -u "${SITE_USER}" -H /usr/local/bin/pm2 set pm2-logrotate:retain 14 >/dev/null
+sudo -u "${SITE_USER}" -H /usr/local/bin/pm2 set pm2-logrotate:compress true >/dev/null
+sudo -u "${SITE_USER}" -H /usr/local/bin/pm2 save >/dev/null
 
 # Only mark the trusted release current after its build and PM2 reload both
 # succeed. Preserve operator-selected update settings while clearing stale
@@ -733,6 +1052,14 @@ if command -v ufw >/dev/null 2>&1; then
   fi
   ufw allow 80/tcp >/dev/null 2>&1 || true
   ufw allow 443/tcp >/dev/null 2>&1 || true
+  # Raw database listeners are never public. Only the per-endpoint gateway
+  # range is reachable, and inactive ports have no Nginx listener.
+  for DATABASE_PORT in 3306 33060; do
+    ufw delete allow "${DATABASE_PORT}/tcp" >/dev/null 2>&1 || true
+    ufw delete deny "${DATABASE_PORT}/tcp" >/dev/null 2>&1 || true
+    ufw insert 1 deny "${DATABASE_PORT}/tcp" >/dev/null 2>&1 || die "Could not prioritize the database port ${DATABASE_PORT} deny rule in ufw."
+  done
+  ufw allow 43000:43255/tcp >/dev/null 2>&1 || die "Could not allow the managed database endpoint port range in ufw."
   # The application listener is loopback-only. Remove rules left by older
   # installers so authentication cannot bypass the HTTPS Nginx vhost.
   ufw delete allow "${APP_PORT}/tcp" >/dev/null 2>&1 || true
@@ -878,6 +1205,7 @@ cat <<EOF
 ============================================================
  Panel address:      ${PANEL_URL}
  Database manager:   $([ "${DB_MANAGER_PROVISIONED}" = "true" ] && echo "https://${DB_MANAGER_DOMAIN}" || echo "(not provisioned)")
+ Database endpoints: *.${DATABASE_GATEWAY_SUFFIX} (ports 43000-43255, TLS required)
  Recovery tunnel:   ssh -L ${APP_PORT}:127.0.0.1:${APP_PORT} root@${SERVER_IP}
  CloudPanel:         https://127.0.0.1:8443 (firewall rule prepared; use an SSH tunnel)
 

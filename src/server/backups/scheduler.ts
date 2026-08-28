@@ -7,6 +7,7 @@ import {
 } from "./schedule";
 import { getOffsiteDestination, uploadOffsiteBackup } from "./offsite";
 import { sendNotification } from "@/server/notifications/send";
+import { assertDiskGrowthAllowed } from "@/server/system/storage-hygiene";
 
 const INTERVAL_MS = 60_000;
 type SchedulerState = { timer?: NodeJS.Timeout; running: boolean };
@@ -21,6 +22,7 @@ export async function runBackupScheduler(now = new Date()) {
   try {
     for (const { domain, schedule } of await claimDueBackupSchedules(now)) {
       try {
+        await assertDiskGrowthAllowed();
         const result = await runScheduledBackup({
           domain,
           applicationRootDirectory: await getSiteRootOverride(domain),

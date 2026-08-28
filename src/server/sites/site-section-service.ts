@@ -15,6 +15,7 @@ import {
 import { AppError } from "@/server/cloudpanel/errors";
 import { getDeployHooks } from "@/server/deploy/hooks";
 import { getSiteMeta } from "@/server/sites/site-meta";
+import { assertDiskGrowthAllowed } from "@/server/system/storage-hygiene";
 import type { SiteSectionExecutionOptions } from "@/types/cloudpanel";
 
 const untypedOperationSchema = z
@@ -25,6 +26,40 @@ const untypedOperationSchema = z
       message: "An action is required.",
     },
   );
+
+const databaseExposureSchema = z.discriminatedUnion("action", [
+  z
+    .object({
+      action: z.literal("exposure-create"),
+      name: z.string().regex(/^[A-Za-z][A-Za-z0-9-]{1,49}$/),
+      label: z.string().regex(/^(?!-)[a-z0-9-]{3,40}(?<!-)$/),
+      permissions: z.enum(["ro", "rw"]),
+      accessMode: z.enum(["allowlist", "internet"]),
+      allowlist: z.array(z.string().min(2).max(64)).max(32),
+      currentPassword: z.string().min(1).max(256),
+      confirmation: z.string().min(1).max(253),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("exposure-update"),
+      name: z.string().regex(/^[A-Za-z][A-Za-z0-9-]{1,49}$/),
+      permissions: z.enum(["ro", "rw"]),
+      accessMode: z.enum(["allowlist", "internet"]),
+      allowlist: z.array(z.string().min(2).max(64)).max(32),
+      currentPassword: z.string().min(1).max(256),
+      confirmation: z.string().min(1).max(253),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.enum(["exposure-rotate", "exposure-revoke"]),
+      name: z.string().regex(/^[A-Za-z][A-Za-z0-9-]{1,49}$/),
+      currentPassword: z.string().min(1).max(256),
+      confirmation: z.string().min(1).max(253),
+    })
+    .strict(),
+]);
 
 function parseUntypedOperation(section: string, submitted: unknown) {
   const operation = untypedOperationSchema.parse(submitted);
@@ -96,6 +131,59 @@ function assertSection(section: string) {
     );
 }
 
+const STORAGE_GROWING_ACTIONS: Record<string, Set<string>> = {
+  actions: new Set(["deploy", "fix"]),
+  backups: new Set(["create", "restore"]),
+  databases: new Set(["create", "import"]),
+  "file-manager": new Set([
+    "compress",
+    "duplicate",
+    "extract",
+    "new-file",
+    "new-folder",
+    "paste",
+    "save-file",
+    "upload",
+  ]),
+  git: new Set(["checkout", "clone", "fetch", "pull"]),
+};
+
+const STORAGE_GROWING_OPERATION_COMMANDS = new Set([
+  "artisan-migrate",
+  "composer-install",
+  "composer-install-production",
+  "compose-deploy",
+  "compose-pull",
+  "compose-up",
+  "cutover-rootless-migration",
+  "django-collectstatic",
+  "django-migrate",
+  "node-install",
+  "node-run",
+  "npm-ci",
+  "npm-install",
+  "npm-run",
+  "pip-install",
+  "prepare-rootless-migration",
+  "python-create-venv",
+  "python-install",
+]);
+
+function mayGrowStorage(
+  section: string,
+  input: unknown,
+) {
+  if (!input || typeof input !== "object") return false;
+  const operation = input as { action?: unknown; command?: unknown };
+  const action = String(operation.action ?? "");
+  if (section === "actions" && action === "run")
+    return (
+      typeof operation.command === "string" &&
+      STORAGE_GROWING_OPERATION_COMMANDS.has(operation.command)
+    );
+  return STORAGE_GROWING_ACTIONS[section]?.has(action) ?? false;
+}
+
 async function assertSectionAvailable(domain: string, section: string) {
   const meta = await getSiteMeta(domain);
   if (meta?.parent && !SERVICE_SECTIONS.has(section))
@@ -137,7 +225,21 @@ export async function manageSiteSectionForActor(
     );
   const { client } = await writableSiteForActor(actor, domain);
   await assertSectionAvailable(domain, section);
-  const input =
+  const submittedAction =
+    submitted && typeof submitted === "object" && "action" in submitted
+      ? String((submitted as { action?: unknown }).action ?? "")
+      : "";
+  const databaseExposure =
+    section === "databases" && submittedAction.startsWith("exposure-");
+  if (databaseExposure && actor.authentication !== "session")
+    throw new AppError(
+      "FORBIDDEN",
+      "Public database endpoints can only be changed from the Panelavo browser interface.",
+      403,
+    );
+  const input = databaseExposure
+    ? databaseExposureSchema.parse(submitted)
+    :
     section === "git"
       ? gitRequestSchema.parse(submitted)
       : section === "actions"
@@ -149,10 +251,20 @@ export async function manageSiteSectionForActor(
             : section === "backups"
               ? backupRequestSchema.parse(submitted)
               : parseUntypedOperation(section, submitted);
+  let securedInput: typeof input | Record<string, unknown> = input;
+  if (mayGrowStorage(section, input))
+    await assertDiskGrowthAllowed();
+  if (databaseExposure) {
+    const exposure = input as z.infer<typeof databaseExposureSchema>;
+    await client.verifyPassword(actor.cloudPanel, exposure.currentPassword);
+    const safeExposure = { ...exposure } as Record<string, unknown>;
+    delete safeExposure.currentPassword;
+    securedInput = safeExposure;
+  }
   const operation =
     section === "git" && input.action === "pull"
       ? { ...input, deployOperations: await getDeployHooks(domain) }
-      : input;
+      : securedInput;
   const release = acquireOperation(
     actor,
     domain,

@@ -14,7 +14,10 @@ use App\Entity\BasicAuth;
 use App\Entity\SshUser;
 use App\Entity\FtpUser;
 use App\Entity\CronJob;
+use App\Entity\DatabaseUser;
 use App\Kernel;
+use App\Database\Manager as DatabaseManager;
+use App\Service\Crypto;
 use App\Security\Authenticator\MfaAuthenticator;
 use App\Site\NodejsSite as NodejsSiteModel;
 use App\Site\PhpSite as PhpSiteModel;
@@ -29,12 +32,16 @@ use App\Site\Updater\StaticSite as StaticSiteUpdater;
 use Symfony\Component\Dotenv\Dotenv;
 
 const CLOUDPANEL_ROOT = '/home/clp/htdocs/app/files';
-const PANELAVO_BROKER_PROTOCOL_VERSION = 22;
+const PANELAVO_BROKER_PROTOCOL_VERSION = 23;
 const PANELAVO_BROKER_MAX_INPUT_BYTES = 100663296;
 const PANELAVO_ROOTLESS_MIGRATION_ROOT = '/var/lib/panelavo/rootless-migrations';
 const PANELAVO_ROOTLESS_MIGRATION_TTL = 86400;
 const PANELAVO_FRESH_SITE_SCAFFOLD_ROOT = '/var/lib/panelavo/fresh-site-scaffolds';
 const PANELAVO_PORT_BACKUP_ROOT = '/var/lib/panelavo/port-source-backups';
+const PANELAVO_DATABASE_GATEWAY_ROOT = '/var/lib/panelavo/database-gateway';
+const PANELAVO_DATABASE_GATEWAY_STATE = PANELAVO_DATABASE_GATEWAY_ROOT . '/endpoints.json';
+const PANELAVO_DATABASE_GATEWAY_ADMIN = PANELAVO_DATABASE_GATEWAY_ROOT . '/admin-credentials';
+const PANELAVO_DATABASE_GATEWAY_STREAMS = '/etc/nginx/panelavo-streams';
 
 function respond(array $value, int $status = 0): never
 {
@@ -1443,6 +1450,11 @@ function expectedSitePort(Site $site): ?int
 function hostReservedPorts($manager): array
 {
     $ports = [];
+    // Public and private listener pools are fixed so adding a database
+    // endpoint never restarts the shared proxy. They remain unavailable to
+    // website runtimes even while a slot is idle.
+    for ($port = 43000; $port <= 43255; $port++) $ports[$port] = true;
+    for ($port = 44000; $port <= 44255; $port++) $ports[$port] = true;
     foreach ($manager->getRepository(Site::class)->findAll() as $site) {
         if (!$site instanceof Site) continue;
         $port = expectedSitePort($site);
@@ -2846,6 +2858,58 @@ function initializeRootlessDocker(Site $site, string $fix, array &$results): voi
     bringUpRootlessUserDaemon($site, $fix, $results, true);
 }
 
+function configureRootlessDockerLogLimits(Site $site, string $fix, array &$results): bool
+{
+    $identity = siteIdentity($site);
+    $directory = $identity['home'] . '/.config/docker';
+    foreach ([$identity['home'] . '/.config', $directory] as $path) {
+        if (is_link($path)) {
+            return syntheticFixStep($results, $fix, 'Bound Docker container logs', 'write ~/.config/docker/daemon.json', false,
+                'The Docker configuration path is a symbolic link.');
+        }
+        if (!is_dir($path) && !@mkdir($path, 0700)) {
+            return syntheticFixStep($results, $fix, 'Bound Docker container logs', 'write ~/.config/docker/daemon.json', false,
+                'The Docker configuration directory could not be created.');
+        }
+        @chown($path, $identity['uid']); @chgrp($path, $identity['gid']); @chmod($path, 0700);
+    }
+    $file = $directory . '/daemon.json';
+    if (is_link($file)) {
+        return syntheticFixStep($results, $fix, 'Bound Docker container logs', 'write ~/.config/docker/daemon.json', false,
+            'The Docker daemon configuration is a symbolic link.');
+    }
+    $configuration = [];
+    if (is_file($file)) {
+        $decoded = json_decode((string) @file_get_contents($file), true);
+        if (!is_array($decoded) || array_is_list($decoded)) {
+            return syntheticFixStep($results, $fix, 'Bound Docker container logs', 'write ~/.config/docker/daemon.json', false,
+                'The existing Docker daemon configuration is not a JSON object.');
+        }
+        $configuration = $decoded;
+    }
+    $driver = (string) ($configuration['log-driver'] ?? 'local');
+    if (!in_array($driver, ['local', 'json-file'], true)) {
+        return syntheticFixStep($results, $fix, 'Bound Docker container logs', 'write ~/.config/docker/daemon.json', true,
+            'The configured ' . $driver . ' logging driver owns its external retention policy.');
+    }
+    $configuration['log-driver'] = $driver;
+    $options = is_array($configuration['log-opts'] ?? null) ? $configuration['log-opts'] : [];
+    $options['max-size'] = $options['max-size'] ?? '20m';
+    $options['max-file'] = $options['max-file'] ?? '5';
+    $configuration['log-opts'] = $options;
+    $temporary = $file . '.tmp-' . bin2hex(random_bytes(4));
+    $encoded = json_encode($configuration, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+    $written = is_string($encoded)
+        && @file_put_contents($temporary, $encoded . "\n", LOCK_EX) !== false
+        && @chmod($temporary, 0600)
+        && @chown($temporary, $identity['uid'])
+        && @chgrp($temporary, $identity['gid'])
+        && @rename($temporary, $file);
+    if (!$written) @unlink($temporary);
+    return syntheticFixStep($results, $fix, 'Bound Docker container logs', 'write ~/.config/docker/daemon.json', $written,
+        $written ? 'Container logs retain at most five 20 MB files unless the site declares a stricter Compose policy.' : 'The Docker log policy could not be saved.');
+}
+
 // Per-user rootless bring-up: enable the site user's linger, start their user
 // manager, install and start their private daemon, then verify readiness. Every
 // command touches only the requesting site user's own runtime and login
@@ -2874,6 +2938,7 @@ function bringUpRootlessUserDaemon(Site $site, string $fix, array &$results, boo
     }
     if (!syntheticFixStep($results, $fix, 'Verify user D-Bus', 'inspect ' . $runtime . '/bus', $ready,
         $ready ? 'The site user runtime directory and D-Bus socket are ready.' : 'The site user manager did not create a safe runtime directory and D-Bus socket.')) return;
+    if (!configureRootlessDockerLogLimits($site, $fix, $results)) return;
     $setup = runSiteCommand(
         $site,
         ['/usr/bin/dockerd-rootless-setuptool.sh', 'install', '--force'],
@@ -4064,6 +4129,520 @@ function resourceFilesystemUsage(): array
     ];
 }
 
+// --- Database gateway --------------------------------------------------------
+// CloudPanel remains authoritative for databases and database users. Panelavo
+// stores only the public endpoint mapping under a root-owned directory. Each
+// endpoint receives a dedicated CloudPanel user whose grants cover one schema;
+// the main MySQL listener never needs to be public.
+
+function databaseGatewayState(): array
+{
+    $fallback = [
+        'version' => 1,
+        'enabled' => false,
+        'suffix' => '',
+        'publicPortStart' => 43000,
+        'proxyPortStart' => 44000,
+        'slots' => 256,
+        'tlsTrust' => 'panelavo-ca',
+        'endpoints' => [],
+    ];
+    $value = json_decode((string) @file_get_contents(PANELAVO_DATABASE_GATEWAY_STATE), true);
+    if (!is_array($value)) return $fallback;
+    $value = array_replace($fallback, $value);
+    $value['endpoints'] = is_array($value['endpoints'] ?? null) ? $value['endpoints'] : [];
+    return $value;
+}
+
+function saveDatabaseGatewayState(array $state): void
+{
+    if (!is_dir(PANELAVO_DATABASE_GATEWAY_ROOT)
+        && !mkdir(PANELAVO_DATABASE_GATEWAY_ROOT, 0700, true)) {
+        throw new RuntimeException('The database gateway state directory could not be created.');
+    }
+    $temporary = PANELAVO_DATABASE_GATEWAY_STATE . '.tmp-' . bin2hex(random_bytes(6));
+    $encoded = json_encode($state, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+    if (file_put_contents($temporary, $encoded) === false) throw new RuntimeException('The database gateway state could not be written.');
+    chmod($temporary, 0600);
+    if (!rename($temporary, PANELAVO_DATABASE_GATEWAY_STATE)) {
+        @unlink($temporary);
+        throw new RuntimeException('The database gateway state could not be activated.');
+    }
+}
+
+function databaseGatewayReady(array $state): bool
+{
+    if (($state['enabled'] ?? false) !== true) return false;
+    if (!preg_match('/^(?=.{1,253}$)(?!-)[a-z0-9-]{1,63}(?<!-)(?:\.(?!-)[a-z0-9-]{1,63}(?<!-))+$/', (string) ($state['suffix'] ?? ''))) return false;
+    if (!is_readable(PANELAVO_DATABASE_GATEWAY_ADMIN)) return false;
+    if (!is_executable('/usr/bin/proxysql') || !is_executable('/usr/sbin/nginx')) return false;
+    foreach (['proxysql-ca.pem', 'proxysql-cert.pem', 'proxysql-key.pem'] as $file) {
+        if (!is_readable(PANELAVO_DATABASE_GATEWAY_ROOT . '/proxysql/' . $file)) return false;
+    }
+    return true;
+}
+
+function databaseGatewayServiceReady(): bool
+{
+    foreach (['panelavo-database-gateway.service', 'nginx.service'] as $service) {
+        $result = resourceCommand(['/usr/bin/systemctl', 'is-active', '--quiet', $service], 5);
+        if ($result['code'] !== 0) return false;
+    }
+    try {
+        $pdo = databaseGatewayAdmin();
+        $status = $pdo->query('SELECT status FROM runtime_mysql_servers WHERE hostgroup_id=10 AND hostname=\'127.0.0.1\' AND port=3306 LIMIT 1')?->fetchColumn();
+        return is_string($status) && strtoupper($status) === 'ONLINE';
+    } catch (Throwable) {
+        return false;
+    }
+}
+
+function databaseGatewayDatabase(Site $site, string $name)
+{
+    foreach ($site->getDatabases()->toArray() as $database) {
+        if ((string) $database->getName() === $name) return $database;
+    }
+    return null;
+}
+
+function databaseGatewayUser($database, string $username)
+{
+    foreach ($database->getUsers()->toArray() as $candidate) {
+        if ((string) $candidate->getUserName() === $username) return $candidate;
+    }
+    return null;
+}
+
+function databaseGatewayCidr(string $value): ?string
+{
+    $value = trim($value);
+    $parts = explode('/', $value, 2);
+    $ip = $parts[0] ?? '';
+    if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+        $prefix = isset($parts[1]) ? filter_var($parts[1], FILTER_VALIDATE_INT, ['options' => ['min_range' => 0, 'max_range' => 32]]) : 32;
+    } elseif (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
+        $prefix = isset($parts[1]) ? filter_var($parts[1], FILTER_VALIDATE_INT, ['options' => ['min_range' => 0, 'max_range' => 128]]) : 128;
+    } else return null;
+    if ($prefix === false) return null;
+    return strtolower($ip) . '/' . $prefix;
+}
+
+function databaseGatewayAllowlist($input, string $mode): array
+{
+    if (!is_array($input) || count($input) > 32) invalidBrokerRequest();
+    $values = [];
+    foreach ($input as $value) {
+        if (!is_string($value)) invalidBrokerRequest();
+        $cidr = databaseGatewayCidr($value);
+        if ($cidr === null) invalidBrokerRequest();
+        $values[] = $cidr;
+    }
+    $values = array_values(array_unique($values));
+    if ($mode === 'allowlist' && !$values) invalidBrokerRequest();
+    if ($mode === 'internet' && $values) invalidBrokerRequest();
+    return $values;
+}
+
+function databaseGatewayLabel($input): string
+{
+    $label = strtolower(trim((string) $input));
+    if (!preg_match('/^(?!-)[a-z0-9-]{3,40}(?<!-)$/', $label)) invalidBrokerRequest();
+    return $label;
+}
+
+function databaseGatewayHostname(array $state, string $label): string
+{
+    return 'db-' . $label . '.' . strtolower((string) $state['suffix']);
+}
+
+function databaseGatewayAdmin(): PDO
+{
+    $raw = trim((string) @file_get_contents(PANELAVO_DATABASE_GATEWAY_ADMIN));
+    [$username, $password] = array_pad(explode(':', $raw, 2), 2, '');
+    if (!preg_match('/^[A-Za-z0-9_-]{8,64}$/', $username) || strlen($password) < 24) {
+        throw new RuntimeException('The database gateway administrator credential is invalid.');
+    }
+    return new PDO('mysql:host=127.0.0.1;port=16032;dbname=main', $username, $password, [
+        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_TIMEOUT => 5,
+        PDO::ATTR_EMULATE_PREPARES => true,
+    ]);
+}
+
+function databaseGatewayPasswordHash(string $password): string
+{
+    return '*' . strtoupper(sha1(sha1($password, true)));
+}
+
+function databaseGatewayRuleIds(int $slot): array
+{
+    return [200000 + $slot * 2, 200001 + $slot * 2];
+}
+
+function configureDatabaseGatewayProxy(array $endpoint, string $password): void
+{
+    $pdo = databaseGatewayAdmin();
+    $username = (string) $endpoint['username'];
+    $database = (string) $endpoint['databaseName'];
+    $proxyPort = (int) $endpoint['proxyPort'];
+    $slot = (int) $endpoint['slot'];
+    [$allowRule, $denyRule] = databaseGatewayRuleIds($slot);
+    $qUser = $pdo->quote($username);
+    $qDatabase = $pdo->quote($database);
+    $qPassword = $pdo->quote(databaseGatewayPasswordHash($password));
+    $comment = $pdo->quote('panelavo database endpoint ' . (string) $endpoint['hostname']);
+    $pdo->exec('DELETE FROM mysql_users WHERE username = ' . $qUser);
+    $pdo->exec("INSERT INTO mysql_users (username,password,active,use_ssl,default_hostgroup,default_schema,schema_locked,transaction_persistent,fast_forward,backend,frontend,max_connections,attributes,comment) VALUES ({$qUser},{$qPassword},1,1,10,{$qDatabase},1,1,0,1,1,20,'',{$comment})");
+    $pdo->exec('DELETE FROM mysql_query_rules WHERE rule_id IN (' . $allowRule . ',' . $denyRule . ') OR comment = ' . $comment);
+    $pdo->exec("INSERT INTO mysql_query_rules (rule_id,active,username,proxy_port,match_digest,destination_hostgroup,apply,comment) VALUES ({$allowRule},1,{$qUser},{$proxyPort},'.*',10,1,{$comment})");
+    $pdo->exec("INSERT INTO mysql_query_rules (rule_id,active,username,match_digest,error_msg,apply,comment) VALUES ({$denyRule},1,{$qUser},'.*','This database credential is not valid on that endpoint.',1,{$comment})");
+    $pdo->exec('LOAD MYSQL USERS TO RUNTIME');
+    $pdo->exec('SAVE MYSQL USERS TO DISK');
+    $pdo->exec('LOAD MYSQL QUERY RULES TO RUNTIME');
+    $pdo->exec('SAVE MYSQL QUERY RULES TO DISK');
+}
+
+function removeDatabaseGatewayProxy(array $endpoint): void
+{
+    $pdo = databaseGatewayAdmin();
+    $qUser = $pdo->quote((string) $endpoint['username']);
+    [$allowRule, $denyRule] = databaseGatewayRuleIds((int) $endpoint['slot']);
+    try {
+        $rows = $pdo->query('SELECT SessionID FROM stats_mysql_processlist WHERE user = ' . $qUser)?->fetchAll(PDO::FETCH_COLUMN) ?: [];
+        foreach ($rows as $sessionId) if (is_numeric($sessionId)) {
+            try { $pdo->exec('KILL CONNECTION ' . (int) $sessionId); } catch (Throwable) {}
+        }
+    } catch (Throwable) {}
+    $pdo->exec('DELETE FROM mysql_users WHERE username = ' . $qUser);
+    $pdo->exec('DELETE FROM mysql_query_rules WHERE rule_id IN (' . $allowRule . ',' . $denyRule . ')');
+    $pdo->exec('LOAD MYSQL USERS TO RUNTIME');
+    $pdo->exec('SAVE MYSQL USERS TO DISK');
+    $pdo->exec('LOAD MYSQL QUERY RULES TO RUNTIME');
+    $pdo->exec('SAVE MYSQL QUERY RULES TO DISK');
+}
+
+function writeDatabaseGatewayStream(array $endpoint, bool $enabled): void
+{
+    if (!is_dir(PANELAVO_DATABASE_GATEWAY_STREAMS)
+        && !mkdir(PANELAVO_DATABASE_GATEWAY_STREAMS, 0755, true)) {
+        throw new RuntimeException('The Nginx database gateway directory could not be created.');
+    }
+    $slot = (int) $endpoint['slot'];
+    $path = PANELAVO_DATABASE_GATEWAY_STREAMS . '/database-' . $slot . '.conf';
+    if (is_link($path)) throw new RuntimeException('The database endpoint configuration is unsafe.');
+    $previous = is_file($path) ? (string) file_get_contents($path) : null;
+    if ($enabled) {
+        $publicPort = (int) $endpoint['port'];
+        $proxyPort = (int) $endpoint['proxyPort'];
+        $access = '';
+        if (($endpoint['accessMode'] ?? '') === 'allowlist') {
+            foreach ((array) ($endpoint['allowlist'] ?? []) as $cidr) $access .= '        allow ' . $cidr . ";\n";
+            $access .= "        deny all;\n";
+        }
+        $content = "# Managed by Panelavo. Do not edit.\n"
+            . "server {\n"
+            . "        listen {$publicPort};\n"
+            . "        listen [::]:{$publicPort};\n"
+            . "        proxy_connect_timeout 10s;\n"
+            . "        proxy_timeout 10m;\n"
+            . "        proxy_protocol on;\n"
+            . "        proxy_pass 127.0.0.1:{$proxyPort};\n"
+            . "        limit_conn panelavo_database_per_ip 20;\n"
+            . "        access_log /var/log/nginx/panelavo-database-gateway.log panelavo_database;\n"
+            . $access
+            . "}\n";
+        $temporary = $path . '.tmp-' . bin2hex(random_bytes(4));
+        if (file_put_contents($temporary, $content) === false || !rename($temporary, $path)) {
+            @unlink($temporary);
+            throw new RuntimeException('The database endpoint configuration could not be written.');
+        }
+        chmod($path, 0644);
+    } else @unlink($path);
+    $test = resourceCommand(['/usr/sbin/nginx', '-t'], 15);
+    if ($test['code'] !== 0) {
+        if ($previous === null) @unlink($path); else file_put_contents($path, $previous);
+        throw new RuntimeException('Nginx rejected the database endpoint configuration.');
+    }
+    $reload = resourceCommand(['/usr/bin/systemctl', 'reload', 'nginx'], 15);
+    if ($reload['code'] !== 0) {
+        if ($previous === null) @unlink($path); else file_put_contents($path, $previous);
+        resourceCommand(['/usr/bin/systemctl', 'reload', 'nginx'], 15);
+        throw new RuntimeException('Nginx could not activate the database endpoint configuration.');
+    }
+}
+
+function publicDatabaseGatewayEndpoint(array $state, ?array $endpoint, bool $serviceReady): array
+{
+    if (!$endpoint) return ['status' => 'private'];
+    $ready = ($endpoint['status'] ?? '') === 'public'
+        && $serviceReady
+        && is_file(PANELAVO_DATABASE_GATEWAY_STREAMS . '/database-' . (int) $endpoint['slot'] . '.conf');
+    return [
+        'status' => $ready ? 'public' : (($endpoint['status'] ?? '') === 'provisioning' ? 'provisioning' : 'degraded'),
+        'hostname' => (string) ($endpoint['hostname'] ?? ''),
+        'port' => (int) ($endpoint['port'] ?? 0),
+        'username' => (string) ($endpoint['username'] ?? ''),
+        'permissions' => (string) ($endpoint['permissions'] ?? 'ro'),
+        'accessMode' => (string) ($endpoint['accessMode'] ?? 'allowlist'),
+        'allowlist' => array_values((array) ($endpoint['allowlist'] ?? [])),
+        'tlsTrust' => (string) ($state['tlsTrust'] ?? 'panelavo-ca'),
+        'createdAt' => (string) ($endpoint['createdAt'] ?? ''),
+        'verifiedAt' => (string) ($endpoint['verifiedAt'] ?? ''),
+        ...(!$ready ? ['message' => 'The endpoint is fail-closed until its gateway configuration is healthy.'] : []),
+    ];
+}
+
+function databaseGatewaySection(Site $site): array
+{
+    $state = databaseGatewayState();
+    $serviceReady = databaseGatewayReady($state) && databaseGatewayServiceReady();
+    $items = [];
+    foreach ($site->getDatabases()->toArray() as $database) {
+        $key = (string) $database->getId();
+        $endpoint = is_array($state['endpoints'][$key] ?? null) ? $state['endpoints'][$key] : null;
+        $remoteUsername = (string) ($endpoint['username'] ?? '');
+        $items[] = [
+            'id' => $key,
+            'name' => $database->getName(),
+            'users' => array_values(array_map(
+                static fn($candidate) => (string) $candidate->getUserName(),
+                array_filter($database->getUsers()->toArray(), static fn($candidate) => (string) $candidate->getUserName() !== $remoteUsername),
+            )),
+            'createdAt' => $database->getCreatedAt()?->format(DATE_ATOM),
+            'exposure' => publicDatabaseGatewayEndpoint($state, $endpoint, $serviceReady),
+        ];
+    }
+    return [
+        'items' => $items,
+        'gateway' => [
+            'ready' => $serviceReady,
+            'suffix' => (string) ($state['suffix'] ?? ''),
+            'tlsTrust' => (string) ($state['tlsTrust'] ?? 'panelavo-ca'),
+            'caAvailable' => is_readable(PANELAVO_DATABASE_GATEWAY_ROOT . '/proxysql/proxysql-ca.pem'),
+            'capacity' => (int) ($state['slots'] ?? 0),
+            'active' => count((array) ($state['endpoints'] ?? [])),
+        ],
+    ];
+}
+
+function databaseGatewaySlot(array $state): int
+{
+    $used = [];
+    foreach ((array) $state['endpoints'] as $endpoint) if (is_array($endpoint)) $used[(int) ($endpoint['slot'] ?? -1)] = true;
+    $slots = max(1, min(256, (int) ($state['slots'] ?? 256)));
+    for ($slot = 0; $slot < $slots; $slot++) if (!isset($used[$slot])) return $slot;
+    throw new RuntimeException('This server has no free database endpoint slots.');
+}
+
+function databaseGatewayRandomPassword(): string
+{
+    return rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
+}
+
+function revokeDatabaseGatewayEndpoint($manager, $database, array $endpoint, array &$state): void
+{
+    try { writeDatabaseGatewayStream($endpoint, false); } catch (Throwable) {
+        throw new RuntimeException('The database endpoint could not be closed safely.');
+    }
+    // The public Stream listener is already gone. If ProxySQL itself is down,
+    // deleting the authoritative database user still invalidates its backend
+    // credential and keeps revocation available during gateway recovery.
+    try { removeDatabaseGatewayProxy($endpoint); } catch (Throwable) {}
+    $databaseUser = databaseGatewayUser($database, (string) $endpoint['username']);
+    if ($databaseUser instanceof DatabaseUser) {
+        $databaseManager = new DatabaseManager($database->getDatabaseServer());
+        $databaseManager->deleteUser($databaseUser);
+        $database->removeUser($databaseUser);
+        $manager->remove($databaseUser);
+        $manager->flush();
+    }
+    unset($state['endpoints'][(string) $database->getId()]);
+    saveDatabaseGatewayState($state);
+}
+
+function manageDatabaseGateway($manager, Site $site, array $operation): array
+{
+    $state = databaseGatewayState();
+    $gatewayReady = databaseGatewayReady($state) && databaseGatewayServiceReady();
+    $databaseName = brokerString($operation, 'name', 2, 50, '/^[A-Za-z][A-Za-z0-9-]+$/');
+    $database = databaseGatewayDatabase($site, $databaseName);
+    if (!$database) throw new RuntimeException('That database does not belong to this website.');
+    $key = (string) $database->getId();
+    $existing = is_array($state['endpoints'][$key] ?? null) ? $state['endpoints'][$key] : null;
+    $action = (string) ($operation['action'] ?? '');
+    if ($action === 'exposure-create') {
+        if (!$gatewayReady) throw new RuntimeException('The private database gateway is not ready on this server. Run trusted setup first.');
+        if ($existing) throw new RuntimeException('This database already has a public endpoint.');
+        $label = databaseGatewayLabel($operation['label'] ?? null);
+        $hostname = databaseGatewayHostname($state, $label);
+        if (!hash_equals($hostname, strtolower(trim((string) ($operation['confirmation'] ?? ''))))) invalidBrokerRequest();
+        foreach ((array) $state['endpoints'] as $candidate) if (is_array($candidate) && ($candidate['hostname'] ?? null) === $hostname) {
+            throw new RuntimeException('That database endpoint hostname is already in use.');
+        }
+        $permissions = (string) ($operation['permissions'] ?? 'ro');
+        if (!in_array($permissions, ['ro', 'rw'], true)) invalidBrokerRequest();
+        $accessMode = (string) ($operation['accessMode'] ?? 'allowlist');
+        if (!in_array($accessMode, ['allowlist', 'internet'], true)) invalidBrokerRequest();
+        $allowlist = databaseGatewayAllowlist($operation['allowlist'] ?? [], $accessMode);
+        $slot = databaseGatewaySlot($state);
+        do {
+            $username = 'pa-' . $database->getId() . '-' . bin2hex(random_bytes(4));
+        } while ($manager->getRepository(DatabaseUser::class)->findOneBy(['userName' => $username]));
+        $password = databaseGatewayRandomPassword();
+        $endpoint = [
+            'status' => 'provisioning',
+            'slot' => $slot,
+            'siteDomain' => (string) $site->getDomainName(),
+            'databaseId' => (int) $database->getId(),
+            'databaseName' => (string) $database->getName(),
+            'label' => $label,
+            'hostname' => $hostname,
+            'port' => (int) $state['publicPortStart'] + $slot,
+            'proxyPort' => (int) $state['proxyPortStart'] + $slot,
+            'username' => $username,
+            'permissions' => $permissions,
+            'accessMode' => $accessMode,
+            'allowlist' => $allowlist,
+            'createdAt' => gmdate(DATE_ATOM),
+        ];
+        $state['endpoints'][$key] = $endpoint;
+        saveDatabaseGatewayState($state);
+        $databaseUser = new DatabaseUser();
+        $databaseUser->setDatabase($database);
+        $databaseUser->setUserName($username);
+        $databaseUser->setPassword(Crypto::encrypt($password));
+        $databaseUser->setPermissions($permissions === 'ro' ? DatabaseUser::PERMISSIONS_READ_ONLY : DatabaseUser::PERMISSIONS_READ_WRITE);
+        $database->addUser($databaseUser);
+        try {
+            (new DatabaseManager($database->getDatabaseServer()))->createUser($databaseUser);
+            $manager->persist($databaseUser);
+            $manager->flush();
+            configureDatabaseGatewayProxy($endpoint, $password);
+            writeDatabaseGatewayStream($endpoint, true);
+            $endpoint['status'] = 'public';
+            $endpoint['verifiedAt'] = gmdate(DATE_ATOM);
+            $state['endpoints'][$key] = $endpoint;
+            saveDatabaseGatewayState($state);
+            return ['endpoint' => publicDatabaseGatewayEndpoint($state, $endpoint, true), 'password' => $password];
+        } catch (Throwable $error) {
+            try { writeDatabaseGatewayStream($endpoint, false); } catch (Throwable) {}
+            try { removeDatabaseGatewayProxy($endpoint); } catch (Throwable) {}
+            try {
+                (new DatabaseManager($database->getDatabaseServer()))->deleteUser($databaseUser);
+                $database->removeUser($databaseUser);
+                $manager->remove($databaseUser);
+                $manager->flush();
+            } catch (Throwable) {}
+            unset($state['endpoints'][$key]);
+            saveDatabaseGatewayState($state);
+            throw new RuntimeException('The database endpoint could not be provisioned; every partial public component was removed.', 0, $error);
+        }
+    }
+    if (!$existing) throw new RuntimeException('This database is already private.');
+    if (!hash_equals((string) $existing['hostname'], strtolower(trim((string) ($operation['confirmation'] ?? ''))))) invalidBrokerRequest();
+    if ($action === 'exposure-revoke') {
+        revokeDatabaseGatewayEndpoint($manager, $database, $existing, $state);
+        return ['endpoint' => ['status' => 'private']];
+    }
+    if (!$gatewayReady) throw new RuntimeException('The database gateway is unavailable. The endpoint remains fail-closed; restore the gateway before changing or rotating it.');
+    $databaseUser = databaseGatewayUser($database, (string) $existing['username']);
+    if (!$databaseUser instanceof DatabaseUser) throw new RuntimeException('The endpoint credential is missing; the endpoint remains fail-closed.');
+    if ($action === 'exposure-rotate') {
+        $oldPassword = (string) $databaseUser->getDecryptedPassword();
+        $newPassword = databaseGatewayRandomPassword();
+        try {
+            $databaseUser->setPassword(Crypto::encrypt($newPassword));
+            (new DatabaseManager($database->getDatabaseServer()))->createUser($databaseUser);
+            $manager->flush();
+            configureDatabaseGatewayProxy($existing, $newPassword);
+            return ['endpoint' => publicDatabaseGatewayEndpoint($state, $existing, true), 'password' => $newPassword];
+        } catch (Throwable $error) {
+            $databaseUser->setPassword(Crypto::encrypt($oldPassword));
+            try {
+                (new DatabaseManager($database->getDatabaseServer()))->createUser($databaseUser);
+                $manager->flush();
+                configureDatabaseGatewayProxy($existing, $oldPassword);
+            } catch (Throwable) {}
+            throw new RuntimeException('The endpoint credential rotation failed and the previous credential was restored.', 0, $error);
+        }
+    }
+    if ($action === 'exposure-update') {
+        $permissions = (string) ($operation['permissions'] ?? $existing['permissions']);
+        if (!in_array($permissions, ['ro', 'rw'], true)) invalidBrokerRequest();
+        $accessMode = (string) ($operation['accessMode'] ?? $existing['accessMode']);
+        if (!in_array($accessMode, ['allowlist', 'internet'], true)) invalidBrokerRequest();
+        $allowlist = databaseGatewayAllowlist($operation['allowlist'] ?? [], $accessMode);
+        $updated = $existing;
+        $updated['permissions'] = $permissions;
+        $updated['accessMode'] = $accessMode;
+        $updated['allowlist'] = $allowlist;
+        $oldEntityPermissions = (string) $databaseUser->getPermissions();
+        try {
+            if ($permissions !== ($existing['permissions'] ?? 'ro')) {
+                $databaseUser->setPermissions($permissions === 'ro' ? DatabaseUser::PERMISSIONS_READ_ONLY : DatabaseUser::PERMISSIONS_READ_WRITE);
+                (new DatabaseManager($database->getDatabaseServer()))->createUser($databaseUser);
+                $manager->flush();
+            }
+            writeDatabaseGatewayStream($updated, true);
+            try {
+                $pdo = databaseGatewayAdmin();
+                $qUser = $pdo->quote((string) $existing['username']);
+                $rows = $pdo->query('SELECT SessionID FROM stats_mysql_processlist WHERE user = ' . $qUser)?->fetchAll(PDO::FETCH_COLUMN) ?: [];
+                foreach ($rows as $sessionId) if (is_numeric($sessionId)) try { $pdo->exec('KILL CONNECTION ' . (int) $sessionId); } catch (Throwable) {}
+            } catch (Throwable) {}
+            $updated['verifiedAt'] = gmdate(DATE_ATOM);
+            $state['endpoints'][$key] = $updated;
+            saveDatabaseGatewayState($state);
+            return ['endpoint' => publicDatabaseGatewayEndpoint($state, $updated, true)];
+        } catch (Throwable $error) {
+            try {
+                $databaseUser->setPermissions($oldEntityPermissions);
+                (new DatabaseManager($database->getDatabaseServer()))->createUser($databaseUser);
+                $manager->flush();
+                writeDatabaseGatewayStream($existing, true);
+            } catch (Throwable) {
+                try { writeDatabaseGatewayStream($existing, false); } catch (Throwable) {}
+            }
+            throw new RuntimeException('The endpoint update failed; its previous policy was restored or the endpoint was closed.', 0, $error);
+        }
+    }
+    invalidBrokerRequest();
+}
+
+function reconcileDatabaseGateway($manager): array
+{
+    $state = databaseGatewayState();
+    if (!databaseGatewayReady($state) || !databaseGatewayServiceReady()) return ['ready' => false, 'checkedAt' => gmdate(DATE_ATOM), 'repaired' => 0, 'degraded' => count((array) $state['endpoints'])];
+    $repaired = 0;
+    $degraded = 0;
+    foreach ((array) $state['endpoints'] as $key => $endpoint) {
+        if (!is_array($endpoint)) { unset($state['endpoints'][$key]); continue; }
+        $site = $manager->getRepository(Site::class)->findOneBy(['domainName' => (string) ($endpoint['siteDomain'] ?? '')]);
+        $database = $site instanceof Site ? databaseGatewayDatabase($site, (string) ($endpoint['databaseName'] ?? '')) : null;
+        $databaseUser = $database ? databaseGatewayUser($database, (string) ($endpoint['username'] ?? '')) : null;
+        if (!$site || !$database || !$databaseUser instanceof DatabaseUser) {
+            try { writeDatabaseGatewayStream($endpoint, false); } catch (Throwable) {}
+            try { removeDatabaseGatewayProxy($endpoint); } catch (Throwable) {}
+            unset($state['endpoints'][$key]);
+            $repaired++;
+            continue;
+        }
+        try {
+            configureDatabaseGatewayProxy($endpoint, (string) $databaseUser->getDecryptedPassword());
+            writeDatabaseGatewayStream($endpoint, true);
+            $state['endpoints'][$key]['status'] = 'public';
+            $state['endpoints'][$key]['verifiedAt'] = gmdate(DATE_ATOM);
+            $repaired++;
+        } catch (Throwable) {
+            try { writeDatabaseGatewayStream($endpoint, false); } catch (Throwable) {}
+            $state['endpoints'][$key]['status'] = 'degraded';
+            $degraded++;
+        }
+    }
+    saveDatabaseGatewayState($state);
+    return ['ready' => $degraded === 0, 'checkedAt' => gmdate(DATE_ATOM), 'repaired' => $repaired, 'degraded' => $degraded];
+}
+
 function resourceDirectoryUsage(array $paths, int $seconds = 240): array
 {
     $du = is_executable('/usr/bin/du') ? '/usr/bin/du' : '/bin/du';
@@ -4203,6 +4782,118 @@ function reclaimServerBuildCache($manager): array
     ];
 }
 
+function storageHygieneFile(): string
+{
+    return '/var/lib/panelavo/storage-hygiene.json';
+}
+
+function storagePressureState(?array $stored = null): array
+{
+    $filesystem = resourceFilesystemUsage();
+    $total = max(1, (int) $filesystem['totalBytes']);
+    $used = max(0, (int) $filesystem['usedBytes']);
+    $available = max(0, (int) $filesystem['availableBytes']);
+    $percent = round($used / $total * 100, 1);
+    $reserve = max(2000000000, min(10000000000, (int) floor($total * 0.10)));
+    $blocked = $percent >= 92 || $available < $reserve;
+    return array_merge(is_array($stored) ? $stored : [], [
+        'checkedAt' => gmdate(DATE_ATOM),
+        'beforePercent' => $stored['beforePercent'] ?? $percent,
+        'afterPercent' => $percent,
+        'blocked' => $blocked,
+        'reason' => $blocked
+            ? 'Disk growth is paused until at least ' . number_format($reserve / 1000000000, 1) . ' GB is available and usage is below 92%.'
+            : null,
+        'availableBytes' => $available,
+        'requiredAvailableBytes' => $reserve,
+    ]);
+}
+
+function saveStorageHygieneState(array $state): void
+{
+    $file = storageHygieneFile();
+    $temporary = $file . '.' . bin2hex(random_bytes(6)) . '.tmp';
+    if (@file_put_contents($temporary, json_encode($state, JSON_PRETTY_PRINT), LOCK_EX) === false) return;
+    @chmod($temporary, 0600);
+    @rename($temporary, $file);
+}
+
+function loadStorageHygieneState(): array
+{
+    $stored = @json_decode((string) @file_get_contents(storageHygieneFile()), true);
+    return storagePressureState(is_array($stored) ? $stored : null);
+}
+
+function runStorageHygiene($manager): array
+{
+    $directory = '/var/lib/panelavo';
+    if (!is_dir($directory)) @mkdir($directory, 0711, true);
+    $before = resourceFilesystemUsage();
+    $beforePercent = round((int) $before['usedBytes'] / max(1, (int) $before['totalBytes']) * 100, 1);
+    $existing = @json_decode((string) @file_get_contents(storageHygieneFile()), true);
+    $existing = is_array($existing) ? $existing : [];
+    if ($beforePercent < 75) {
+        $state = storagePressureState($existing);
+        $state['beforePercent'] = $beforePercent;
+        saveStorageHygieneState($state);
+        return $state;
+    }
+
+    $mode = $beforePercent >= 90 ? 'emergency' : 'normal';
+    $cooldown = $mode === 'emergency' ? 3600 : 21600;
+    $lastCleanup = isset($existing['lastCleanupAt']) ? strtotime((string) $existing['lastCleanupAt']) : false;
+    if (is_int($lastCleanup) && time() - $lastCleanup < $cooldown) {
+        $state = storagePressureState(array_merge($existing, ['mode' => $mode, 'beforePercent' => $beforePercent]));
+        saveStorageHygieneState($state);
+        return $state;
+    }
+
+    $lock = @fopen($directory . '/storage-hygiene.lock', 'c');
+    if (!is_resource($lock) || !flock($lock, LOCK_EX | LOCK_NB)) {
+        if (is_resource($lock)) fclose($lock);
+        return storagePressureState(array_merge($existing, [
+            'mode' => $mode,
+            'beforePercent' => $beforePercent,
+            'reason' => 'Storage cleanup is already running.',
+        ]));
+    }
+    @chmod($directory . '/storage-hygiene.lock', 0600);
+
+    $retainedBytes = $mode === 'emergency' ? 1000000000 : 5000000000;
+    $users = [];
+    foreach (resourceSites($manager) as $site) {
+        $user = (string) $site['user'];
+        if (preg_match('/^[A-Za-z0-9._-]{1,64}$/', $user)) $users[$user] = true;
+    }
+    foreach (array_keys($users) as $user) {
+        $help = resourceRootlessDockerCommand($user, ['builder', 'prune', '--help'], 8);
+        if ($help !== null && $help['code'] === 0 && str_contains($help['stdout'], '--max-used-space')) {
+            resourceRootlessDockerCommand($user, [
+                'builder', 'prune', '--all', '--force', '--max-used-space', (string) $retainedBytes,
+            ], 600);
+        }
+        if ($mode === 'emergency') {
+            // Docker preserves images referenced by running or stopped
+            // containers. The age filter avoids deleting fresh rollback images.
+            resourceRootlessDockerCommand($user, [
+                'image', 'prune', '--all', '--force', '--filter', 'until=720h',
+            ], 600);
+        }
+    }
+    $after = resourceFilesystemUsage();
+    $state = storagePressureState([
+        'lastCleanupAt' => gmdate(DATE_ATOM),
+        'mode' => $mode,
+        'beforePercent' => $beforePercent,
+        'reclaimedBytes' => max(0, (int) $before['usedBytes'] - (int) $after['usedBytes']),
+    ]);
+    saveStorageHygieneState($state);
+    @unlink($directory . '/resource-storage.json');
+    flock($lock, LOCK_UN);
+    fclose($lock);
+    return $state;
+}
+
 function serverStorage($manager, bool $refresh = false): array
 {
     $directory = '/var/lib/panelavo';
@@ -4312,6 +5003,7 @@ function serverStorage($manager, bool $refresh = false): array
         'reservedBytes' => (int) $filesystem['reservedBytes'],
         'accountedBytes' => $knownBytes,
         'groups' => $groups,
+        'hygiene' => loadStorageHygieneState(),
         'note' => 'Directory totals use allocated blocks on the root filesystem. Docker image, volume, and build-cache figures are Docker-reported drill-down values and may overlap because layers are shared.' . ($missing ? ' ' . $missing . ' path(s) did not finish within the bounded scan and remain in Other.' : ''),
     ];
     $temporary = $file . '.' . bin2hex(random_bytes(6)) . '.tmp';
@@ -4681,6 +5373,53 @@ function softwareVersion(string $command, string $pattern = '/(\d+\.\d+(?:\.\d+)
     return preg_match($pattern, $output, $m) ? $m[1] : '';
 }
 
+function hostMaintenanceStatus(bool $refresh = false): array
+{
+    $cacheFile = '/var/lib/panelavo/host-maintenance.json';
+    $cached = @json_decode((string) @file_get_contents($cacheFile), true);
+    if (!$refresh && is_array($cached) && isset($cached['checkedAt'])
+        && time() - strtotime((string) $cached['checkedAt']) < 3600) return $cached;
+    $simulation = resourceCommand([
+        '/usr/bin/apt-get', '-s', '-o', 'Debug::NoLocking=true', 'upgrade',
+    ], 45);
+    $updates = 0;
+    $security = 0;
+    foreach (preg_split('/\R/', $simulation['stdout']) ?: [] as $line) {
+        if (!str_starts_with($line, 'Inst ')) continue;
+        $updates++;
+        if (preg_match('/(?:-security|UbuntuESMApps|UbuntuESMInfra)/i', $line)) $security++;
+    }
+    $unattended = resourceCommand([
+        '/usr/bin/systemctl', 'is-enabled', 'unattended-upgrades.service',
+    ], 5);
+    $timer = resourceCommand([
+        '/usr/bin/systemctl', 'is-enabled', 'apt-daily-upgrade.timer',
+    ], 5);
+    $stamp = '/var/lib/apt/periodic/update-success-stamp';
+    if (!is_file($stamp)) {
+        $lists = glob('/var/lib/apt/lists/*InRelease') ?: [];
+        usort($lists, static fn($a, $b) => (int) @filemtime($b) <=> (int) @filemtime($a));
+        $stamp = $lists[0] ?? '';
+    }
+    $rebootRequired = is_file('/var/run/reboot-required');
+    $automation = $unattended['code'] === 0 && $timer['code'] === 0;
+    $status = [
+        'checkedAt' => gmdate(DATE_ATOM),
+        'availableUpdates' => $updates,
+        'securityUpdates' => $security,
+        'rebootRequired' => $rebootRequired,
+        'unattendedUpgrades' => $automation,
+        'lastPackageIndexAt' => $stamp !== '' && is_file($stamp) ? gmdate(DATE_ATOM, (int) filemtime($stamp)) : null,
+        'status' => $rebootRequired ? 'reboot-required' : ($security > 0 || !$automation ? 'attention' : 'current'),
+    ];
+    $temporary = $cacheFile . '.tmp-' . bin2hex(random_bytes(4));
+    if (@file_put_contents($temporary, json_encode($status, JSON_PRETTY_PRINT), LOCK_EX) !== false) {
+        @chmod($temporary, 0600);
+        @rename($temporary, $cacheFile);
+    }
+    return $status;
+}
+
 function serverInfo(): array
 {
     $osRelease = @parse_ini_file('/etc/os-release');
@@ -4723,6 +5462,7 @@ function serverInfo(): array
         'memoryTotalBytes' => $mem['MemTotal'] ?? 0,
         'diskTotalBytes' => (float) disk_total_space('/'),
         'software' => $software,
+        'maintenance' => hostMaintenanceStatus(),
     ];
 }
 
@@ -6069,6 +6809,19 @@ function runEndpointSelfTest(): never
     exit(0);
 }
 
+function brokerDirectWrapperDenied(): bool
+{
+    $callerUid = (int) getenv('PANELAVO_CALLER_UID');
+    $account = $callerUid > 0 && function_exists('posix_getpwuid') ? posix_getpwuid($callerUid) : false;
+    $username = is_array($account) ? (string) ($account['name'] ?? '') : '';
+    if (!preg_match('/^[a-z_][a-z0-9_-]{0,31}$/', $username)) return false;
+    $result = resourceCommand([
+        '/usr/bin/sudo', '-n', '-u', $username, '--',
+        '/usr/bin/sudo', '-n', '-l', '/usr/bin/clpctlWrapper',
+    ], 5);
+    return $result['code'] !== 0;
+}
+
 if (($argv[1] ?? '') === '--self-test-ports') runComposePortSelfTest();
 if (($argv[1] ?? '') === '--self-test-scaffold') runFreshSiteScaffoldSelfTest();
 if (($argv[1] ?? '') === '--self-test-env') runEnvSelfTest();
@@ -6090,12 +6843,15 @@ try {
     $effectiveUid = function_exists('posix_geteuid') ? posix_geteuid() : getmyuid();
     if ($effectiveUid !== 0) respond(['ok' => false, 'code' => 'BROKER_INTEGRITY_FAILED'], 2);
     if (($input['action'] ?? '') === 'broker-health') {
+        $state = databaseGatewayState();
         respond(['ok' => true, 'data' => [
             'broker' => 'panelavo',
             'protocolVersion' => PANELAVO_BROKER_PROTOCOL_VERSION,
             'privileged' => true,
+            'directClpctlDenied' => brokerDirectWrapperDenied(),
             'cloudPanelAvailable' => is_readable(CLOUDPANEL_ROOT . '/vendor/autoload.php')
                 && is_executable('/usr/bin/clpctl'),
+            'databaseGatewayReady' => databaseGatewayReady($state) && databaseGatewayServiceReady(),
         ]]);
     }
 } catch (Throwable) {
@@ -6143,6 +6899,27 @@ try {
         respond(['ok' => true, 'data' => [
             'backupId' => $section['items'][0]['id'] ?? null,
         ]]);
+    }
+    if (($input['action'] ?? '') === 'database-gateway-reconcile') {
+        respond(['ok' => true, 'data' => reconcileDatabaseGateway($manager)]);
+    }
+    if (($input['action'] ?? '') === 'database-gateway-ca') {
+        $state = databaseGatewayState();
+        $certificate = @file_get_contents(PANELAVO_DATABASE_GATEWAY_ROOT . '/proxysql/proxysql-ca.pem');
+        if (!is_string($certificate) || !str_contains($certificate, 'BEGIN CERTIFICATE')) {
+            respond(['ok' => false, 'code' => 'SITE_NOT_FOUND']);
+        }
+        respond(['ok' => true, 'data' => [
+            'certificate' => $certificate,
+            'tlsTrust' => (string) ($state['tlsTrust'] ?? 'panelavo-ca'),
+            'suffix' => (string) ($state['suffix'] ?? ''),
+        ]]);
+    }
+    if (($input['action'] ?? '') === 'storage-hygiene') {
+        respond(['ok' => true, 'data' => runStorageHygiene($manager)]);
+    }
+    if (($input['action'] ?? '') === 'host-maintenance') {
+        respond(['ok' => true, 'data' => hostMaintenanceStatus(true)]);
     }
     $user = $manager->getRepository(User::class)->findOneBy([
         'userName' => strtolower(trim((string) ($input['username'] ?? ''))),
@@ -6370,6 +7147,11 @@ try {
         case 'clpctl-site-delete':
             $domain = brokerDomainValue($input['domain'] ?? null);
             $site = requireSiteWriter($manager, $user, $domain, ($input['panelAdmin'] ?? false) === true);
+            $gatewayState = databaseGatewayState();
+            foreach ($site->getDatabases()->toArray() as $database) {
+                $endpoint = $gatewayState['endpoints'][(string) $database->getId()] ?? null;
+                if (is_array($endpoint)) revokeDatabaseGatewayEndpoint($manager, $database, $endpoint, $gatewayState);
+            }
             cleanupRootlessDockerBeforeSiteDelete($site);
             $deleteResult = runClpctl(['site:delete', '--domainName=' . $domain, '--force']);
             if ($deleteResult['code'] !== 0) finishClpctl($deleteResult);
@@ -6397,7 +7179,22 @@ try {
             $site = requireSiteWriter($manager, $user, $domain, ($input['panelAdmin'] ?? false) === true);
             $databaseName = brokerString($input, 'databaseName', 2, 50, '/^[A-Za-z][A-Za-z0-9-]+$/');
             if (!in_array($databaseName, siteDatabaseNames($site), true)) respond(['ok' => false, 'code' => 'FORBIDDEN']);
+            $database = databaseGatewayDatabase($site, $databaseName);
+            $gatewayState = databaseGatewayState();
+            $endpoint = $database ? ($gatewayState['endpoints'][(string) $database->getId()] ?? null) : null;
+            if ($database && is_array($endpoint)) revokeDatabaseGatewayEndpoint($manager, $database, $endpoint, $gatewayState);
             finishClpctl(runClpctl(['db:delete', '--databaseName=' . $databaseName, '--force']));
+
+        case 'database-gateway':
+            $domain = brokerDomainValue($input['domain'] ?? null);
+            $site = requireSiteWriter($manager, $user, $domain, ($input['panelAdmin'] ?? false) === true);
+            $operation = $input['operation'] ?? null;
+            if (!is_array($operation) || count($operation) > 10) invalidBrokerRequest();
+            try {
+                respond(['ok' => true, 'data' => manageDatabaseGateway($manager, $site, $operation)]);
+            } catch (RuntimeException $error) {
+                respond(['ok' => false, 'code' => 'SITE_UPDATE_FAILED', 'message' => $error->getMessage()]);
+            }
 
         case 'db-signon':
             // One-time phpMyAdmin sign-on: writes the database user's
@@ -6418,7 +7215,12 @@ try {
                 if ((string) $candidate->getName() === $databaseName) { $database = $candidate; break; }
             }
             if (!$database) respond(['ok' => false, 'code' => 'FORBIDDEN']);
-            $databaseUser = $database->getUsers()->toArray()[0] ?? null;
+            $gatewayState = databaseGatewayState();
+            $remoteUsername = (string) (($gatewayState['endpoints'][(string) $database->getId()]['username'] ?? ''));
+            $databaseUser = null;
+            foreach ($database->getUsers()->toArray() as $candidate) {
+                if ((string) $candidate->getUserName() !== $remoteUsername) { $databaseUser = $candidate; break; }
+            }
             if (!$databaseUser) respond(['ok' => false, 'code' => 'INVALID_REQUEST', 'message' => 'This database has no user to sign in with.']);
             $databasePassword = $databaseUser->getDecryptedPassword();
             if (!is_string($databasePassword) || $databasePassword === '') {
@@ -6532,12 +7334,7 @@ try {
             $section = (string) ($input['section'] ?? '');
             $data = match ($section) {
                 'vhost' => ['content' => @file_get_contents('/etc/nginx/sites-enabled/' . $site->getDomainName() . '.conf') ?: ''],
-                'databases' => ['items' => array_map(fn($db) => [
-                    'id' => (string) $db->getId(),
-                    'name' => $db->getName(),
-                    'users' => array_map(fn($u) => $u->getUserName(), $db->getUsers()->toArray()),
-                    'createdAt' => $db->getCreatedAt()?->format(DATE_ATOM),
-                ], $site->getDatabases()->toArray())],
+                'databases' => databaseGatewaySection($site),
                 // Certificate::TYPE_SELF_SIGNED = 1, TYPE_LETS_ENCRYPT = 2,
                 // TYPE_IMPORTED = 3 — exported as semantic strings so no
                 // consumer ever has to guess the numeric mapping again.

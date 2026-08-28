@@ -8,6 +8,7 @@ import type {
   CloudPanelUser,
   CreateSiteInput,
   ServerInfo,
+  ServerMaintenanceState,
   ServerResources,
   ServerStorageBreakdown,
   ServerStorageCleanupResult,
@@ -29,7 +30,7 @@ import {
 import { getSiteTypeOverrides } from "@/server/sites/site-type-overlay";
 import { AppError } from "./errors";
 
-export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 22;
+export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 23;
 export const CLOUDPANEL_BROKER_PATH =
   "/usr/local/libexec/panelavo/panelavo-broker";
 
@@ -267,6 +268,62 @@ export async function importBackupBundle(input: {
   if (!result.ok) throw siteSectionBridgeError(result);
 }
 
+export async function runDatabaseGatewayReconcile() {
+  await checkCloudPanelBroker();
+  const result = await invokeBroker(
+    { action: "database-gateway-reconcile" },
+    120_000,
+  );
+  if (!result.ok) throw siteSectionBridgeError(result);
+  return result.data as {
+    ready: boolean;
+    checkedAt: string;
+    repaired: number;
+    degraded: number;
+  };
+}
+
+export async function getDatabaseGatewayCa() {
+  await checkCloudPanelBroker();
+  const result = await invokeBroker({ action: "database-gateway-ca" });
+  if (!result.ok || !result.data)
+    throw new AppError(
+      "SITE_NOT_FOUND",
+      "The database gateway CA certificate is unavailable.",
+      404,
+    );
+  return result.data as {
+    certificate: string;
+    tlsTrust: "public" | "panelavo-ca";
+    suffix: string;
+  };
+}
+
+export async function runStorageHygiene() {
+  await checkCloudPanelBroker();
+  const result = await invokeBroker({ action: "storage-hygiene" }, 1_250_000);
+  if (!result.ok || !result.data) throw siteSectionBridgeError(result);
+  return result.data as {
+    checkedAt: string;
+    lastCleanupAt?: string;
+    mode?: "normal" | "emergency";
+    beforePercent?: number;
+    afterPercent?: number;
+    reclaimedBytes?: number;
+    availableBytes: number;
+    requiredAvailableBytes: number;
+    blocked: boolean;
+    reason?: string;
+  };
+}
+
+export async function getHostMaintenanceStatus() {
+  await checkCloudPanelBroker();
+  const result = await invokeBroker({ action: "host-maintenance" }, 60_000);
+  if (!result.ok || !result.data) throw siteSectionBridgeError(result);
+  return result.data as ServerMaintenanceState;
+}
+
 export async function checkCloudPanelBroker() {
   const now = Date.now();
   if (!brokerHealth || now - brokerHealth.checkedAt > 60_000) {
@@ -276,13 +333,17 @@ export async function checkCloudPanelBroker() {
             protocolVersion?: number;
             privileged?: boolean;
             cloudPanelAvailable?: boolean;
+            directClpctlDenied?: boolean;
+            databaseGatewayReady?: boolean;
           }
         | undefined;
       if (
         !result.ok ||
         data?.protocolVersion !== CLOUDPANEL_BROKER_PROTOCOL_VERSION ||
         data.privileged !== true ||
-        data.cloudPanelAvailable !== true
+        data.cloudPanelAvailable !== true ||
+        data.directClpctlDenied !== true ||
+        data.databaseGatewayReady !== true
       ) {
         throw new AppError(
           "CLOUDPANEL_UNAVAILABLE",
@@ -861,7 +922,21 @@ export class LiveCloudPanelClient implements CloudPanelClient {
           403,
         );
     }
-    if (section === "databases" && action === "add") {
+    if (section === "databases" && action.startsWith("exposure-")) {
+      const result = await this.bridge(
+        {
+          action: "database-gateway",
+          username: this.sessionUser(session),
+          domain,
+          panelAdmin,
+          operation: input,
+        },
+        90_000,
+      );
+      if (!result.ok)
+        throw siteSectionBridgeError(result);
+      return result.data;
+    } else if (section === "databases" && action === "add") {
       const result = await this.bridge(
         {
           action: "clpctl-db-add",
@@ -1143,10 +1218,13 @@ export class LiveCloudPanelClient implements CloudPanelClient {
   }
 
   async getServerInfo(session: CloudPanelSession) {
-    const result = await this.bridge({
-      action: "server-info",
-      username: this.sessionUser(session),
-    });
+    const result = await this.bridge(
+      {
+        action: "server-info",
+        username: this.sessionUser(session),
+      },
+      60_000,
+    );
     if (!result.ok || !result.data)
       throw new AppError(
         "FORBIDDEN",

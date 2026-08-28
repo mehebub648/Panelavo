@@ -29,7 +29,7 @@ describe("resource collector source contract", () => {
     expect(source).toContain("resource-storage.lock");
     const cleanup = source.slice(
       source.indexOf("function reclaimServerBuildCache"),
-      source.indexOf("function serverStorage"),
+      source.indexOf("function storageHygieneFile"),
     );
     expect(cleanup).toContain("'builder', 'prune', '--all', '--force', '--max-used-space'");
     expect(cleanup).toContain("$retainedBytes = 5000000000");
@@ -37,5 +37,16 @@ describe("resource collector source contract", () => {
     expect(cleanup).not.toContain("'system', 'prune'");
     expect(cleanup).not.toContain("'volume', 'prune'");
     expect(cleanup).not.toContain("'image', 'prune'");
+
+    const hygiene = source.slice(
+      source.indexOf("function runStorageHygiene"),
+      source.indexOf("function serverStorage"),
+    );
+    expect(hygiene).toContain("$beforePercent < 75");
+    expect(hygiene).toContain("$beforePercent >= 90");
+    expect(hygiene).toContain("'image', 'prune', '--all', '--force', '--filter', 'until=720h'");
+    expect(hygiene).not.toContain("'volume', 'prune'");
+    expect(hygiene).not.toContain("'container', 'prune'");
+    expect(hygiene).not.toContain("'system', 'prune'");
   });
 });

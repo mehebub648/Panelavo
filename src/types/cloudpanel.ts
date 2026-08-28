@@ -312,7 +312,33 @@ export interface ServerStorageBreakdown {
   accountedBytes: number;
   groups: ServerStorageGroup[];
   note: string;
+  hygiene?: ServerStorageHygieneState;
 }
+
+export interface ServerStorageHygieneState {
+  checkedAt?: string;
+  lastCleanupAt?: string;
+  mode?: "normal" | "emergency";
+  beforePercent?: number;
+  afterPercent?: number;
+  reclaimedBytes?: number;
+  blocked: boolean;
+  reason?: string;
+}
+
+export type DatabaseExposure = {
+  status: "private" | "provisioning" | "public" | "degraded";
+  hostname?: string;
+  port?: number;
+  username?: string;
+  permissions?: "ro" | "rw";
+  accessMode?: "allowlist" | "internet";
+  allowlist?: string[];
+  tlsTrust?: "public" | "panelavo-ca";
+  createdAt?: string;
+  verifiedAt?: string;
+  message?: string;
+};
 
 export interface ServerStorageCleanupSite {
   user: string;
@@ -359,6 +385,17 @@ export interface ServerInfo {
   memoryTotalBytes: number;
   diskTotalBytes: number;
   software: { name: string; version: string }[];
+  maintenance?: ServerMaintenanceState;
+}
+
+export interface ServerMaintenanceState {
+  checkedAt: string;
+  availableUpdates: number;
+  securityUpdates: number;
+  rebootRequired: boolean;
+  unattendedUpgrades: boolean;
+  lastPackageIndexAt?: string;
+  status: "current" | "attention" | "reboot-required";
 }
 
 export type CloudPanelLoginResult =

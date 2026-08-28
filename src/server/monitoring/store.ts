@@ -27,7 +27,7 @@ type Store = {
 };
 
 export const defaultMonitoringSettings: MonitoringSettings = {
-  resources: { enabled: false, cpu: 90, memory: 90, disk: 90, consecutiveSamples: 3 },
+  resources: { enabled: true, cpu: 90, memory: 90, disk: 75, consecutiveSamples: 3 },
   uptimeFailureSamples: 2,
   sslEnabled: true,
   sslDays: 14,

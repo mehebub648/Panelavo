@@ -29,8 +29,13 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { FileManager, type FileManagerData } from "@/components/sites/file-manager";
 import { CodeEditor, preloadCodeEditor } from "@/components/ui/code-editor";
 import { certAlternativeNames } from "@/lib/domains";
+import {
+  DatabaseExposureControls,
+  type DatabaseExposureItem,
+  type DatabaseGatewaySummary,
+} from "@/components/sites/database-exposure";
 
-type DatabaseItem = { id: string; name: string; users?: string[] };
+type DatabaseItem = DatabaseExposureItem;
 type CertificateItem = { id: string; type?: string; domains?: string[]; expiresAt?: string; default?: boolean };
 type FtpItem = { username: string; home?: string };
 type CronItem = { id: string; expression: string; command: string };
@@ -47,6 +52,7 @@ type Data = Record<string, unknown> & {
   path?: string;
   sitePath?: string;
   keyPair?: { exists?: boolean; publicKey?: string; privateKeyMasked?: string; fingerprint?: string };
+  gateway?: DatabaseGatewaySummary;
 };
 
 export function SiteSectionManager({
@@ -228,10 +234,15 @@ export function SiteSectionManager({
           <section className={card}>
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-bold">Databases</h2><p className="mt-1 text-sm text-slate-500">Manage databases and open them in phpMyAdmin — Manage signs you in as the database&apos;s own user automatically.</p></div><div className="flex gap-2">{databaseManagerUrl && <Button asChild variant="outline" size="sm"><a href={databaseManagerUrl} target="_blank" rel="noopener noreferrer"><ExternalLink className="h-4 w-4" /> Open phpMyAdmin</a></Button>}<Button size="sm" onClick={() => setOpenForm(openForm === "database" ? null : "database")}><Plus className="h-4 w-4" /> Add database</Button></div></div>
             <div className="space-y-3">
+              {data.gateway && !data.gateway.ready ? (
+                <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                  Secure database exposure is unavailable until a Super Admin runs trusted setup. Existing endpoints remain fail-closed and can still be revoked.
+                </p>
+              ) : null}
               {((data.items as DatabaseItem[]) ?? []).map((item) => (
                 <div
                   key={item.id}
-                  className="group flex items-center justify-between rounded-xl border border-slate-200/60 bg-white/50 p-4 transition-all hover:bg-white hover:shadow-sm"
+                  className="group flex flex-wrap items-center justify-between gap-4 rounded-xl border border-slate-200/60 bg-white/50 p-4 transition-all hover:bg-white hover:shadow-sm"
                 >
                   <div className="flex gap-3">
                     <Database className="text-panel-600" />
@@ -242,7 +253,7 @@ export function SiteSectionManager({
                       </p>
                     </div>
                   </div>
-                  <div className="flex items-center gap-1">{databaseManagerUrl && <Button variant="ghost" size="sm" onClick={() => void openDatabase(item.name)}><ExternalLink className="h-4 w-4" /> Manage</Button>}<Button variant="ghost" size="icon" className="opacity-60 transition-opacity hover:opacity-100" onClick={() => act({ action: "delete", name: item.name })}><Trash2 className="h-4 w-4 text-red-500 hover:text-red-600" /></Button></div>
+                  <div className="flex flex-wrap items-center justify-end gap-2"><DatabaseExposureControls domain={domain} item={item} gateway={data.gateway ?? {}} />{databaseManagerUrl && <Button variant="ghost" size="sm" onClick={() => void openDatabase(item.name)}><ExternalLink className="h-4 w-4" /> Manage</Button>}<Button variant="ghost" size="icon" className="opacity-60 transition-opacity hover:opacity-100" onClick={() => act({ action: "delete", name: item.name })}><Trash2 className="h-4 w-4 text-red-500 hover:text-red-600" /></Button></div>
                 </div>
               ))}
               {!data.items?.length && (

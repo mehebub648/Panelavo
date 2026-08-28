@@ -6,7 +6,9 @@ import {
   MemoryStick,
   MonitorCog,
   Server,
+  ShieldCheck,
   Timer,
+  TriangleAlert,
 } from "lucide-react";
 import { requireUserOrRedirect } from "@/server/auth/require-user";
 import { getCloudPanelClient } from "@/server/cloudpanel";
@@ -70,6 +72,44 @@ export default async function InformationPage() {
           ))}
         </dl>
       </section>
+
+      {info.maintenance ? (
+        <section className="rounded-2xl border border-white/60 bg-white/70 p-5 shadow-card backdrop-blur-md sm:p-6">
+          <div className="flex items-start gap-3">
+            <span
+              className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl ${
+                info.maintenance.status === "current"
+                  ? "bg-emerald-50 text-emerald-600"
+                  : "bg-amber-50 text-amber-600"
+              }`}
+            >
+              {info.maintenance.status === "current" ? (
+                <ShieldCheck className="h-5 w-5" />
+              ) : (
+                <TriangleAlert className="h-5 w-5" />
+              )}
+            </span>
+            <div>
+              <h3 className="font-bold">Operating-system maintenance</h3>
+              <p className="mt-1 text-sm text-slate-600">
+                {info.maintenance.rebootRequired
+                  ? "A reboot is required to finish installed updates."
+                  : info.maintenance.securityUpdates > 0
+                    ? `${info.maintenance.securityUpdates} security update${info.maintenance.securityUpdates === 1 ? " is" : "s are"} waiting to install.`
+                    : "No security updates are waiting to install."}
+              </p>
+              <p className="mt-2 text-xs text-slate-500">
+                {info.maintenance.availableUpdates} total package update
+                {info.maintenance.availableUpdates === 1 ? "" : "s"} · Automatic
+                security updates {info.maintenance.unattendedUpgrades ? "on" : "off"}
+                {info.maintenance.lastPackageIndexAt
+                  ? ` · Package list checked ${new Date(info.maintenance.lastPackageIndexAt).toLocaleString()}`
+                  : ""}
+              </p>
+            </div>
+          </div>
+        </section>
+      ) : null}
 
       <section className="overflow-hidden rounded-2xl border border-white/60 bg-white/70 shadow-card backdrop-blur-md">
         <div className="border-b border-slate-200/70 px-5 py-4 sm:px-6">

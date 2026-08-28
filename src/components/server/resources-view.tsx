@@ -781,6 +781,33 @@ export function ResourcesView({
                     </div>
                   ) : storage ? (
                     <div className="space-y-3">
+                      {storage.hygiene && (
+                        <div
+                          className={`rounded-xl border p-3 text-xs ${
+                            storage.hygiene.blocked
+                              ? "border-red-200 bg-red-50/70 text-red-900"
+                              : "border-emerald-200 bg-emerald-50/70 text-emerald-900"
+                          }`}
+                        >
+                          <p className="font-bold">
+                            {storage.hygiene.blocked
+                              ? "Storage-growing actions are paused"
+                              : "Automatic storage protection is active"}
+                          </p>
+                          <p className="mt-1 leading-5">
+                            {storage.hygiene.reason ||
+                              "Panelavo checks disk pressure every 15 minutes and removes only disposable rootless Docker cache when usage reaches 75%."}
+                          </p>
+                          {storage.hygiene.lastCleanupAt ? (
+                            <p className="mt-1 opacity-75">
+                              Last automatic cleanup {new Date(storage.hygiene.lastCleanupAt).toLocaleString()}
+                              {typeof storage.hygiene.reclaimedBytes === "number"
+                                ? ` · recovered ${formatBytes(storage.hygiene.reclaimedBytes)}`
+                                : ""}
+                            </p>
+                          ) : null}
+                        </div>
+                      )}
                       {lastCleanup && (
                         <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-3 text-xs text-emerald-900">
                           <p className="font-bold">Last cleanup recovered {formatBytes(lastCleanup.reclaimedBytes)}</p>
