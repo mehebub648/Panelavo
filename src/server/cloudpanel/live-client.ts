@@ -342,8 +342,7 @@ export async function checkCloudPanelBroker() {
         data?.protocolVersion !== CLOUDPANEL_BROKER_PROTOCOL_VERSION ||
         data.privileged !== true ||
         data.cloudPanelAvailable !== true ||
-        data.directClpctlDenied !== true ||
-        data.databaseGatewayReady !== true
+        data.directClpctlDenied !== true
       ) {
         throw new AppError(
           "CLOUDPANEL_UNAVAILABLE",
@@ -818,15 +817,18 @@ export class LiveCloudPanelClient implements CloudPanelClient {
       runtimeVersion?: string;
       appPort?: number;
       reverseProxyUrl?: string;
+      endpointParentDomain?: string;
     },
   ) {
     const { panelAdmin } = await this.requireSiteAccess(session, domain);
-    const { applicationRootDirectory, ...settings } = input;
+    const { applicationRootDirectory, endpointParentDomain, ...settings } =
+      input;
     const result = await this.bridge({
       action: "update-site",
       username: this.sessionUser(session),
       domain,
       applicationRootDirectory,
+      endpointParentDomain,
       settings,
       panelAdmin,
     });

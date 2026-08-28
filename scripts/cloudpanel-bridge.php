@@ -8079,9 +8079,28 @@ try {
             $settings = $input['settings'] ?? [];
             if (!is_array($settings)) invalidBrokerRequest();
             $requestedPort = requestedSitePort($settings);
+            $verifiedEndpointPort = false;
+            if ($requestedPort !== null && isset($input['endpointParentDomain'])) {
+                $parent = authorizedSite(
+                    $manager,
+                    $user,
+                    brokerDomainValue($input['endpointParentDomain']),
+                );
+                $endpointCheck = manageSiteEndpoint($manager, $parent, [
+                    'action' => 'verify',
+                    'port' => $requestedPort,
+                    'endpointDomain' => strtolower((string) $site->getDomainName()),
+                ]);
+                $probe = $endpointCheck['probe'] ?? null;
+                $verifiedEndpointPort = is_array($probe)
+                    && !empty($probe['owned'])
+                    && !empty($probe['loopback'])
+                    && !empty($probe['reachable']);
+            }
             if ($requestedPort !== null
                 && $requestedPort !== expectedSitePort($site)
-                && in_array($requestedPort, hostReservedPorts($manager), true)) {
+                && in_array($requestedPort, hostReservedPorts($manager), true)
+                && !$verifiedEndpointPort) {
                 respond([
                     'ok' => false,
                     'code' => 'INVALID_REQUEST',

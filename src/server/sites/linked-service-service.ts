@@ -589,6 +589,7 @@ export async function updateProjectEndpointForActor(
       access.endpointDomain,
       {
         reverseProxyUrl: `http://127.0.0.1:${input.targetPort}`,
+        endpointParentDomain: access.parentDomain,
       },
     );
     const postSwap = await verifyPort(
@@ -608,6 +609,7 @@ export async function updateProjectEndpointForActor(
     const restored = await access.client
       .updateSite(actor.cloudPanel, access.endpointDomain, {
         reverseProxyUrl: previousUrl,
+        endpointParentDomain: access.parentDomain,
       })
       .then(() => true)
       .catch(() => false);

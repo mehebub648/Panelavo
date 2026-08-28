@@ -438,6 +438,7 @@ export interface CloudPanelClient {
       runtimeVersion?: string;
       appPort?: number;
       reverseProxyUrl?: string;
+      endpointParentDomain?: string;
     },
   ): Promise<CloudPanelSite>;
   deleteSite(session: CloudPanelSession, domain: string): Promise<void>;

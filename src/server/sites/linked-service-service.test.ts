@@ -415,10 +415,22 @@ describe("actor-aware linked services", () => {
       ),
     ).rejects.toMatchObject({ code: "SITE_UPDATE_FAILED", status: 502 });
     expect(mocks.updateSite).toHaveBeenNthCalledWith(
+      1,
+      actor.cloudPanel,
+      "service.example.test",
+      {
+        reverseProxyUrl: "http://127.0.0.1:8082",
+        endpointParentDomain: "parent.example.test",
+      },
+    );
+    expect(mocks.updateSite).toHaveBeenNthCalledWith(
       2,
       actor.cloudPanel,
       "service.example.test",
-      { reverseProxyUrl: "http://127.0.0.1:8080" },
+      {
+        reverseProxyUrl: "http://127.0.0.1:8080",
+        endpointParentDomain: "parent.example.test",
+      },
     );
     expect(mocks.setSiteMeta).not.toHaveBeenCalled();
   });

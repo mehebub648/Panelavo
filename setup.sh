@@ -38,6 +38,8 @@
 #                                   setup must restore it when finished
 #   ENABLE_UFW=true                 Explicitly activate ufw after rules are
 #                                   prepared (default: never activate remotely)
+#   UFW_CONSOLE_RECOVERY_READY=true Required with ENABLE_UFW=true over SSH;
+#                                   confirms provider-console recovery access
 #   DATABASE_GATEWAY_CERTIFICATE_FILE=/root/wildcard-fullchain.pem
 #   DATABASE_GATEWAY_PRIVATE_KEY_FILE=/root/wildcard-key.pem
 #   DATABASE_GATEWAY_CA_FILE=/root/wildcard-ca.pem
@@ -84,6 +86,10 @@ SSH_CONNECTION_VALUE="$(detect_ssh_connection)"
 SSH_CLIENT_IP="${SSH_CONNECTION_VALUE%% *}"
 SSH_SERVER_PORT="$(awk '{print $4}' <<<"${SSH_CONNECTION_VALUE}")"
 [ -n "${SSH_SERVER_PORT}" ] || SSH_SERVER_PORT="$(sshd -T 2>/dev/null | awk '$1 == "port" {print $2; exit}' || true)"
+[ "${ENABLE_UFW:-false}" != "true" ] \
+  || [ -z "${SSH_CONNECTION_VALUE}" ] \
+  || [ "${UFW_CONSOLE_RECOVERY_READY:-false}" = "true" ] \
+  || die "Refusing to activate ufw over SSH without UFW_CONSOLE_RECOVERY_READY=true and tested provider-console recovery access."
 FAIL2BAN_SSH_GUARD_ADDED=false
 FAIL2BAN_SSH_JAIL_PAUSED=false
 
@@ -613,16 +619,29 @@ elif [ "$(systemctl show -p LoadState --value mariadb.service 2>/dev/null || tru
 fi
 [ -n "${MYSQL_SERVICE}" ] || die "A local MySQL-compatible system service is required for the database gateway."
 
+# CloudPanel owns the database administrator credential. Read it without
+# printing it and use TCP loopback explicitly; stock CloudPanel installations
+# do not guarantee passwordless root socket authentication.
+CLOUDPANEL_DB_CREDENTIALS="$(clpctl db:show:master-credentials 2>/dev/null)" \
+  || die "Could not read CloudPanel's database administrator credential."
+MYSQL_ADMIN_USER="$(printf '%s\n' "${CLOUDPANEL_DB_CREDENTIALS}" | awk -F'|' '$2 ~ /User Name/ { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $3); print $3; exit }')"
+MYSQL_ADMIN_PASSWORD="$(printf '%s\n' "${CLOUDPANEL_DB_CREDENTIALS}" | awk -F'|' '$2 ~ /Password/ { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $3); print $3; exit }')"
+[ -n "${MYSQL_ADMIN_USER}" ] && [ -n "${MYSQL_ADMIN_PASSWORD}" ] \
+  || die "CloudPanel returned an incomplete database administrator credential."
+mysql_admin() {
+  MYSQL_PWD="${MYSQL_ADMIN_PASSWORD}" mysql --protocol=tcp -h 127.0.0.1 -u "${MYSQL_ADMIN_USER}" "$@"
+}
+
 # Do not break an existing remote database client. Connections over the Unix
 # socket and loopback are safe; any other active client must be migrated first.
-REMOTE_DATABASE_CLIENTS="$(mysql --protocol=socket -NBe "SELECT DISTINCT SUBSTRING_INDEX(PROCESSLIST_HOST, ':', 1) FROM performance_schema.threads WHERE TYPE='FOREGROUND' AND PROCESSLIST_USER IS NOT NULL AND PROCESSLIST_USER <> 'event_scheduler' AND PROCESSLIST_HOST IS NOT NULL AND PROCESSLIST_HOST <> ''" 2>/dev/null | grep -Ev '^(localhost|127[.]|::1$)' || true)"
+REMOTE_DATABASE_CLIENTS="$(mysql_admin -NBe "SELECT DISTINCT SUBSTRING_INDEX(PROCESSLIST_HOST, ':', 1) FROM performance_schema.threads WHERE TYPE='FOREGROUND' AND PROCESSLIST_USER IS NOT NULL AND PROCESSLIST_USER <> 'event_scheduler' AND PROCESSLIST_HOST IS NOT NULL AND PROCESSLIST_HOST <> ''" 2>/dev/null | grep -Ev '^(localhost|127[.]|::1$)' || true)"
 [ -z "${REMOTE_DATABASE_CLIENTS}" ] || die "Active non-loopback database clients were detected (${REMOTE_DATABASE_CLIENTS//$'\n'/, }). Migrate or stop them before setup makes the main database private."
 
 install -d -o root -g root -m 0755 /etc/mysql/conf.d
 MYSQL_PRIVATE_CONFIG="/etc/mysql/conf.d/zz-panelavo-private.cnf"
 MYSQL_PRIVATE_BACKUP=""
 [ ! -f "${MYSQL_PRIVATE_CONFIG}" ] || { MYSQL_PRIVATE_BACKUP="$(mktemp)"; cp "${MYSQL_PRIVATE_CONFIG}" "${MYSQL_PRIVATE_BACKUP}"; }
-MYSQL_FLAVOR="$(mysql --protocol=socket -NBe 'SELECT @@version_comment, @@version' 2>/dev/null | tr '[:upper:]' '[:lower:]' || true)"
+MYSQL_FLAVOR="$(mysql_admin -NBe 'SELECT @@version_comment, @@version' 2>/dev/null | tr '[:upper:]' '[:lower:]' || true)"
 {
   echo '[mysqld]'
   echo 'bind-address=127.0.0.1'
@@ -636,7 +655,8 @@ if command -v mysqld >/dev/null 2>&1 && mysqld --help --verbose 2>&1 | grep -q -
     die "The database server rejected Panelavo's private-listener configuration."
   fi
 fi
-if ! systemctl restart "${MYSQL_SERVICE}" || ! mysqladmin --protocol=socket ping >/dev/null 2>&1; then
+if ! systemctl restart "${MYSQL_SERVICE}" \
+  || ! MYSQL_PWD="${MYSQL_ADMIN_PASSWORD}" mysqladmin --protocol=tcp -h 127.0.0.1 -u "${MYSQL_ADMIN_USER}" ping >/dev/null 2>&1; then
   [ -z "${MYSQL_PRIVATE_BACKUP}" ] && rm -f "${MYSQL_PRIVATE_CONFIG}" || cp "${MYSQL_PRIVATE_BACKUP}" "${MYSQL_PRIVATE_CONFIG}"
   systemctl restart "${MYSQL_SERVICE}" >/dev/null 2>&1 || true
   rm -f "${MYSQL_PRIVATE_BACKUP}"
@@ -666,6 +686,7 @@ DATABASE_GATEWAY_ROOT="/var/lib/panelavo/database-gateway"
 DATABASE_GATEWAY_DATA="${DATABASE_GATEWAY_ROOT}/proxysql"
 DATABASE_GATEWAY_CONFIG="/etc/panelavo-database-gateway.cnf"
 DATABASE_GATEWAY_ADMIN="${DATABASE_GATEWAY_ROOT}/admin-credentials"
+DATABASE_GATEWAY_MONITOR="${DATABASE_GATEWAY_ROOT}/monitor-credentials"
 # The gateway daemon needs to traverse its root-owned parent while the other
 # Panelavo state directories remain non-listable and keep their own modes.
 install -d -o root -g root -m 0711 /var/lib/panelavo
@@ -681,6 +702,27 @@ else
 fi
 [[ "${DATABASE_GATEWAY_ADMIN_USER}" =~ ^[A-Za-z0-9_-]{8,64}$ ]] || die "The database gateway administrator name is invalid."
 [ "${#DATABASE_GATEWAY_ADMIN_PASSWORD}" -ge 24 ] || die "The database gateway administrator password is invalid."
+
+if [ ! -f "${DATABASE_GATEWAY_MONITOR}" ]; then
+  DATABASE_GATEWAY_MONITOR_USER="panelavo_proxy_monitor"
+  DATABASE_GATEWAY_MONITOR_PASSWORD="$(openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | head -c 48)"
+  printf '%s:%s\n' "${DATABASE_GATEWAY_MONITOR_USER}" "${DATABASE_GATEWAY_MONITOR_PASSWORD}" > "${DATABASE_GATEWAY_MONITOR}"
+  chmod 0600 "${DATABASE_GATEWAY_MONITOR}"
+else
+  IFS=: read -r DATABASE_GATEWAY_MONITOR_USER DATABASE_GATEWAY_MONITOR_PASSWORD < "${DATABASE_GATEWAY_MONITOR}"
+fi
+[[ "${DATABASE_GATEWAY_MONITOR_USER}" =~ ^[A-Za-z0-9_-]{8,64}$ ]] || die "The database gateway monitor name is invalid."
+[ "${#DATABASE_GATEWAY_MONITOR_PASSWORD}" -ge 24 ] || die "The database gateway monitor password is invalid."
+MYSQL_HAVE_SSL="$(mysql_admin -NBe "SHOW GLOBAL VARIABLES LIKE 'have_ssl'" 2>/dev/null | awk '{ print toupper($2) }')"
+[ "${MYSQL_HAVE_SSL}" = "YES" ] || die "The database server must support TLS before Panelavo can provision the gateway monitor."
+mysql_admin <<MYSQLMONITOR >/dev/null
+CREATE USER IF NOT EXISTS '${DATABASE_GATEWAY_MONITOR_USER}'@'127.0.0.1' IDENTIFIED BY '${DATABASE_GATEWAY_MONITOR_PASSWORD}';
+ALTER USER '${DATABASE_GATEWAY_MONITOR_USER}'@'127.0.0.1' IDENTIFIED BY '${DATABASE_GATEWAY_MONITOR_PASSWORD}' REQUIRE SSL;
+GRANT USAGE ON *.* TO '${DATABASE_GATEWAY_MONITOR_USER}'@'127.0.0.1';
+CREATE USER IF NOT EXISTS '${DATABASE_GATEWAY_MONITOR_USER}'@'localhost' IDENTIFIED BY '${DATABASE_GATEWAY_MONITOR_PASSWORD}';
+ALTER USER '${DATABASE_GATEWAY_MONITOR_USER}'@'localhost' IDENTIFIED BY '${DATABASE_GATEWAY_MONITOR_PASSWORD}' REQUIRE SSL;
+GRANT USAGE ON *.* TO '${DATABASE_GATEWAY_MONITOR_USER}'@'localhost';
+MYSQLMONITOR
 
 DATABASE_GATEWAY_CERT="${DATABASE_GATEWAY_DATA}/proxysql-cert.pem"
 DATABASE_GATEWAY_KEY="${DATABASE_GATEWAY_DATA}/proxysql-key.pem"
@@ -747,6 +789,10 @@ mysql_variables=
   stacksize=1048576
   server_version="8.4.0"
   connect_timeout_server=3000
+  monitor_username="${DATABASE_GATEWAY_MONITOR_USER}"
+  monitor_password="${DATABASE_GATEWAY_MONITOR_PASSWORD}"
+  monitor_connect_interval=10000
+  monitor_ping_interval=10000
   ping_interval_server_msec=120000
   ping_timeout_server=1000
   commands_stats=true
@@ -756,7 +802,7 @@ mysql_variables=
 }
 mysql_servers =
 (
-  { address="127.0.0.1" ; port=3306 ; hostgroup=10 ; max_connections=1024 ; use_ssl=0 }
+  { address="127.0.0.1" ; port=3306 ; hostgroup=10 ; max_connections=1024 ; use_ssl=1 }
 )
 mysql_users = ()
 mysql_query_rules = ()
@@ -796,9 +842,12 @@ done
 [ "${GATEWAY_ADMIN_READY:-false}" = "true" ] || die "The private database gateway did not become ready."
 mysql --protocol=tcp -h 127.0.0.1 -P 16032 -u "${DATABASE_GATEWAY_ADMIN_USER}" "-p${DATABASE_GATEWAY_ADMIN_PASSWORD}" <<'PROXYSQLSQL' >/dev/null
 DELETE FROM mysql_servers WHERE hostgroup_id=10;
-INSERT INTO mysql_servers (hostgroup_id,hostname,port,status,max_connections,use_ssl) VALUES (10,'127.0.0.1',3306,'ONLINE',1024,0);
+INSERT INTO mysql_servers (hostgroup_id,hostname,port,status,max_connections,use_ssl) VALUES (10,'127.0.0.1',3306,'ONLINE',1024,1);
 LOAD MYSQL SERVERS TO RUNTIME;
 SAVE MYSQL SERVERS TO DISK;
+UPDATE global_variables SET variable_value='${DATABASE_GATEWAY_MONITOR_USER}' WHERE variable_name='mysql-monitor_username';
+UPDATE global_variables SET variable_value='${DATABASE_GATEWAY_MONITOR_PASSWORD}' WHERE variable_name='mysql-monitor_password';
+UPDATE global_variables SET variable_value='10000' WHERE variable_name IN ('mysql-monitor_connect_interval','mysql-monitor_ping_interval');
 UPDATE global_variables SET variable_value='127.0.0.1/32' WHERE variable_name='mysql-proxy_protocol_networks';
 LOAD MYSQL VARIABLES TO RUNTIME;
 SAVE MYSQL VARIABLES TO DISK;
@@ -891,7 +940,8 @@ cat > "${BOUNDARY_SUDOERS_TEMP}" <<'EOF'
 # CloudPanel's stock policy grants every Unix user an unrestricted clpctl
 # wrapper. Panelavo's browser terminal must never turn that into host control.
 ALL ALL=(ALL) !/usr/bin/clpctlWrapper
-# Preserve the CloudPanel service account's existing administrative boundary.
+# Preserve only the host administrators CloudPanel itself requires.
+root ALL=(ALL) NOPASSWD: /usr/bin/clpctlWrapper
 clp ALL=(ALL) NOPASSWD: ALL
 EOF
 chmod 0440 "${BOUNDARY_SUDOERS_TEMP}"
@@ -909,6 +959,8 @@ visudo -cf "${SUDOERS_TEMP}" >/dev/null || die "Generated broker sudoers file is
 install -o root -g root -m 0440 "${SUDOERS_TEMP}" "${SUDOERS_FILE}"
 rm -f "${SUDOERS_TEMP}"
 visudo -c >/dev/null || die "The combined sudoers policy is invalid."
+sudo -n -l /usr/bin/clpctlWrapper >/dev/null 2>&1 \
+  || die "The root operator can no longer invoke CloudPanel's wrapper."
 if sudo -u "${SITE_USER}" sudo -n -l /usr/bin/clpctlWrapper >/dev/null 2>&1; then
   die "The Panelavo site user can still invoke CloudPanel's unrestricted wrapper."
 fi
