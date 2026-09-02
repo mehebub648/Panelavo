@@ -435,6 +435,17 @@ export function siteSectionBridgeError(result: BridgeResult) {
   );
 }
 
+export function privilegedErrorMessage(detail: string, fallback: string) {
+  if (/already exists|duplicate|already in use/i.test(detail))
+    return "That name is already in use.";
+  if (
+    /database(Name|UserName)|database[-_\s]?(name|username)/i.test(detail)
+  ) {
+    return "Use 2–50 characters, starting with a letter and containing only letters, numbers, and hyphens.";
+  }
+  return fallback;
+}
+
 export class LiveCloudPanelClient implements CloudPanelClient {
   private async bridge(
     input: Record<string, unknown>,
@@ -453,11 +464,7 @@ export class LiveCloudPanelClient implements CloudPanelClient {
         504,
       );
     const detail = result.message ?? "";
-    const message = /already exists|duplicate|already in use/i.test(detail)
-      ? "That name is already in use."
-      : /database(Name|UserName)|constraint|not valid|validation/i.test(detail)
-        ? "Use 2–50 characters, starting with a letter and containing only letters, numbers, and hyphens."
-        : fallback;
+    const message = privilegedErrorMessage(detail, fallback);
     return new AppError("CLOUDPANEL_UNAVAILABLE", message, 422);
   }
 

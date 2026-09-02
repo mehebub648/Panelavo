@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createdSiteFromBridge,
+  privilegedErrorMessage,
   siteSectionBridgeError,
   siteSectionTimeout,
 } from "./live-client";
@@ -120,5 +121,27 @@ describe("siteSectionBridgeError", () => {
     expect(error.status).toBe(422);
     expect(error.message).toContain("host safety policy");
     expect(error.message).not.toContain("/etc/shadow");
+  });
+});
+
+describe("privilegedErrorMessage", () => {
+  it("keeps SSL validation errors specific instead of mapping to db-name rules", () => {
+    expect(
+      privilegedErrorMessage(
+        "Validation failed for one or more domains while issuing the certificate.",
+        "The server could not install the certificate.",
+      ),
+    ).toBe("The server could not install the certificate.");
+  });
+
+  it("maps database identifier validation errors to the expected guidance", () => {
+    expect(
+      privilegedErrorMessage(
+        "databaseUserName is not valid",
+        "The server could not create the database.",
+      ),
+    ).toBe(
+      "Use 2–50 characters, starting with a letter and containing only letters, numbers, and hyphens.",
+    );
   });
 });
