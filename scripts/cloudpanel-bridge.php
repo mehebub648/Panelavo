@@ -32,7 +32,7 @@ use App\Site\Updater\StaticSite as StaticSiteUpdater;
 use Symfony\Component\Dotenv\Dotenv;
 
 const CLOUDPANEL_ROOT = '/home/clp/htdocs/app/files';
-const PANELAVO_BROKER_PROTOCOL_VERSION = 23;
+const PANELAVO_BROKER_PROTOCOL_VERSION = 24;
 const PANELAVO_BROKER_MAX_INPUT_BYTES = 100663296;
 const PANELAVO_ROOTLESS_MIGRATION_ROOT = '/var/lib/panelavo/rootless-migrations';
 const PANELAVO_ROOTLESS_MIGRATION_TTL = 86400;
@@ -42,6 +42,24 @@ const PANELAVO_DATABASE_GATEWAY_ROOT = '/var/lib/panelavo/database-gateway';
 const PANELAVO_DATABASE_GATEWAY_STATE = PANELAVO_DATABASE_GATEWAY_ROOT . '/endpoints.json';
 const PANELAVO_DATABASE_GATEWAY_ADMIN = PANELAVO_DATABASE_GATEWAY_ROOT . '/admin-credentials';
 const PANELAVO_DATABASE_GATEWAY_STREAMS = '/etc/nginx/panelavo-streams';
+const PANELAVO_VPN_ROOT = '/var/lib/panelavo/wireguard';
+const PANELAVO_VPN_STATE = PANELAVO_VPN_ROOT . '/state.json';
+const PANELAVO_VPN_PRIVATE_KEY = PANELAVO_VPN_ROOT . '/server.key';
+const PANELAVO_VPN_NFT_RULES = PANELAVO_VPN_ROOT . '/firewall.nft';
+const PANELAVO_VPN_CONFIG = '/etc/wireguard/pnlwg0.conf';
+const PANELAVO_VPN_SYSCTL = '/etc/sysctl.d/71-panelavo-wireguard.conf';
+const PANELAVO_VPN_FIREWALL_UNIT = '/etc/systemd/system/panelavo-wireguard-firewall.service';
+const PANELAVO_VPN_WG_DROPIN = '/etc/systemd/system/wg-quick@pnlwg0.service.d/panelavo.conf';
+const PANELAVO_VPN_WG_OVERRIDE = '/etc/systemd/system/wg-quick@pnlwg0.service';
+const PANELAVO_VPN_MARKER = 'Managed by Panelavo WireGuard v1';
+
+final class VpnOperationException extends RuntimeException
+{
+    public function __construct(public readonly string $brokerCode, string $message)
+    {
+        parent::__construct($message);
+    }
+}
 
 function respond(array $value, int $status = 0): never
 {
@@ -6809,6 +6827,1073 @@ function runEndpointSelfTest(): never
     exit(0);
 }
 
+function vpnExecutable(array $paths): ?string
+{
+    foreach ($paths as $path) if (is_executable($path)) return $path;
+    return null;
+}
+
+function vpnCommand(array $args, int $seconds = 10, ?string $stdin = null): array
+{
+    foreach ($args as $arg) {
+        if (!is_string($arg) || str_contains($arg, "\0") || strlen($arg) > 4096) {
+            throw new VpnOperationException('INVALID_REQUEST', 'The VPN command request was invalid.');
+        }
+    }
+    $command = array_merge(['/usr/bin/timeout', '--signal=KILL', (string) $seconds], $args);
+    $process = @proc_open($command, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+    if (!is_resource($process)) return ['code' => -1, 'stdout' => '', 'stderr' => ''];
+    if ($stdin !== null) fwrite($pipes[0], $stdin);
+    fclose($pipes[0]);
+    $stdout = stream_get_contents($pipes[1]); fclose($pipes[1]);
+    $stderr = stream_get_contents($pipes[2]); fclose($pipes[2]);
+    return ['code' => proc_close($process), 'stdout' => $stdout ?: '', 'stderr' => $stderr ?: ''];
+}
+
+function vpnRun(array $args, int $seconds, string $message, ?string $stdin = null): array
+{
+    $result = vpnCommand($args, $seconds, $stdin);
+    if ($result['code'] !== 0) throw new VpnOperationException('VPN_OPERATION_FAILED', $message);
+    return $result;
+}
+
+function vpnWriteFile(string $path, string $content, int $mode = 0600): void
+{
+    if (is_link($path)) throw new VpnOperationException('VPN_CONFLICT', 'A Panelavo VPN path is an unsafe symbolic link.');
+    $directory = dirname($path);
+    $cursor = '';
+    foreach (explode('/', trim($directory, '/')) as $part) {
+        $cursor .= '/' . $part;
+        if (is_link($cursor)) throw new VpnOperationException('VPN_CONFLICT', 'A Panelavo VPN directory is an unsafe symbolic link.');
+    }
+    if (!is_dir($directory) && !mkdir($directory, 0700, true)) {
+        throw new VpnOperationException('VPN_OPERATION_FAILED', 'Could not create the VPN configuration directory.');
+    }
+    $temporary = $directory . '/.panelavo-vpn-' . bin2hex(random_bytes(6));
+    if (file_put_contents($temporary, $content, LOCK_EX) === false) {
+        throw new VpnOperationException('VPN_OPERATION_FAILED', 'Could not write the VPN configuration.');
+    }
+    chmod($temporary, $mode);
+    chown($temporary, 0); chgrp($temporary, 0);
+    if (!rename($temporary, $path)) {
+        @unlink($temporary);
+        throw new VpnOperationException('VPN_OPERATION_FAILED', 'Could not activate the VPN configuration.');
+    }
+}
+
+function vpnLoadState(): ?array
+{
+    if (!is_file(PANELAVO_VPN_STATE)) return null;
+    if (is_link(PANELAVO_VPN_STATE)) throw new VpnOperationException('VPN_CONFLICT', 'The Panelavo VPN state path is unsafe.');
+    $state = json_decode((string) file_get_contents(PANELAVO_VPN_STATE), true);
+    if (!is_array($state) || ($state['marker'] ?? '') !== PANELAVO_VPN_MARKER || ($state['version'] ?? 0) !== 1) {
+        throw new VpnOperationException('VPN_CONFLICT', 'The existing VPN state is not owned by Panelavo.');
+    }
+    foreach (['endpoint', 'ipv4Cidr', 'ipv6Cidr', 'egressInterface', 'serverPublicKey'] as $key) {
+        if (!is_string($state[$key] ?? null) || $state[$key] === '') {
+            throw new VpnOperationException('VPN_CONFLICT', 'The Panelavo VPN state is incomplete.');
+        }
+    }
+    if (!is_int($state['listenPort'] ?? null) || $state['listenPort'] < 1024 || $state['listenPort'] > 65535
+        || !vpnPrivate24($state['ipv4Cidr']) || preg_match('/^fd[0-9a-f:]+::\/64$/i', $state['ipv6Cidr']) !== 1
+        || preg_match('/^[A-Za-z0-9_.:-]{1,15}$/', $state['egressInterface']) !== 1
+        || preg_match('#^[A-Za-z0-9+/]{43}=$#', $state['serverPublicKey']) !== 1
+        || !is_array($state['dns'] ?? null) || !$state['dns'] || count($state['dns']) > 4
+        || !is_array($state['devices'] ?? null)) {
+        throw new VpnOperationException('VPN_CONFLICT', 'The Panelavo VPN state is incomplete.');
+    }
+    foreach ($state['dns'] as $address) {
+        if (!is_string($address) || !vpnPublicDnsAddress($address)) {
+            throw new VpnOperationException('VPN_CONFLICT', 'The Panelavo VPN state contains an invalid DNS address.');
+        }
+    }
+    if (!array_filter($state['dns'], static fn($address) => filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false)) {
+        throw new VpnOperationException('VPN_CONFLICT', 'The Panelavo VPN state has no IPv4 DNS resolver.');
+    }
+    $identities = [];
+    foreach ($state['devices'] as $device) {
+        if (!is_array($device)
+            || preg_match('/^[a-f0-9]{16}$/', (string) ($device['id'] ?? '')) !== 1
+            || preg_match('/^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$/', (string) ($device['name'] ?? '')) !== 1
+            || preg_match('#^[A-Za-z0-9+/]{43}=$#', (string) ($device['publicKey'] ?? '')) !== 1
+            || preg_match('#^[A-Za-z0-9+/]{43}=$#', (string) ($device['presharedKey'] ?? '')) !== 1
+            || filter_var($device['ipv4'] ?? '', FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false
+            || filter_var($device['ipv6'] ?? '', FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) === false
+            || !is_string($device['createdAt'] ?? null)
+            || isset($identities[$device['id']]) || isset($identities[$device['publicKey']])
+            || isset($identities[$device['ipv4']]) || isset($identities[$device['ipv6']])) {
+            throw new VpnOperationException('VPN_CONFLICT', 'The Panelavo VPN device state is invalid.');
+        }
+        $identities[$device['id']] = $identities[$device['publicKey']] = true;
+        $identities[$device['ipv4']] = $identities[$device['ipv6']] = true;
+    }
+    return $state;
+}
+
+function vpnSaveState(array $state): void
+{
+    $state['marker'] = PANELAVO_VPN_MARKER;
+    $state['version'] = 1;
+    vpnWriteFile(PANELAVO_VPN_STATE, json_encode($state, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . "\n");
+}
+
+function vpnOwnedTextFile(string $path): bool
+{
+    return is_file($path) && !is_link($path) && str_contains((string) @file_get_contents($path), PANELAVO_VPN_MARKER);
+}
+
+function vpnPrivateRootFile(string $path): bool
+{
+    $stat = @stat($path);
+    return is_file($path) && is_array($stat) && !is_link($path) && (int) $stat['uid'] === 0 && (((int) $stat['mode']) & 0077) === 0;
+}
+
+function vpnPrivateRootDirectory(string $path): bool
+{
+    $stat = @stat($path);
+    return is_dir($path) && is_array($stat) && !is_link($path) && (int) $stat['uid'] === 0 && (((int) $stat['mode']) & 0077) === 0;
+}
+
+function vpnRootOwnedDirectory(string $path): bool
+{
+    $stat = @stat($path);
+    return is_dir($path) && is_array($stat) && !is_link($path) && (int) $stat['uid'] === 0 && (((int) $stat['mode']) & 0022) === 0;
+}
+
+function vpnAssertOwnedInstallation(array $state): void
+{
+    if (($state['marker'] ?? '') !== PANELAVO_VPN_MARKER
+        || !vpnPrivateRootDirectory(PANELAVO_VPN_ROOT)
+        || !vpnRootOwnedDirectory(dirname(PANELAVO_VPN_CONFIG))
+        || !vpnRootOwnedDirectory(dirname(PANELAVO_VPN_WG_DROPIN))
+        || !vpnPrivateRootFile(PANELAVO_VPN_STATE)
+        || !vpnPrivateRootFile(PANELAVO_VPN_PRIVATE_KEY)
+        || !vpnPrivateRootFile(PANELAVO_VPN_CONFIG)) {
+        throw new VpnOperationException('VPN_CONFLICT', 'Panelavo cannot prove ownership of the existing VPN secrets.');
+    }
+    if (file_exists(PANELAVO_VPN_WG_OVERRIDE) || is_link(PANELAVO_VPN_WG_OVERRIDE)) {
+        throw new VpnOperationException('VPN_CONFLICT', 'A systemd override for wg-quick@pnlwg0 is not owned by Panelavo.');
+    }
+    if (is_dir('/sys/class/net/pnlwg0')) {
+        $wg = vpnExecutable(['/usr/bin/wg', '/usr/sbin/wg']);
+        $publicKey = $wg ? vpnCommand([$wg, 'show', 'pnlwg0', 'public-key'], 8) : ['code' => -1, 'stdout' => ''];
+        if ($publicKey['code'] !== 0 || !hash_equals((string) $state['serverPublicKey'], trim($publicKey['stdout']))) {
+            throw new VpnOperationException('VPN_CONFLICT', 'The live pnlwg0 interface does not match Panelavo server identity.');
+        }
+    }
+    foreach ([PANELAVO_VPN_CONFIG, PANELAVO_VPN_SYSCTL, PANELAVO_VPN_FIREWALL_UNIT, PANELAVO_VPN_WG_DROPIN, PANELAVO_VPN_NFT_RULES] as $file) {
+        if (!vpnOwnedTextFile($file)) throw new VpnOperationException('VPN_CONFLICT', 'A Panelavo VPN resource is missing its ownership marker.');
+    }
+    if (vpnNftConflict($state)) throw new VpnOperationException('VPN_CONFLICT', 'A Panelavo nftables name is occupied by an unowned ruleset.');
+}
+
+function vpnOs(): array
+{
+    $value = @parse_ini_file('/etc/os-release') ?: [];
+    $id = strtolower((string) ($value['ID'] ?? ''));
+    $version = (string) ($value['VERSION_ID'] ?? '');
+    return [
+        'id' => $id,
+        'version' => $version,
+        'name' => (string) ($value['PRETTY_NAME'] ?? php_uname('s')),
+        'supported' => in_array($id . '-' . $version, [
+            'ubuntu-22.04', 'ubuntu-24.04', 'ubuntu-26.04',
+            'debian-11', 'debian-12', 'debian-13',
+        ], true),
+    ];
+}
+
+function vpnRouteInfo(int $family): array
+{
+    $ip = vpnExecutable(['/usr/sbin/ip', '/sbin/ip', '/usr/bin/ip']);
+    if (!$ip) return ['interface' => '', 'source' => ''];
+    $target = $family === 6 ? '2606:4700:4700::1111' : '1.1.1.1';
+    $result = vpnCommand([$ip, '-' . $family, 'route', 'get', $target], 5);
+    $line = trim($result['stdout']);
+    preg_match('/\bdev\s+([A-Za-z0-9_.:-]{1,15})\b/', $line, $device);
+    preg_match('/\bsrc\s+([^\s]+)/', $line, $source);
+    return ['interface' => $device[1] ?? '', 'source' => $source[1] ?? ''];
+}
+
+function vpnGlobalIpv6(string $address): bool
+{
+    $lower = strtolower($address);
+    return filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6 | FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) !== false
+        && !str_starts_with($lower, 'fc')
+        && !str_starts_with($lower, 'fd')
+        && !str_starts_with($lower, 'fe8')
+        && !str_starts_with($lower, 'fe9')
+        && !str_starts_with($lower, 'fea')
+        && !str_starts_with($lower, 'feb')
+        && !str_starts_with($lower, 'ff')
+        && $lower !== '::1';
+}
+
+function vpnPublicIpv4(string $fallback): string
+{
+    $curl = vpnExecutable(['/usr/bin/curl', '/bin/curl']);
+    if ($curl) {
+        $result = vpnCommand([$curl, '-4', '-fsS', '--max-time', '5', 'https://api.ipify.org'], 7);
+        $address = trim($result['stdout']);
+        if (vpnGlobalIpv4($address)) return $address;
+    }
+    return vpnGlobalIpv4($fallback) ? $fallback : '';
+}
+
+function vpnGlobalIpv4(string $address): bool
+{
+    if (filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4 | FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false) return false;
+    $value = (int) sprintf('%u', ip2long($address));
+    foreach (['10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8', '169.254.0.0/16', '172.16.0.0/12', '192.168.0.0/16', '224.0.0.0/4'] as $cidr) {
+        $range = vpnIpv4Range($cidr);
+        if ($range && $value >= $range[0] && $value <= $range[1]) return false;
+    }
+    return true;
+}
+
+function vpnPublicDnsAddress(string $address): bool
+{
+    if (filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false) return vpnGlobalIpv4($address);
+    if (filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false) return vpnGlobalIpv6($address);
+    return false;
+}
+
+function vpnFirewallMode(): array
+{
+    $ufw = vpnExecutable(['/usr/sbin/ufw', '/usr/bin/ufw']);
+    $ufwActive = false;
+    if ($ufw) {
+        $status = vpnCommand([$ufw, 'status'], 8);
+        $ufwActive = preg_match('/^Status:\s+active/im', $status['stdout']) === 1;
+    }
+    $ufwIpv6 = !$ufwActive || preg_match('/^\s*IPV6\s*=\s*yes\s*$/im', (string) @file_get_contents('/etc/default/ufw')) === 1;
+    $nft = vpnExecutable(['/usr/sbin/nft', '/sbin/nft', '/usr/bin/nft']);
+    $rules = $nft ? vpnCommand([$nft, 'list', 'ruleset'], 8)['stdout'] : '';
+    $systemctl = vpnExecutable(['/usr/bin/systemctl', '/bin/systemctl']);
+    $unexpectedManager = '';
+    if ($systemctl) {
+        foreach (['firewalld.service', 'ferm.service', 'shorewall.service'] as $unit) {
+            if (vpnCommand([$systemctl, 'is-active', '--quiet', $unit], 5)['code'] === 0) {
+                $unexpectedManager = $unit;
+                break;
+            }
+        }
+    }
+    $foreignDrop = !$ufwActive && $unexpectedManager === ''
+        && preg_match('/hook\s+(?:input|forward)[^;]*;[^}]*policy\s+drop/is', $rules) === 1
+        && !str_contains($rules, 'panelavo_wireguard_');
+    return [
+        'mode' => $foreignDrop || $unexpectedManager !== '' ? 'unsupported' : ($ufwActive ? 'ufw' : 'nftables'),
+        'ufwActive' => $ufwActive,
+        'ipv6Ready' => $ufwIpv6,
+        'nftInstalled' => $nft !== null,
+        'unsupportedReason' => $unexpectedManager !== '' ? $unexpectedManager . ' is active.' : ($foreignDrop ? 'An unmanaged default-drop ruleset is active.' : ''),
+    ];
+}
+
+function vpnNftTableState(string $family, string $table): array
+{
+    $nft = vpnExecutable(['/usr/sbin/nft', '/sbin/nft', '/usr/bin/nft']);
+    if (!$nft) return ['exists' => false, 'owned' => false];
+    $result = vpnCommand([$nft, 'list', 'table', $family, $table], 8);
+    return [
+        'exists' => $result['code'] === 0,
+        'owned' => $result['code'] === 0 && str_contains($result['stdout'], PANELAVO_VPN_MARKER),
+    ];
+}
+
+function vpnNftConflict(?array $state): bool
+{
+    foreach ([['inet', 'panelavo_wireguard_filter'], ['ip', 'panelavo_wireguard_nat4'], ['ip6', 'panelavo_wireguard_nat6']] as [$family, $table]) {
+        $current = vpnNftTableState($family, $table);
+        if ($current['exists'] && (!$state || !$current['owned'])) return true;
+    }
+    return false;
+}
+
+function vpnResourceConflict(?array $state): bool
+{
+    if (!$state && is_dir('/sys/class/net/pnlwg0')) return true;
+    if (!$state) {
+        foreach ([PANELAVO_VPN_CONFIG, PANELAVO_VPN_STATE, PANELAVO_VPN_FIREWALL_UNIT, PANELAVO_VPN_WG_DROPIN, PANELAVO_VPN_WG_OVERRIDE, PANELAVO_VPN_SYSCTL, PANELAVO_VPN_NFT_RULES] as $path) {
+            if (file_exists($path) || is_link($path)) return true;
+        }
+        if (file_exists(PANELAVO_VPN_ROOT) || is_link(PANELAVO_VPN_ROOT)) return true;
+        $dropinDirectory = dirname(PANELAVO_VPN_WG_DROPIN);
+        if (file_exists($dropinDirectory) || is_link($dropinDirectory)) return true;
+    }
+    return vpnNftConflict($state);
+}
+
+function vpnPortInUse(int $port, ?array $state): bool
+{
+    if ($state && (int) $state['listenPort'] === $port && is_dir('/sys/class/net/pnlwg0')) return false;
+    $ss = vpnExecutable(['/usr/bin/ss', '/usr/sbin/ss', '/bin/ss']);
+    if (!$ss) return false;
+    $output = vpnCommand([$ss, '-H', '-l', '-u', '-n'], 5)['stdout'];
+    return preg_match('/:' . preg_quote((string) $port, '/') . '(?:\s|$)/m', $output) === 1;
+}
+
+function vpnIpv4Range(string $cidr): ?array
+{
+    if (preg_match('#^(\d{1,3}(?:\.\d{1,3}){3})/(\d|[12]\d|3[0-2])$#', $cidr, $match) !== 1) return null;
+    $ip = ip2long($match[1]);
+    if ($ip === false) return null;
+    $prefix = (int) $match[2];
+    $mask = $prefix === 0 ? 0 : ((0xffffffff << (32 - $prefix)) & 0xffffffff);
+    $unsigned = (int) sprintf('%u', $ip);
+    $start = $unsigned & $mask;
+    $size = 2 ** (32 - $prefix);
+    return [$start, $start + $size - 1];
+}
+
+function vpnPrivate24(string $cidr): bool
+{
+    if (preg_match('/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.0\/24$/', $cidr, $match) !== 1) return false;
+    $parts = array_map('intval', array_slice($match, 1));
+    if (max($parts) > 255) return false;
+    return $parts[0] === 10
+        || ($parts[0] === 172 && $parts[1] >= 16 && $parts[1] <= 31)
+        || ($parts[0] === 192 && $parts[1] === 168);
+}
+
+function vpnIpv4RangesOverlap(array $left, array $right): bool
+{
+    return $left[0] <= $right[1] && $right[0] <= $left[1];
+}
+
+function vpnSubnetConflict(string $cidr, ?array $state): bool
+{
+    $wanted = vpnIpv4Range($cidr);
+    $ip = vpnExecutable(['/usr/sbin/ip', '/sbin/ip', '/usr/bin/ip']);
+    if (!$wanted || !$ip) return true;
+    $routes = vpnCommand([$ip, '-4', 'route', 'show'], 5)['stdout'];
+    foreach (preg_split('/\R/', $routes) ?: [] as $line) {
+        if (str_contains($line, ' dev pnlwg0 ')) continue;
+        if (preg_match('/(?:^|\s)(\d{1,3}(?:\.\d{1,3}){3}(?:\/\d{1,2})?)(?:\s|$)/', trim($line), $match) !== 1) continue;
+        $routeCidr = str_contains($match[1], '/') ? $match[1] : $match[1] . '/32';
+        $range = vpnIpv4Range($routeCidr);
+        if ($range && vpnIpv4RangesOverlap($wanted, $range)) return true;
+    }
+    return false;
+}
+
+function vpnEndpointMatches(string $endpoint, string $publicIpv4): bool
+{
+    if ($publicIpv4 === '') return false;
+    if (filter_var($endpoint, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false) return $endpoint === $publicIpv4;
+    if (preg_match('/^(?=.{1,253}$)(?!-)[a-z0-9-]{1,63}(?<!-)(?:\.(?!-)[a-z0-9-]{1,63}(?<!-))+$/i', $endpoint) !== 1) return false;
+    $getent = vpnExecutable(['/usr/bin/getent', '/bin/getent']);
+    if (!$getent) return false;
+    $result = vpnCommand([$getent, 'ahostsv4', strtolower($endpoint)], 8);
+    foreach (preg_split('/\R/', $result['stdout']) ?: [] as $line) {
+        if (preg_match('/^(\d{1,3}(?:\.\d{1,3}){3})\s/', trim($line), $match) && $match[1] === $publicIpv4) return true;
+    }
+    return false;
+}
+
+function vpnDiagnostic(string $id, string $label, string $status, string $detail, ?string $resolution = null): array
+{
+    $value = compact('id', 'label', 'status', 'detail');
+    if ($resolution !== null) $value['resolution'] = $resolution;
+    return $value;
+}
+
+function vpnPreflight(?array $requested = null, ?array $state = null): array
+{
+    $os = vpnOs();
+    $route4 = vpnRouteInfo(4);
+    $route6 = vpnRouteInfo(6);
+    $publicIpv4 = $state
+        ? (string) ($state['publicIpv4'] ?? '')
+        : vpnPublicIpv4($route4['source']);
+    $publicIpv6 = vpnGlobalIpv6($route6['source']) ? $route6['source'] : '';
+    $endpoint = trim((string) ($requested['endpoint'] ?? $state['endpoint'] ?? $publicIpv4));
+    $listenPort = (int) ($requested['listenPort'] ?? $state['listenPort'] ?? 51820);
+    $ipv4Cidr = trim((string) ($requested['ipv4Cidr'] ?? $state['ipv4Cidr'] ?? '10.66.66.0/24'));
+    $dns = $requested['dns'] ?? $state['dns'] ?? ['1.1.1.1', '1.0.0.1'];
+    $wg = vpnExecutable(['/usr/bin/wg', '/usr/sbin/wg']);
+    $wgQuick = vpnExecutable(['/usr/bin/wg-quick', '/usr/sbin/wg-quick']);
+    $modinfo = vpnExecutable(['/usr/sbin/modinfo', '/sbin/modinfo']);
+    $moduleReady = is_dir('/sys/module/wireguard') || ($modinfo && vpnCommand([$modinfo, 'wireguard'], 5)['code'] === 0);
+    $firewall = vpnFirewallMode();
+    $diagnostics = [];
+    $diagnostics[] = vpnDiagnostic('os', 'Supported operating system', $os['supported'] ? 'pass' : 'blocked', $os['name'], 'Panelavo supports its documented Ubuntu and Debian releases.');
+    $diagnostics[] = vpnDiagnostic('kernel', 'WireGuard kernel support', $moduleReady ? 'pass' : 'blocked', $moduleReady ? 'The WireGuard kernel module is available.' : 'The running kernel does not expose the WireGuard module.', 'Install a supported distribution kernel before enabling the VPN.');
+    $diagnostics[] = vpnDiagnostic('tools', 'WireGuard tools', $wg && $wgQuick ? 'pass' : 'warning', $wg && $wgQuick ? 'The distribution WireGuard tools are installed.' : 'Panelavo will install wireguard-tools from the operating-system repository.');
+    $diagnostics[] = vpnDiagnostic('firewall', 'Firewall compatibility', $firewall['mode'] === 'unsupported' ? 'blocked' : 'pass', $firewall['mode'] === 'ufw' ? 'Active UFW will receive only tagged Panelavo rules.' : ($firewall['mode'] === 'nftables' ? 'Panelavo can use an isolated nftables ruleset.' : $firewall['unsupportedReason']), 'Review the existing firewall manually before installation.');
+    $resourceConflict = vpnResourceConflict($state);
+    $diagnostics[] = vpnDiagnostic('ownership', 'Panelavo VPN resources', $resourceConflict ? 'blocked' : 'pass', $resourceConflict ? 'The pnlwg0 interface, files, or nftables names conflict with resources Panelavo cannot own.' : 'The namespaced pnlwg0 resources are available.', 'Remove or rename the conflicting third-party resource manually; Panelavo will never adopt it.');
+    $diagnostics[] = vpnDiagnostic('egress', 'IPv4 internet route', $route4['interface'] && $publicIpv4 ? 'pass' : 'blocked', $route4['interface'] && $publicIpv4 ? 'Egress is available through ' . $route4['interface'] . ' with public address ' . $publicIpv4 . '.' : 'Panelavo could not verify a public IPv4 route.');
+    $ipv4Forwarding = trim((string) @file_get_contents('/proc/sys/net/ipv4/ip_forward')) === '1';
+    $ipv6Forwarding = trim((string) @file_get_contents('/proc/sys/net/ipv6/conf/all/forwarding')) === '1';
+    $diagnostics[] = vpnDiagnostic('forwarding', 'Kernel forwarding state', $ipv4Forwarding ? 'pass' : 'warning', 'IPv4 forwarding is ' . ($ipv4Forwarding ? 'enabled' : 'disabled') . '; IPv6 forwarding is ' . ($ipv6Forwarding ? 'enabled.' : 'disabled.'), 'Panelavo enables only the forwarding required by the installed gateway and records prior runtime values for uninstall.');
+    $endpointReady = vpnEndpointMatches($endpoint, $publicIpv4);
+    $portBusy = vpnPortInUse($listenPort, $state);
+    $diagnostics[] = vpnDiagnostic('endpoint', 'Direct public endpoint', $endpointReady ? 'pass' : 'blocked', $endpointReady ? $endpoint . ' resolves directly to this server.' : 'The endpoint does not resolve directly to this server.', 'Use the server public IPv4 address or an unproxied hostname resolving to it.');
+    $diagnostics[] = vpnDiagnostic('port', 'UDP listener', $portBusy ? 'blocked' : 'pass', $portBusy ? 'UDP port ' . $listenPort . ' is already in use.' : 'UDP port ' . $listenPort . ' is available.', 'Choose another UDP port between 1024 and 65535.');
+    $subnetValid = vpnPrivate24($ipv4Cidr);
+    $subnetConflict = $subnetValid && vpnSubnetConflict($ipv4Cidr, $state);
+    $diagnostics[] = vpnDiagnostic('subnet', 'Private tunnel network', !$subnetValid || $subnetConflict ? 'blocked' : 'pass', !$subnetValid ? 'The tunnel must use a private RFC1918 /24.' : ($subnetConflict ? $ipv4Cidr . ' overlaps an existing server route.' : $ipv4Cidr . ' does not overlap a server route.'), 'Choose a different private /24 network.');
+    $ipv6Capable = $publicIpv6 !== ''
+        && $route6['interface'] === $route4['interface']
+        && $firewall['ipv6Ready'];
+    $ipv6Egress = $state ? !empty($state['ipv6Egress']) && $ipv6Capable : $ipv6Capable;
+    $diagnostics[] = vpnDiagnostic('ipv6', 'IPv6 egress', $ipv6Egress ? 'pass' : 'warning', $ipv6Egress ? 'Verified through ' . $route6['interface'] . ' with NAT66 egress.' : ($publicIpv6 !== '' && !$firewall['ipv6Ready'] ? 'The active firewall does not manage IPv6; generated profiles will fail closed for IPv6.' : 'No verified global IPv6 path is available; generated profiles will fail closed for IPv6.'));
+    $blocked = array_filter($diagnostics, static fn($item) => $item['status'] === 'blocked');
+    $version = '';
+    if ($wg) {
+        $versionResult = vpnCommand([$wg, '--version'], 5);
+        if (preg_match('/v?([0-9]+\.[0-9]+\.[0-9]+)/', $versionResult['stdout'], $match)) $version = $match[1];
+    }
+    return [
+        'supported' => !$blocked,
+        'os' => $os['name'],
+        'kernel' => php_uname('r'),
+        'wireguardInstalled' => $wg !== null && $wgQuick !== null,
+        'wireguardVersion' => $version ?: null,
+        'kernelModuleReady' => (bool) $moduleReady,
+        'nftablesInstalled' => $firewall['nftInstalled'],
+        'firewallMode' => $firewall['mode'],
+        'publicIpv4' => $publicIpv4 ?: null,
+        'publicIpv6' => $publicIpv6 ?: null,
+        'egressInterface' => $route4['interface'] ?: null,
+        'ipv6Egress' => $ipv6Egress,
+        'defaults' => ['endpoint' => $endpoint, 'listenPort' => $listenPort, 'ipv4Cidr' => $ipv4Cidr, 'dns' => array_values($dns)],
+        'diagnostics' => $diagnostics,
+    ];
+}
+
+function vpnUlaPrefix(string $publicKey): string
+{
+    $hash = hash('sha256', $publicKey);
+    return 'fd' . substr($hash, 0, 2) . ':' . substr($hash, 2, 4) . ':' . substr($hash, 6, 4) . ':1';
+}
+
+function vpnIpv4Prefix(string $cidr): string
+{
+    return implode('.', array_slice(explode('.', explode('/', $cidr)[0]), 0, 3));
+}
+
+function vpnServerConfig(array $state): string
+{
+    $prefix = vpnIpv4Prefix($state['ipv4Cidr']);
+    $ula = explode('::', $state['ipv6Cidr'])[0];
+    $content = '# ' . PANELAVO_VPN_MARKER . "\n[Interface]\n"
+        . 'Address = ' . $prefix . '.1/24, ' . $ula . '::1/64' . "\n"
+        . 'ListenPort = ' . $state['listenPort'] . "\n"
+        . 'PreUp = wg set %i private-key ' . PANELAVO_VPN_PRIVATE_KEY . "\n"
+        . "SaveConfig = false\n";
+    foreach ($state['devices'] as $device) {
+        $content .= "\n# Device: " . $device['id'] . ' ' . $device['name'] . "\n[Peer]\n"
+            . 'PublicKey = ' . $device['publicKey'] . "\n"
+            . 'PresharedKey = ' . $device['presharedKey'] . "\n"
+            . 'AllowedIPs = ' . $device['ipv4'] . '/32, ' . $device['ipv6'] . "/128\n";
+    }
+    return $content;
+}
+
+function vpnClientConfig(array $state, array $device, string $privateKey): string
+{
+    $dns = implode(', ', $state['dns']);
+    return "[Interface]\nPrivateKey = " . $privateKey . "\nAddress = " . $device['ipv4'] . '/32, ' . $device['ipv6'] . "/128\nDNS = " . $dns
+        . "\n\n[Peer]\nPublicKey = " . $state['serverPublicKey'] . "\nPresharedKey = " . $device['presharedKey']
+        . "\nEndpoint = " . $state['endpoint'] . ':' . $state['listenPort']
+        . "\nAllowedIPs = 0.0.0.0/0, ::/0\nPersistentKeepalive = 25\n";
+}
+
+function vpnNftRules(array $state): string
+{
+    $interface = $state['egressInterface'];
+    if (preg_match('/^[A-Za-z0-9_.:-]{1,15}$/', $interface) !== 1) throw new VpnOperationException('VPN_CONFLICT', 'The VPN egress interface is invalid.');
+    $ipv6Nat = !empty($state['ipv6Egress']) ? "\ntable ip6 panelavo_wireguard_nat6 {\n  chain panelavo_owner { counter comment \"" . PANELAVO_VPN_MARKER . "\"; }\n  chain postrouting {\n    type nat hook postrouting priority srcnat; policy accept;\n    ip6 saddr " . $state['ipv6Cidr'] . ' oifname "' . $interface . '" masquerade\n  }\n}\n' : '';
+    $ipv6FailClosed = empty($state['ipv6Egress']) ? "    iifname \"pnlwg0\" meta nfproto ipv6 drop\n" : '';
+    return '# ' . PANELAVO_VPN_MARKER . "\n"
+        . "table inet panelavo_wireguard_filter {\n"
+        . '  chain panelavo_owner { counter comment "' . PANELAVO_VPN_MARKER . '"; }' . "\n"
+        . "  chain input {\n    type filter hook input priority -50; policy accept;\n"
+        . '    iifname "' . $interface . '" udp dport ' . $state['listenPort'] . " accept\n"
+        . '    udp dport ' . $state['listenPort'] . " drop\n"
+        . "    iifname \"pnlwg0\" tcp dport { 80, 443 } accept\n    iifname \"pnlwg0\" drop\n  }\n"
+        . "  chain forward {\n    type filter hook forward priority -50; policy accept;\n"
+        . "    iifname \"pnlwg0\" oifname \"pnlwg0\" drop\n"
+        . "    iifname \"pnlwg0\" ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.0.0.0/24, 192.0.2.0/24, 192.168.0.0/16, 198.18.0.0/15, 198.51.100.0/24, 203.0.113.0/24, 224.0.0.0/4, 240.0.0.0/4 } drop\n"
+        . "    iifname \"pnlwg0\" ip6 daddr { ::/128, ::1/128, 100::/64, 2001:db8::/32, fc00::/7, fe80::/9, ff00::/8 } drop\n"
+        . $ipv6FailClosed
+        . '    iifname "pnlwg0" oifname "' . $interface . '" accept' . "\n"
+        . "    iifname \"pnlwg0\" drop\n    oifname \"pnlwg0\" ct state established,related accept\n    oifname \"pnlwg0\" drop\n  }\n}\n"
+        . "table ip panelavo_wireguard_nat4 {\n"
+        . '  chain panelavo_owner { counter comment "' . PANELAVO_VPN_MARKER . '"; }' . "\n"
+        . "  chain postrouting {\n    type nat hook postrouting priority srcnat; policy accept;\n"
+        . '    ip saddr ' . $state['ipv4Cidr'] . ' oifname "' . $interface . '" masquerade' . "\n  }\n}\n"
+        . $ipv6Nat;
+}
+
+function vpnWriteRuntimeFiles(array $state): void
+{
+    vpnWriteFile(PANELAVO_VPN_CONFIG, vpnServerConfig($state));
+    vpnWriteFile(PANELAVO_VPN_NFT_RULES, vpnNftRules($state));
+    $sysctl = '# ' . PANELAVO_VPN_MARKER . "\nnet.ipv4.ip_forward = 1\n";
+    if (!empty($state['ipv6Egress'])) $sysctl .= "net.ipv6.conf.all.forwarding = 1\n";
+    vpnWriteFile(PANELAVO_VPN_SYSCTL, $sysctl, 0644);
+    $nft = vpnExecutable(['/usr/sbin/nft', '/sbin/nft', '/usr/bin/nft']) ?? '/usr/sbin/nft';
+    $unit = '# ' . PANELAVO_VPN_MARKER . "\n[Unit]\nDescription=Panelavo WireGuard firewall\nBefore=wg-quick@pnlwg0.service\nPartOf=wg-quick@pnlwg0.service\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\n"
+        . 'ExecStart=' . $nft . ' -f ' . PANELAVO_VPN_NFT_RULES . "\n"
+        . 'ExecStop=-' . $nft . " delete table inet panelavo_wireguard_filter\n"
+        . 'ExecStop=-' . $nft . " delete table ip panelavo_wireguard_nat4\n"
+        . 'ExecStop=-' . $nft . " delete table ip6 panelavo_wireguard_nat6\n\n[Install]\nWantedBy=multi-user.target\n";
+    vpnWriteFile(PANELAVO_VPN_FIREWALL_UNIT, $unit, 0644);
+    $dropin = '# ' . PANELAVO_VPN_MARKER . "\n[Unit]\nRequires=panelavo-wireguard-firewall.service\nAfter=network-online.target panelavo-wireguard-firewall.service\n";
+    vpnWriteFile(PANELAVO_VPN_WG_DROPIN, $dropin, 0644);
+}
+
+function vpnUfwRemove(): bool
+{
+    $ufw = vpnExecutable(['/usr/sbin/ufw', '/usr/bin/ufw']);
+    if (!$ufw) return true;
+    for ($attempt = 0; $attempt < 12; $attempt++) {
+        $status = vpnCommand([$ufw, 'status', 'numbered'], 8)['stdout'];
+        $number = null;
+        foreach (preg_split('/\R/', $status) ?: [] as $line) {
+            if (str_contains($line, PANELAVO_VPN_MARKER) && preg_match('/^\[\s*(\d+)\]/', trim($line), $match)) {
+                $number = $match[1]; break;
+            }
+        }
+        if ($number === null) return true;
+        if (vpnCommand([$ufw, '--force', 'delete', $number], 15)['code'] !== 0) return false;
+    }
+    return !str_contains(vpnCommand([$ufw, 'status', 'numbered'], 8)['stdout'], PANELAVO_VPN_MARKER);
+}
+
+function vpnUfwAdd(array $state): void
+{
+    if (($state['firewallMode'] ?? '') !== 'ufw') return;
+    $ufw = vpnExecutable(['/usr/sbin/ufw', '/usr/bin/ufw']);
+    if (!$ufw) throw new VpnOperationException('VPN_OPERATION_FAILED', 'UFW disappeared during VPN installation.');
+    if (!vpnUfwRemove()) throw new VpnOperationException('VPN_OPERATION_FAILED', 'Could not replace the existing Panelavo UFW rules.');
+    $comment = PANELAVO_VPN_MARKER;
+    $commands = [
+        [$ufw, 'allow', 'in', 'on', $state['egressInterface'], 'to', 'any', 'port', (string) $state['listenPort'], 'proto', 'udp', 'comment', $comment],
+        [$ufw, 'route', 'allow', 'in', 'on', 'pnlwg0', 'out', 'on', $state['egressInterface'], 'comment', $comment],
+        [$ufw, 'allow', 'in', 'on', 'pnlwg0', 'to', 'any', 'port', '80', 'proto', 'tcp', 'comment', $comment],
+        [$ufw, 'allow', 'in', 'on', 'pnlwg0', 'to', 'any', 'port', '443', 'proto', 'tcp', 'comment', $comment],
+    ];
+    foreach ($commands as $command) vpnRun($command, 20, 'Could not add the isolated UFW rules.');
+}
+
+function vpnDeleteNftTables(): bool
+{
+    $nft = vpnExecutable(['/usr/sbin/nft', '/sbin/nft', '/usr/bin/nft']);
+    if (!$nft) return true;
+    $clean = true;
+    foreach ([['inet', 'panelavo_wireguard_filter'], ['ip', 'panelavo_wireguard_nat4'], ['ip6', 'panelavo_wireguard_nat6']] as [$family, $table]) {
+        $current = vpnNftTableState($family, $table);
+        if ($current['owned'] && vpnCommand([$nft, 'delete', 'table', $family, $table], 8)['code'] !== 0) $clean = false;
+    }
+    return $clean;
+}
+
+function vpnRestoreForwarding(array $state): bool
+{
+    $sysctl = vpnExecutable(['/usr/sbin/sysctl', '/sbin/sysctl']);
+    if (!$sysctl) return false;
+    $restored = true;
+    $previous = $state['previousForwarding'] ?? [];
+    foreach (['net.ipv4.ip_forward' => 'ipv4', 'net.ipv6.conf.all.forwarding' => 'ipv6'] as $key => $name) {
+        if (!isset($previous[$name]) || !in_array((int) $previous[$name], [0, 1], true)) continue;
+        $owners = '';
+        foreach (['/etc/sysctl.d/*.conf', '/run/sysctl.d/*.conf', '/usr/local/lib/sysctl.d/*.conf', '/usr/lib/sysctl.d/*.conf', '/lib/sysctl.d/*.conf'] as $pattern) {
+            foreach (glob($pattern) ?: [] as $file) {
+                if ($file === PANELAVO_VPN_SYSCTL) continue;
+                $owners .= (string) @file_get_contents($file);
+            }
+        }
+        $owners .= (string) @file_get_contents('/etc/sysctl.conf');
+        if (preg_match('/^\s*' . preg_quote($key, '/') . '\s*=/m', $owners) !== 1) {
+            if (vpnCommand([$sysctl, '-w', $key . '=' . (int) $previous[$name]], 8)['code'] !== 0) $restored = false;
+        }
+    }
+    return $restored;
+}
+
+function vpnCleanup(?array $state, bool $removeState = true, bool $strict = false): void
+{
+    $systemctl = vpnExecutable(['/usr/bin/systemctl', '/bin/systemctl']);
+    if ($systemctl) {
+        $wireguard = vpnCommand([$systemctl, 'disable', '--now', 'wg-quick@pnlwg0.service'], 30);
+        $firewall = vpnCommand([$systemctl, 'disable', '--now', 'panelavo-wireguard-firewall.service'], 30);
+        if ($strict && ($wireguard['code'] !== 0 || $firewall['code'] !== 0)) {
+            throw new VpnOperationException('VPN_OPERATION_FAILED', 'Could not stop and disable the Panelavo VPN services.');
+        }
+    } elseif ($strict) {
+        throw new VpnOperationException('VPN_OPERATION_FAILED', 'systemd is unavailable.');
+    }
+    if ($strict && ($state['firewallMode'] ?? '') === 'ufw' && !vpnExecutable(['/usr/sbin/ufw', '/usr/bin/ufw'])) {
+        throw new VpnOperationException('VPN_OPERATION_FAILED', 'UFW is unavailable, so Panelavo cannot verify removal of its tagged rules.');
+    }
+    if (!vpnUfwRemove() && $strict) throw new VpnOperationException('VPN_OPERATION_FAILED', 'Could not remove all Panelavo UFW rules.');
+    if (!vpnDeleteNftTables() && $strict) throw new VpnOperationException('VPN_OPERATION_FAILED', 'Could not remove all Panelavo nftables rules.');
+    if ($state && !vpnRestoreForwarding($state) && $strict) throw new VpnOperationException('VPN_OPERATION_FAILED', 'Could not restore the prior forwarding state.');
+    foreach ([PANELAVO_VPN_CONFIG, PANELAVO_VPN_SYSCTL, PANELAVO_VPN_FIREWALL_UNIT, PANELAVO_VPN_WG_DROPIN, PANELAVO_VPN_NFT_RULES] as $file) {
+        if (vpnOwnedTextFile($file) && !@unlink($file) && $strict) {
+            throw new VpnOperationException('VPN_OPERATION_FAILED', 'Could not remove a Panelavo VPN resource.');
+        }
+    }
+    if ($state && ($state['marker'] ?? '') === PANELAVO_VPN_MARKER) {
+        if (is_file(PANELAVO_VPN_PRIVATE_KEY) && !@unlink(PANELAVO_VPN_PRIVATE_KEY) && $strict) {
+            throw new VpnOperationException('VPN_OPERATION_FAILED', 'Could not remove the Panelavo VPN private key.');
+        }
+        if ($removeState && is_file(PANELAVO_VPN_STATE) && !@unlink(PANELAVO_VPN_STATE) && $strict) {
+            throw new VpnOperationException('VPN_OPERATION_FAILED', 'Could not remove the Panelavo VPN state.');
+        }
+    }
+    @rmdir(dirname(PANELAVO_VPN_WG_DROPIN));
+    @rmdir(PANELAVO_VPN_ROOT);
+    if ($systemctl) vpnCommand([$systemctl, 'daemon-reload'], 15);
+}
+
+function vpnGenerateKeypair(): array
+{
+    $wg = vpnExecutable(['/usr/bin/wg', '/usr/sbin/wg']);
+    if (!$wg) throw new VpnOperationException('VPN_OPERATION_FAILED', 'WireGuard tools are unavailable.');
+    $private = trim(vpnRun([$wg, 'genkey'], 8, 'Could not generate a WireGuard key.')['stdout']);
+    $public = trim(vpnRun([$wg, 'pubkey'], 8, 'Could not derive a WireGuard public key.', $private . "\n")['stdout']);
+    if (!preg_match('#^[A-Za-z0-9+/]{43}=$#', $private) || !preg_match('#^[A-Za-z0-9+/]{43}=$#', $public)) {
+        throw new VpnOperationException('VPN_OPERATION_FAILED', 'WireGuard returned an invalid key.');
+    }
+    return [$private, $public];
+}
+
+function vpnGeneratePresharedKey(): string
+{
+    $wg = vpnExecutable(['/usr/bin/wg', '/usr/sbin/wg']);
+    if (!$wg) throw new VpnOperationException('VPN_OPERATION_FAILED', 'WireGuard tools are unavailable.');
+    $key = trim(vpnRun([$wg, 'genpsk'], 8, 'Could not generate a WireGuard preshared key.')['stdout']);
+    if (!preg_match('#^[A-Za-z0-9+/]{43}=$#', $key)) throw new VpnOperationException('VPN_OPERATION_FAILED', 'WireGuard returned an invalid preshared key.');
+    return $key;
+}
+
+function vpnInstall(array $operation): array
+{
+    if (vpnLoadState()) throw new VpnOperationException('VPN_CONFLICT', 'Panelavo WireGuard is already installed.');
+    if (vpnResourceConflict(null)) throw new VpnOperationException('VPN_CONFLICT', 'An existing non-Panelavo VPN resource conflicts with pnlwg0.');
+    $endpoint = strtolower(trim((string) ($operation['endpoint'] ?? '')));
+    $port = $operation['listenPort'] ?? null;
+    $cidr = trim((string) ($operation['ipv4Cidr'] ?? ''));
+    $dns = $operation['dns'] ?? null;
+    if ((!filter_var($endpoint, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)
+            && preg_match('/^(?=.{1,253}$)(?!-)[a-z0-9-]{1,63}(?<!-)(?:\.(?!-)[a-z0-9-]{1,63}(?<!-))+$/', $endpoint) !== 1)
+        || (!is_int($port) && !(is_string($port) && ctype_digit($port)))
+        || (int) $port < 1024 || (int) $port > 65535
+        || !vpnPrivate24($cidr) || !is_array($dns) || !$dns || count($dns) > 4) {
+        throw new VpnOperationException('INVALID_REQUEST', 'The VPN installation settings are invalid.');
+    }
+    foreach ($dns as $address) if (!is_string($address) || !vpnPublicDnsAddress($address)) {
+        throw new VpnOperationException('INVALID_REQUEST', 'The VPN DNS addresses are invalid.');
+    }
+    if (!array_filter($dns, static fn($address) => filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false)) {
+        throw new VpnOperationException('INVALID_REQUEST', 'At least one public IPv4 DNS resolver is required.');
+    }
+    $requested = ['endpoint' => $endpoint, 'listenPort' => (int) $port, 'ipv4Cidr' => $cidr, 'dns' => array_values($dns)];
+    $preflight = vpnPreflight($requested);
+    if (!$preflight['supported']) {
+        $blocked = array_values(array_filter($preflight['diagnostics'], static fn($item) => $item['status'] === 'blocked'));
+        throw new VpnOperationException('VPN_CONFLICT', (string) ($blocked[0]['detail'] ?? 'The VPN preflight is blocked.'));
+    }
+    $state = null;
+    try {
+        if (!$preflight['wireguardInstalled'] || !$preflight['nftablesInstalled']) {
+            $apt = vpnExecutable(['/usr/bin/apt-get']);
+            if (!$apt) throw new VpnOperationException('VPN_OPERATION_FAILED', 'The operating-system package manager is unavailable.');
+            vpnRun([$apt, 'update', '-y'], 300, 'Could not refresh the operating-system package list.');
+            vpnRun([$apt, 'install', '-y', 'wireguard-tools', 'nftables'], 300, 'Could not install WireGuard from the operating-system repository.');
+        }
+        if (vpnResourceConflict(null)) throw new VpnOperationException('VPN_CONFLICT', 'A VPN resource conflict appeared during installation.');
+        $modprobe = vpnExecutable(['/usr/sbin/modprobe', '/sbin/modprobe']);
+        if ($modprobe) vpnRun([$modprobe, 'wireguard'], 15, 'The WireGuard kernel module could not be loaded.');
+        [$privateKey, $publicKey] = vpnGenerateKeypair();
+        $previousIpv4 = (int) trim((string) @file_get_contents('/proc/sys/net/ipv4/ip_forward'));
+        $previousIpv6 = (int) trim((string) @file_get_contents('/proc/sys/net/ipv6/conf/all/forwarding'));
+        $state = [
+            'marker' => PANELAVO_VPN_MARKER,
+            'version' => 1,
+            'installedAt' => gmdate(DATE_ATOM),
+            'endpoint' => $endpoint,
+            'listenPort' => (int) $port,
+            'ipv4Cidr' => $cidr,
+            'ipv6Cidr' => vpnUlaPrefix($publicKey) . '::/64',
+            'dns' => array_values($dns),
+            'egressInterface' => (string) $preflight['egressInterface'],
+            'publicIpv4' => (string) $preflight['publicIpv4'],
+            'publicIpv6' => (string) ($preflight['publicIpv6'] ?? ''),
+            'ipv6Egress' => (bool) $preflight['ipv6Egress'],
+            'firewallMode' => (string) $preflight['firewallMode'],
+            'serverPublicKey' => $publicKey,
+            'previousForwarding' => ['ipv4' => $previousIpv4, 'ipv6' => $previousIpv6],
+            'devices' => [],
+        ];
+        vpnWriteFile(PANELAVO_VPN_PRIVATE_KEY, $privateKey . "\n");
+        vpnSaveState($state);
+        vpnWriteRuntimeFiles($state);
+        vpnAssertOwnedInstallation($state);
+        $nft = vpnExecutable(['/usr/sbin/nft', '/sbin/nft', '/usr/bin/nft']);
+        $wgQuick = vpnExecutable(['/usr/bin/wg-quick', '/usr/sbin/wg-quick']);
+        if (!$nft || !$wgQuick) throw new VpnOperationException('VPN_OPERATION_FAILED', 'The VPN networking tools are unavailable after installation.');
+        $firewallCheck = vpnCommand([$nft, '--check', '--file', PANELAVO_VPN_NFT_RULES], 15);
+        if ($firewallCheck['code'] !== 0 && !empty($state['ipv6Egress'])) {
+            $state['ipv6Egress'] = false;
+            vpnSaveState($state);
+            vpnWriteRuntimeFiles($state);
+            $firewallCheck = vpnCommand([$nft, '--check', '--file', PANELAVO_VPN_NFT_RULES], 15);
+        }
+        if ($firewallCheck['code'] !== 0) throw new VpnOperationException('VPN_OPERATION_FAILED', 'The generated VPN firewall rules are unsupported on this host.');
+        vpnRun([$wgQuick, 'strip', 'pnlwg0'], 15, 'The generated WireGuard configuration is invalid.');
+        $sysctl = vpnExecutable(['/usr/sbin/sysctl', '/sbin/sysctl']);
+        if (!$sysctl) throw new VpnOperationException('VPN_OPERATION_FAILED', 'The sysctl tool is unavailable.');
+        vpnRun([$sysctl, '--load', PANELAVO_VPN_SYSCTL], 15, 'Could not enable VPN forwarding.');
+        vpnUfwAdd($state);
+        $systemctl = vpnExecutable(['/usr/bin/systemctl', '/bin/systemctl']);
+        if (!$systemctl) throw new VpnOperationException('VPN_OPERATION_FAILED', 'systemd is unavailable.');
+        vpnRun([$systemctl, 'daemon-reload'], 15, 'Could not load the VPN services.');
+        vpnRun([$systemctl, 'enable', '--now', 'wg-quick@pnlwg0.service'], 45, 'Could not start the WireGuard gateway.');
+        $wg = vpnExecutable(['/usr/bin/wg', '/usr/sbin/wg']);
+        vpnRun([$wg, 'show', 'pnlwg0'], 8, 'The WireGuard interface did not become ready.');
+        return ['state' => vpnStatus()];
+    } catch (Throwable $error) {
+        vpnCleanup($state);
+        if ($error instanceof VpnOperationException) throw $error;
+        throw new VpnOperationException('VPN_OPERATION_FAILED', 'WireGuard installation failed and Panelavo rolled back its changes.');
+    }
+}
+
+function vpnFindDevice(array $state, string $id): int
+{
+    foreach ($state['devices'] as $index => $device) if (($device['id'] ?? '') === $id) return $index;
+    throw new VpnOperationException('VPN_DEVICE_NOT_FOUND', 'VPN device not found.');
+}
+
+function vpnDeviceName(mixed $value): string
+{
+    $name = trim((string) $value);
+    if (preg_match('/^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$/', $name) !== 1) throw new VpnOperationException('INVALID_REQUEST', 'The device name is invalid.');
+    return $name;
+}
+
+function vpnDeviceId(mixed $value): string
+{
+    $id = (string) $value;
+    if (preg_match('/^[a-f0-9]{16}$/', $id) !== 1) throw new VpnOperationException('INVALID_REQUEST', 'The VPN device identifier is invalid.');
+    return $id;
+}
+
+function vpnPeerRuntime(array $device, ?string $remove = null): void
+{
+    $wg = vpnExecutable(['/usr/bin/wg', '/usr/sbin/wg']);
+    if (!is_dir('/sys/class/net/pnlwg0')) return;
+    if (!$wg) throw new VpnOperationException('VPN_OPERATION_FAILED', 'WireGuard tools are unavailable while pnlwg0 is running.');
+    $temporary = PANELAVO_VPN_ROOT . '/.psk-' . bin2hex(random_bytes(4));
+    vpnWriteFile($temporary, $device['presharedKey'] . "\n");
+    try {
+        vpnRun([$wg, 'set', 'pnlwg0', 'peer', $device['publicKey'], 'preshared-key', $temporary, 'allowed-ips', $device['ipv4'] . '/32,' . $device['ipv6'] . '/128'], 10, 'Could not update the live WireGuard peer.');
+        if ($remove) vpnRun([$wg, 'set', 'pnlwg0', 'peer', $remove, 'remove'], 10, 'Could not remove the previous WireGuard peer.');
+    } finally {
+        @unlink($temporary);
+    }
+}
+
+function vpnRemovePeerRuntime(string $publicKey): void
+{
+    $wg = vpnExecutable(['/usr/bin/wg', '/usr/sbin/wg']);
+    if (!is_dir('/sys/class/net/pnlwg0')) return;
+    if (!$wg) throw new VpnOperationException('VPN_OPERATION_FAILED', 'WireGuard tools are unavailable while pnlwg0 is running.');
+    vpnRun([$wg, 'set', 'pnlwg0', 'peer', $publicKey, 'remove'], 10, 'Could not revoke the live WireGuard peer.');
+}
+
+function vpnNextAddress(array $state): int
+{
+    $used = [];
+    foreach ($state['devices'] as $device) {
+        $part = (int) substr(strrchr($device['ipv4'], '.'), 1);
+        if ($part >= 2 && $part <= 254) $used[$part] = true;
+    }
+    for ($part = 2; $part <= 254; $part++) if (!isset($used[$part])) return $part;
+    throw new VpnOperationException('VPN_CONFLICT', 'The VPN device address pool is full.');
+}
+
+function vpnProvision(array $state, string $name, ?int $replaceIndex = null): array
+{
+    foreach ($state['devices'] as $index => $existing) {
+        if ($index !== $replaceIndex && strcasecmp((string) $existing['name'], $name) === 0) throw new VpnOperationException('VPN_CONFLICT', 'A VPN device already uses that name.');
+    }
+    [$private, $public] = vpnGenerateKeypair();
+    $number = $replaceIndex === null ? vpnNextAddress($state) : (int) substr(strrchr($state['devices'][$replaceIndex]['ipv4'], '.'), 1);
+    $prefix4 = vpnIpv4Prefix($state['ipv4Cidr']);
+    $prefix6 = explode('::', $state['ipv6Cidr'])[0];
+    $device = [
+        'id' => $replaceIndex === null ? bin2hex(random_bytes(8)) : $state['devices'][$replaceIndex]['id'],
+        'name' => $name,
+        'publicKey' => $public,
+        'presharedKey' => vpnGeneratePresharedKey(),
+        'ipv4' => $prefix4 . '.' . $number,
+        'ipv6' => $prefix6 . '::' . dechex($number),
+        'createdAt' => $replaceIndex === null ? gmdate(DATE_ATOM) : $state['devices'][$replaceIndex]['createdAt'],
+    ];
+    $oldState = $state;
+    $oldPublic = $replaceIndex === null ? null : $state['devices'][$replaceIndex]['publicKey'];
+    if ($replaceIndex === null) $state['devices'][] = $device;
+    else $state['devices'][$replaceIndex] = $device;
+    try {
+        vpnSaveState($state); vpnWriteFile(PANELAVO_VPN_CONFIG, vpnServerConfig($state));
+        vpnPeerRuntime($device, $oldPublic);
+    } catch (Throwable $error) {
+        try { vpnRemovePeerRuntime($device['publicKey']); } catch (Throwable) {}
+        if ($replaceIndex !== null) {
+            try { vpnPeerRuntime($oldState['devices'][$replaceIndex]); } catch (Throwable) {}
+        }
+        vpnSaveState($oldState); vpnWriteFile(PANELAVO_VPN_CONFIG, vpnServerConfig($oldState));
+        if ($error instanceof VpnOperationException) throw $error;
+        throw new VpnOperationException('VPN_OPERATION_FAILED', 'Could not provision the VPN device.');
+    }
+    $publicDevice = vpnPublicDevice($device, []);
+    return [
+        'state' => vpnStatus(),
+        'provisioning' => ['device' => $publicDevice, 'configuration' => vpnClientConfig($state, $device, $private)],
+    ];
+}
+
+function vpnRuntimePeers(): array
+{
+    $wg = vpnExecutable(['/usr/bin/wg', '/usr/sbin/wg']);
+    if (!$wg || !is_dir('/sys/class/net/pnlwg0')) return [];
+    $handshakes = vpnCommand([$wg, 'show', 'pnlwg0', 'latest-handshakes'], 8);
+    $transfers = vpnCommand([$wg, 'show', 'pnlwg0', 'transfer'], 8);
+    if ($handshakes['code'] !== 0 || $transfers['code'] !== 0) return [];
+    $peers = [];
+    foreach (preg_split('/\R/', trim($handshakes['stdout'])) ?: [] as $line) {
+        $parts = explode("\t", $line);
+        if (count($parts) !== 2) continue;
+        $peers[$parts[0]] = ['handshake' => (int) $parts[1], 'received' => 0, 'sent' => 0];
+    }
+    foreach (preg_split('/\R/', trim($transfers['stdout'])) ?: [] as $line) {
+        $parts = explode("\t", $line);
+        if (count($parts) !== 3 || !isset($peers[$parts[0]])) continue;
+        $peers[$parts[0]]['received'] = (int) $parts[1];
+        $peers[$parts[0]]['sent'] = (int) $parts[2];
+    }
+    return $peers;
+}
+
+function vpnPublicDevice(array $device, array $runtime): array
+{
+    $stats = $runtime[$device['publicKey']] ?? ['handshake' => 0, 'received' => 0, 'sent' => 0];
+    $handshake = (int) $stats['handshake'];
+    return [
+        'id' => $device['id'], 'name' => $device['name'], 'publicKey' => $device['publicKey'],
+        'ipv4' => $device['ipv4'], 'ipv6' => $device['ipv6'], 'createdAt' => $device['createdAt'],
+        'lastHandshakeAt' => $handshake > 0 ? gmdate(DATE_ATOM, $handshake) : null,
+        'receivedBytes' => (int) $stats['received'], 'sentBytes' => (int) $stats['sent'],
+        'connected' => $handshake > 0 && time() - $handshake < 180,
+    ];
+}
+
+function vpnServiceState(string $verb): bool
+{
+    $systemctl = vpnExecutable(['/usr/bin/systemctl', '/bin/systemctl']);
+    return $systemctl && vpnCommand([$systemctl, $verb, 'wg-quick@pnlwg0.service'], 8)['code'] === 0;
+}
+
+function vpnFirewallRuntimeReady(array $state): bool
+{
+    $tables = [['inet', 'panelavo_wireguard_filter'], ['ip', 'panelavo_wireguard_nat4']];
+    if (!empty($state['ipv6Egress'])) $tables[] = ['ip6', 'panelavo_wireguard_nat6'];
+    foreach ($tables as [$family, $table]) {
+        $current = vpnNftTableState($family, $table);
+        if (!$current['exists'] || !$current['owned']) return false;
+    }
+    if (($state['firewallMode'] ?? '') !== 'ufw') return true;
+    $ufw = vpnExecutable(['/usr/sbin/ufw', '/usr/bin/ufw']);
+    if (!$ufw) return false;
+    $status = vpnCommand([$ufw, 'status', 'numbered'], 8);
+    return $status['code'] === 0
+        && preg_match('/^Status:\s+active/im', $status['stdout']) === 1
+        && substr_count($status['stdout'], PANELAVO_VPN_MARKER) >= 4;
+}
+
+function vpnStatus(): array
+{
+    $state = vpnLoadState();
+    $preflight = vpnPreflight(null, $state);
+    if (!$state) return [
+        'generatedAt' => gmdate(DATE_ATOM), 'installed' => false, 'running' => false, 'enabled' => false,
+        'devices' => [], 'diagnostics' => $preflight['diagnostics'], 'preflight' => $preflight,
+        'providerFirewallInstruction' => 'After installation, allow the selected UDP port in the hosting-provider firewall without exposing Panelavo port 10443.',
+    ];
+    vpnAssertOwnedInstallation($state);
+    $running = vpnServiceState('is-active');
+    $enabled = vpnServiceState('is-enabled');
+    $runtime = $running ? vpnRuntimePeers() : [];
+    $devices = array_map(static fn($device) => vpnPublicDevice($device, $runtime), $state['devices']);
+    $firewallReady = $running && vpnFirewallRuntimeReady($state);
+    $diagnostics = [
+        vpnDiagnostic('service', 'WireGuard service', $running ? 'pass' : 'warning', $running ? 'pnlwg0 is running.' : 'pnlwg0 is stopped.'),
+        vpnDiagnostic('boot', 'Boot persistence', $enabled ? 'pass' : 'warning', $enabled ? 'The gateway starts automatically after reboot.' : 'The gateway is disabled at boot.'),
+        vpnDiagnostic('firewall-runtime', 'VPN firewall rules', $firewallReady ? 'pass' : ($running ? 'blocked' : 'warning'), $firewallReady ? 'The dedicated Panelavo rules are loaded and ownership-marked.' : ($running ? 'The gateway is running without its complete owned firewall rules.' : 'The dedicated rules load when the gateway starts.')),
+        vpnDiagnostic('forwarding', 'IPv4 forwarding', trim((string) @file_get_contents('/proc/sys/net/ipv4/ip_forward')) === '1' ? 'pass' : 'blocked', 'IPv4 forwarding must remain enabled while the gateway is running.'),
+        vpnDiagnostic('reachability', 'External reachability', array_filter($devices, static fn($device) => $device['lastHandshakeAt'] !== null) ? 'pass' : 'warning', array_filter($devices, static fn($device) => $device['lastHandshakeAt'] !== null) ? 'At least one device has completed a handshake.' : 'Awaiting the first real device handshake; verify the provider UDP firewall rule.'),
+    ];
+    if (!empty($state['ipv6Egress'])) {
+        $diagnostics[] = vpnDiagnostic('ipv6-runtime', 'IPv6 forwarding', trim((string) @file_get_contents('/proc/sys/net/ipv6/conf/all/forwarding')) === '1' ? 'pass' : 'blocked', 'IPv6 egress is enabled only while its forwarding path remains healthy.');
+    } else {
+        $diagnostics[] = vpnDiagnostic('ipv6-runtime', 'IPv6 leak protection', 'pass', 'IPv6 is routed into the tunnel and intentionally has no server egress.');
+    }
+    return [
+        'generatedAt' => gmdate(DATE_ATOM), 'installed' => true, 'running' => $running, 'enabled' => $enabled,
+        'configuration' => [
+            'interface' => 'pnlwg0', 'endpoint' => $state['endpoint'], 'listenPort' => $state['listenPort'],
+            'ipv4Cidr' => $state['ipv4Cidr'], 'ipv6Cidr' => $state['ipv6Cidr'], 'dns' => $state['dns'],
+            'egressInterface' => $state['egressInterface'], 'ipv6Egress' => (bool) $state['ipv6Egress'], 'firewallMode' => $state['firewallMode'],
+        ],
+        'devices' => $devices, 'diagnostics' => $diagnostics, 'preflight' => $preflight,
+        'providerFirewallInstruction' => 'Allow inbound UDP ' . $state['listenPort'] . ' to ' . $state['endpoint'] . ' in the hosting-provider firewall. Do not expose TCP 10443.',
+    ];
+}
+
+function vpnManage(array $operation): array
+{
+    $lock = @fopen('/var/lock/panelavo-vpn.lock', 'c');
+    if (!$lock || !flock($lock, LOCK_EX | LOCK_NB)) throw new VpnOperationException('OPERATION_BUSY', 'Another VPN change is already running.');
+    try {
+        $action = (string) ($operation['action'] ?? '');
+        $allowed = match ($action) {
+            'install' => ['action', 'endpoint', 'listenPort', 'ipv4Cidr', 'dns', 'confirmation'],
+            'start' => ['action'],
+            'stop', 'restart', 'uninstall' => ['action', 'confirmation'],
+            'create-device' => ['action', 'name'],
+            'rename-device' => ['action', 'deviceId', 'name'],
+            'rotate-device', 'revoke-device' => ['action', 'deviceId', 'confirmation'],
+            default => throw new VpnOperationException('INVALID_ACTION', 'Unknown VPN operation.'),
+        };
+        if (array_diff(array_keys($operation), $allowed) || array_diff($allowed, array_keys($operation))) {
+            throw new VpnOperationException('INVALID_REQUEST', 'The VPN operation shape is invalid.');
+        }
+        $expectedConfirmation = match ($action) {
+            'install' => 'INSTALL VPN',
+            'stop' => 'STOP VPN',
+            'restart' => 'RESTART VPN',
+            'rotate-device' => 'ROTATE DEVICE',
+            'revoke-device' => 'REVOKE DEVICE',
+            'uninstall' => 'UNINSTALL VPN',
+            default => null,
+        };
+        if ($expectedConfirmation !== null && !hash_equals($expectedConfirmation, (string) ($operation['confirmation'] ?? ''))) {
+            throw new VpnOperationException('INVALID_REQUEST', 'The typed VPN confirmation did not match.');
+        }
+        if ($action === 'install') return vpnInstall($operation);
+        $state = vpnLoadState();
+        if (!$state) throw new VpnOperationException('VPN_NOT_INSTALLED', 'Panelavo WireGuard is not installed.');
+        vpnAssertOwnedInstallation($state);
+        $systemctl = vpnExecutable(['/usr/bin/systemctl', '/bin/systemctl']);
+        if (!$systemctl) throw new VpnOperationException('VPN_OPERATION_FAILED', 'systemd is unavailable.');
+        if ($action === 'start') {
+            $sysctl = vpnExecutable(['/usr/sbin/sysctl', '/sbin/sysctl']);
+            if ($sysctl) vpnRun([$sysctl, '--load', PANELAVO_VPN_SYSCTL], 15, 'Could not enable VPN forwarding.');
+            vpnUfwAdd($state);
+            vpnRun([$systemctl, 'enable', '--now', 'wg-quick@pnlwg0.service'], 45, 'Could not start the WireGuard gateway.');
+            return ['state' => vpnStatus()];
+        }
+        if ($action === 'stop') {
+            vpnRun([$systemctl, 'disable', '--now', 'wg-quick@pnlwg0.service'], 45, 'Could not stop the WireGuard gateway.');
+            return ['state' => vpnStatus()];
+        }
+        if ($action === 'restart') {
+            vpnRun([$systemctl, 'restart', 'wg-quick@pnlwg0.service'], 45, 'Could not restart the WireGuard gateway.');
+            return ['state' => vpnStatus()];
+        }
+        if ($action === 'uninstall') {
+            vpnCleanup($state, true, true);
+            return ['state' => vpnStatus()];
+        }
+        if ($action === 'create-device') return vpnProvision($state, vpnDeviceName($operation['name'] ?? null));
+        $id = vpnDeviceId($operation['deviceId'] ?? null);
+        $index = vpnFindDevice($state, $id);
+        if ($action === 'rotate-device') return vpnProvision($state, (string) $state['devices'][$index]['name'], $index);
+        if ($action === 'rename-device') {
+            $name = vpnDeviceName($operation['name'] ?? null);
+            foreach ($state['devices'] as $other => $device) if ($other !== $index && strcasecmp((string) $device['name'], $name) === 0) throw new VpnOperationException('VPN_CONFLICT', 'A VPN device already uses that name.');
+            $old = $state;
+            try {
+                $state['devices'][$index]['name'] = $name;
+                vpnSaveState($state); vpnWriteFile(PANELAVO_VPN_CONFIG, vpnServerConfig($state));
+            } catch (Throwable $error) {
+                vpnSaveState($old); vpnWriteFile(PANELAVO_VPN_CONFIG, vpnServerConfig($old));
+                if ($error instanceof VpnOperationException) throw $error;
+                throw new VpnOperationException('VPN_OPERATION_FAILED', 'Could not rename the VPN device.');
+            }
+            return ['state' => vpnStatus()];
+        }
+        if ($action === 'revoke-device') {
+            $old = $state;
+            $device = $state['devices'][$index];
+            array_splice($state['devices'], $index, 1);
+            try {
+                vpnSaveState($state); vpnWriteFile(PANELAVO_VPN_CONFIG, vpnServerConfig($state)); vpnRemovePeerRuntime($device['publicKey']);
+            } catch (Throwable $error) {
+                try { vpnPeerRuntime($device); } catch (Throwable) {}
+                vpnSaveState($old); vpnWriteFile(PANELAVO_VPN_CONFIG, vpnServerConfig($old));
+                if ($error instanceof VpnOperationException) throw $error;
+                throw new VpnOperationException('VPN_OPERATION_FAILED', 'Could not revoke the VPN device.');
+            }
+            return ['state' => vpnStatus()];
+        }
+        throw new VpnOperationException('INVALID_ACTION', 'Unknown VPN operation.');
+    } finally {
+        flock($lock, LOCK_UN); fclose($lock);
+    }
+}
+
+function runVpnSelfTest(): never
+{
+    if (!vpnPrivate24('10.66.66.0/24') || vpnPrivate24('8.8.8.0/24')) throw new RuntimeException('VPN CIDR validation failed.');
+    if (!vpnGlobalIpv4('1.1.1.1') || vpnGlobalIpv4('127.0.0.1') || vpnGlobalIpv6('fd00::1')) throw new RuntimeException('VPN egress validation failed.');
+    if (!vpnIpv4RangesOverlap(vpnIpv4Range('10.66.66.0/24'), vpnIpv4Range('10.66.66.128/25'))
+        || vpnIpv4RangesOverlap(vpnIpv4Range('10.66.66.0/24'), vpnIpv4Range('10.66.67.0/24'))) {
+        throw new RuntimeException('VPN collision validation failed.');
+    }
+    $state = [
+        'listenPort' => 51820, 'ipv4Cidr' => '10.66.66.0/24', 'ipv6Cidr' => 'fd12:3456:789a:1::/64',
+        'egressInterface' => 'eth0', 'ipv6Egress' => false, 'devices' => [], 'dns' => ['1.1.1.1'],
+        'endpoint' => 'vpn.example.test', 'serverPublicKey' => str_repeat('A', 43) . '=',
+    ];
+    $server = vpnServerConfig($state);
+    $firewall = vpnNftRules($state);
+    $state['ipv6Egress'] = true;
+    $dualStackFirewall = vpnNftRules($state);
+    $client = vpnClientConfig($state, [
+        'ipv4' => '10.66.66.2', 'ipv6' => 'fd12:3456:789a:1::2',
+        'presharedKey' => str_repeat('B', 43) . '=',
+    ], str_repeat('C', 43) . '=');
+    if (!str_contains($server, PANELAVO_VPN_MARKER)
+        || !str_contains($server, 'PreUp = wg set %i private-key')
+        || !str_contains($firewall, 'panelavo_wireguard_filter')
+        || !str_contains($firewall, PANELAVO_VPN_MARKER)
+        || str_contains($firewall, 'panelavo_wireguard_nat6')
+        || !str_contains($dualStackFirewall, 'panelavo_wireguard_nat6')
+        || !str_contains($firewall, 'iifname "pnlwg0" drop')
+        || !str_contains($client, 'AllowedIPs = 0.0.0.0/0, ::/0')) {
+        throw new RuntimeException('VPN rendering validation failed.');
+    }
+    $allocationState = ['devices' => [['ipv4' => '10.66.66.2'], ['ipv4' => '10.66.66.4']]];
+    if (vpnNextAddress($allocationState) !== 3) throw new RuntimeException('VPN address allocation failed.');
+    try {
+        vpnCommand(['/bin/true', "hostile\0argument"]);
+        throw new RuntimeException('VPN hostile argument validation failed.');
+    } catch (VpnOperationException $error) {
+        if ($error->brokerCode !== 'INVALID_REQUEST') throw $error;
+    }
+    echo "Panelavo VPN self-test passed.\n";
+    exit(0);
+}
+
 function brokerDirectWrapperDenied(): bool
 {
     $callerUid = (int) getenv('PANELAVO_CALLER_UID');
@@ -6828,6 +7913,7 @@ if (($argv[1] ?? '') === '--self-test-env') runEnvSelfTest();
 if (($argv[1] ?? '') === '--self-test-rootless') runRootlessSelfTest();
 if (($argv[1] ?? '') === '--self-test-datastore') runDatastoreSelfTest();
 if (($argv[1] ?? '') === '--self-test-endpoints') runEndpointSelfTest();
+if (($argv[1] ?? '') === '--self-test-vpn') runVpnSelfTest();
 
 try {
     $encodedInput = stream_get_contents(STDIN, PANELAVO_BROKER_MAX_INPUT_BYTES + 1);
@@ -7318,6 +8404,16 @@ try {
         case 'server-info':
             if (!in_array($user->getRole(), [User::ROLE_ADMIN, User::ROLE_SITE_MANAGER], true)) respond(['ok' => false, 'code' => 'FORBIDDEN']);
             respond(['ok' => true, 'data' => serverInfo()]);
+
+        case 'vpn-status':
+            if ($user->getRole() !== User::ROLE_ADMIN) respond(['ok' => false, 'code' => 'FORBIDDEN']);
+            respond(['ok' => true, 'data' => vpnStatus()]);
+
+        case 'vpn-manage':
+            if ($user->getRole() !== User::ROLE_ADMIN) respond(['ok' => false, 'code' => 'FORBIDDEN']);
+            $operation = $input['operation'] ?? null;
+            if (!is_array($operation) || count($operation) > 6) invalidBrokerRequest();
+            respond(['ok' => true, 'data' => vpnManage($operation)]);
 
         case 'site':
             $site = authorizedSite(
@@ -8159,6 +9255,9 @@ try {
         default:
             respond(['ok' => false, 'code' => 'INVALID_ACTION'], 2);
     }
+} catch (VpnOperationException $error) {
+    error_log('Panelavo VPN: ' . $error->brokerCode . ': ' . $error->getMessage());
+    respond(['ok' => false, 'code' => $error->brokerCode, 'message' => $error->getMessage()], 1);
 } catch (Throwable $error) {
     error_log('CloudPanel bridge: ' . $error::class . ': ' . $error->getMessage());
     respond(['ok' => false, 'code' => 'BRIDGE_FAILED'], 1);

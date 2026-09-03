@@ -3,6 +3,7 @@ import {
   createdSiteFromBridge,
   siteSectionBridgeError,
   siteSectionTimeout,
+  vpnBridgeError,
 } from "./live-client";
 
 describe("createdSiteFromBridge", () => {
@@ -120,5 +121,25 @@ describe("siteSectionBridgeError", () => {
     expect(error.status).toBe(422);
     expect(error.message).toContain("host safety policy");
     expect(error.message).not.toContain("/etc/shadow");
+  });
+});
+
+describe("vpnBridgeError", () => {
+  it("keeps conflicts actionable without exposing arbitrary broker output", () => {
+    const conflict = vpnBridgeError({
+      ok: false,
+      code: "VPN_CONFLICT",
+      message: "UDP port 51820 is already in use.",
+    });
+    expect(conflict.status).toBe(409);
+    expect(conflict.message).toContain("51820");
+
+    const failure = vpnBridgeError({
+      ok: false,
+      code: "BRIDGE_FAILED",
+      message: "",
+    });
+    expect(failure.status).toBe(502);
+    expect(failure.message).toBe("The server could not apply the VPN change.");
   });
 });

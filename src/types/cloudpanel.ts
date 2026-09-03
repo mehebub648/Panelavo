@@ -1,3 +1,5 @@
+import type { VpnManageInput, VpnManageResult, VpnState } from "./vpn";
+
 export type SiteType =
   "php" | "nodejs" | "static" | "python" | "reverse-proxy" | "docker";
 
@@ -487,6 +489,11 @@ export interface CloudPanelClient {
     session: CloudPanelSession,
   ): Promise<ServerStorageCleanupResult>;
   getServerInfo(session: CloudPanelSession): Promise<ServerInfo>;
+  getVpnState(session: CloudPanelSession): Promise<VpnState>;
+  manageVpn(
+    session: CloudPanelSession,
+    input: VpnManageInput,
+  ): Promise<VpnManageResult>;
   updateProfile(
     session: CloudPanelSession,
     input: UpdateProfileInput,

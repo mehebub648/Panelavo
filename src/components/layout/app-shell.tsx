@@ -15,6 +15,7 @@ import {
   Menu,
   ScrollText,
   Settings,
+  Shield,
   UserRound,
   Users,
   X,
@@ -42,23 +43,25 @@ export function AppShell({
         ? "AI access"
         : pathname === "/settings"
           ? "Panel settings"
-          : pathname === "/users"
-            ? "User management"
-            : pathname === "/audit"
-              ? "Audit trail"
-              : pathname === "/resources"
-                ? "Server resources"
-                : pathname === "/about"
-                  ? "About panelavo"
-                  : pathname === "/information"
-                    ? "Server information"
-                    : pathname === "/profile"
-                      ? "My profile"
-                      : pathname === "/sites/new"
-                        ? "Add website"
-                        : pathname.split("/").length > 3
-                          ? "Website workspace"
-                          : "Websites";
+          : pathname === "/vpn"
+            ? "WireGuard VPN"
+            : pathname === "/users"
+              ? "User management"
+              : pathname === "/audit"
+                ? "Audit trail"
+                : pathname === "/resources"
+                  ? "Server resources"
+                  : pathname === "/about"
+                    ? "About panelavo"
+                    : pathname === "/information"
+                      ? "Server information"
+                      : pathname === "/profile"
+                        ? "My profile"
+                        : pathname === "/sites/new"
+                          ? "Add website"
+                          : pathname.split("/").length > 3
+                            ? "Website workspace"
+                            : "Websites";
   const elevated = ["super-admin", "manager"].includes(user.panelRole ?? "");
   const nav = [
     { href: "/sites", label: "Websites", icon: Globe2 },
@@ -69,6 +72,9 @@ export function AppShell({
       : []),
     ...(elevated
       ? [{ href: "/information", label: "Information", icon: Info }]
+      : []),
+    ...(user.panelRole === "super-admin"
+      ? [{ href: "/vpn", label: "VPN", icon: Shield }]
       : []),
     { href: "/about", label: "About", icon: BadgeInfo },
     ...(user.panelRole === "super-admin"
@@ -177,7 +183,9 @@ export function AppShell({
                     ? "Connect an assistant to the websites you can access"
                     : title === "About panelavo"
                       ? "Product details and project notices"
-                      : "Manage your server websites"}
+                      : title === "WireGuard VPN"
+                        ? "Private, full-tunnel internet access from this server"
+                        : "Manage your server websites"}
               </p>
             </div>
           </div>
