@@ -7282,7 +7282,7 @@ function vpnServerConfig(array $state): string
     $content = '# ' . PANELAVO_VPN_MARKER . "\n[Interface]\n"
         . 'Address = ' . $prefix . '.1/24, ' . $ula . '::1/64' . "\n"
         . 'ListenPort = ' . $state['listenPort'] . "\n"
-        . 'PreUp = wg set %i private-key ' . PANELAVO_VPN_PRIVATE_KEY . "\n"
+        . 'PostUp = wg set %i private-key ' . PANELAVO_VPN_PRIVATE_KEY . "\n"
         . "SaveConfig = false\n";
     foreach ($state['devices'] as $device) {
         $content .= "\n# Device: " . $device['id'] . ' ' . $device['name'] . "\n[Peer]\n"
@@ -7873,7 +7873,8 @@ function runVpnSelfTest(): never
         'presharedKey' => str_repeat('B', 43) . '=',
     ], str_repeat('C', 43) . '=');
     if (!str_contains($server, PANELAVO_VPN_MARKER)
-        || !str_contains($server, 'PreUp = wg set %i private-key')
+        || !str_contains($server, 'PostUp = wg set %i private-key')
+        || str_contains($server, 'PreUp = wg set %i private-key')
         || !str_contains($firewall, 'panelavo_wireguard_filter')
         || !str_contains($firewall, PANELAVO_VPN_MARKER)
         || str_contains($firewall, 'panelavo_wireguard_nat6')
