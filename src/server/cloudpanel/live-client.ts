@@ -21,6 +21,7 @@ import type {
   SiteSectionExecutionOptions,
   UpdateProfileInput,
 } from "@/types/cloudpanel";
+import type { VpnManageInput, VpnManageResult, VpnState } from "@/types/vpn";
 import { isPanelAdmin } from "@/server/auth/panel-roles";
 import { getDatabaseManagerUrl } from "@/server/sites/database-manager";
 import {
@@ -30,7 +31,7 @@ import {
 import { getSiteTypeOverrides } from "@/server/sites/site-type-overlay";
 import { AppError } from "./errors";
 
-export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 23;
+export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 24;
 export const CLOUDPANEL_BROKER_PATH =
   "/usr/local/libexec/panelavo/panelavo-broker";
 
@@ -438,12 +439,51 @@ export function siteSectionBridgeError(result: BridgeResult) {
 export function privilegedErrorMessage(detail: string, fallback: string) {
   if (/already exists|duplicate|already in use/i.test(detail))
     return "That name is already in use.";
-  if (
-    /database(Name|UserName)|database[-_\s]?(name|username)/i.test(detail)
-  ) {
+  if (/database(Name|UserName)|database[-_\s]?(name|username)/i.test(detail)) {
     return "Use 2–50 characters, starting with a letter and containing only letters, numbers, and hyphens.";
   }
   return fallback;
+}
+
+export function vpnBridgeError(result: BridgeResult) {
+  const detail = result.message?.trim();
+  if (result.code === "FORBIDDEN")
+    return new AppError(
+      "FORBIDDEN",
+      "VPN management is available to super administrators only.",
+      403,
+    );
+  if (result.code === "OPERATION_BUSY")
+    return new AppError(
+      "OPERATION_BUSY",
+      "Another VPN change is already running. Try again shortly.",
+      409,
+    );
+  if (result.code === "VPN_CONFLICT")
+    return new AppError(
+      "INVALID_REQUEST",
+      detail || "The VPN settings conflict with existing server networking.",
+      409,
+    );
+  if (result.code === "VPN_NOT_INSTALLED")
+    return new AppError(
+      "INVALID_REQUEST",
+      "Install the WireGuard gateway before managing devices.",
+      409,
+    );
+  if (result.code === "VPN_DEVICE_NOT_FOUND")
+    return new AppError("INVALID_REQUEST", "VPN device not found.", 404);
+  if (result.code === "INVALID_REQUEST" || result.code === "INVALID_ACTION")
+    return new AppError(
+      "INVALID_REQUEST",
+      "The VPN operation is not valid.",
+      400,
+    );
+  return new AppError(
+    "CLOUDPANEL_UNAVAILABLE",
+    detail || "The server could not apply the VPN change.",
+    502,
+  );
 }
 
 export class LiveCloudPanelClient implements CloudPanelClient {
@@ -840,7 +880,10 @@ export class LiveCloudPanelClient implements CloudPanelClient {
       panelAdmin,
     });
     if (!result.ok)
-      throw this.privilegedError(result, "The server could not update the website.");
+      throw this.privilegedError(
+        result,
+        "The server could not update the website.",
+      );
     if (!result.site)
       throw new AppError(
         "SITE_UPDATE_FAILED",
@@ -942,8 +985,7 @@ export class LiveCloudPanelClient implements CloudPanelClient {
         },
         90_000,
       );
-      if (!result.ok)
-        throw siteSectionBridgeError(result);
+      if (!result.ok) throw siteSectionBridgeError(result);
       return result.data;
     } else if (section === "databases" && action === "add") {
       const result = await this.bridge(
@@ -1241,6 +1283,28 @@ export class LiveCloudPanelClient implements CloudPanelClient {
         403,
       );
     return result.data as ServerInfo;
+  }
+
+  async getVpnState(session: CloudPanelSession) {
+    const result = await this.bridge(
+      { action: "vpn-status", username: this.sessionUser(session) },
+      60_000,
+    );
+    if (!result.ok || !result.data) throw vpnBridgeError(result);
+    return result.data as VpnState;
+  }
+
+  async manageVpn(session: CloudPanelSession, input: VpnManageInput) {
+    const result = await this.bridge(
+      {
+        action: "vpn-manage",
+        username: this.sessionUser(session),
+        operation: input,
+      },
+      input.action === "install" ? 620_000 : 90_000,
+    );
+    if (!result.ok || !result.data) throw vpnBridgeError(result);
+    return result.data as VpnManageResult;
   }
 
   async updateProfile(session: CloudPanelSession, input: UpdateProfileInput) {

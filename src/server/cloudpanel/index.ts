@@ -204,6 +204,8 @@ function withPanelRoles(inner: CloudPanelClient): CloudPanelClient {
     getServerStorage: inner.getServerStorage.bind(inner),
     reclaimServerStorage: inner.reclaimServerStorage.bind(inner),
     getServerInfo: inner.getServerInfo.bind(inner),
+    getVpnState: inner.getVpnState.bind(inner),
+    manageVpn: inner.manageVpn.bind(inner),
     updateProfile: async (session, input) =>
       decorateUser(await inner.updateProfile(session, input)),
     verifyPassword: inner.verifyPassword.bind(inner),

@@ -17,6 +17,10 @@ if [ -z "${package_protocol}" ] || [ "${package_protocol}" != "${client_protocol
   exit 1
 fi
 
+grep -Fq "case 'vpn-status':" "${ROOT}/scripts/cloudpanel-bridge.php"
+grep -Fq "case 'vpn-manage':" "${ROOT}/scripts/cloudpanel-bridge.php"
+grep -Fq -- "--self-test-vpn" "${ROOT}/setup.sh"
+
 if grep -Eq 'NOPASSWD:.*(/usr/bin/php|/usr/bin/clpctl)([ ,]|$)' "${ROOT}/setup.sh"; then
   echo "setup.sh grants unsafe raw PHP or clpctl sudo access" >&2
   exit 1

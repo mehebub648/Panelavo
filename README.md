@@ -108,6 +108,14 @@ The main MySQL/MariaDB service is loopback-only. A site writer may expose one se
 
 ProxySQL reaches the loopback database through TLS with a dedicated localhost-only monitoring account. A degraded gateway keeps every endpoint fail-closed and disables endpoint changes, but it does not block Panelavo sign-in, site listings, or unrelated site management.
 
+### WireGuard VPN
+
+Super Admins can install and manage one lightweight full-tunnel WireGuard gateway from `/vpn`. Panelavo uses the kernel WireGuard interface `pnlwg0` and distribution-maintained `wireguard-tools`/`nftables`; it adds no container, dashboard daemon, DNS server, public Panelavo listener, or MCP tool. The root broker re-fetches the live CloudPanel administrator, holds a host-wide lock, validates the OS, kernel, endpoint, UDP port, private `/24`, routes, and firewall, then writes only marker-owned `pnlwg0` configuration, systemd, sysctl, and dedicated nftables resources. Existing WireGuard interfaces, conflicting files/routes/ports, third-party nftables names, inactive UFW, and unexpected default-drop firewalls are never adopted or rewritten.
+
+Client profiles route both `0.0.0.0/0` and `::/0`. Verified global IPv6 receives NAT66 egress; otherwise IPv6 stays inside the tunnel and is dropped, preventing a local-network bypass. VPN clients can use public internet egress and the host's normal TCP 80/443 services, but cannot reach SSH, Panelavo's loopback listener, databases, loopback/private/link-local/CGNAT networks, rootless Docker networks, or another VPN client. The provider firewall must separately allow the selected inbound UDP port. Reachability remains unverified until a real device handshake is observed.
+
+Each device gets a unique `/32`, `/128`, keypair, and preshared key. Its complete configuration and QR code are returned once with non-cacheable responses and are never stored in audit data; only server-side peer material is retained root-only. Device traffic values are current-interface WireGuard counters, not usage history. Endpoint, port, tunnel networks, and DNS are immutable after installation because changing them would invalidate one-time profiles. Uninstall requires an exact typed confirmation, revokes all devices, removes only Panelavo-owned networking resources, conditionally restores prior forwarding values, and deliberately leaves installed packages and unrelated VPNs untouched.
+
 ### Authentication and authorization
 
 After the CLI bridge accepts credentials and MFA when enabled, the browser receives only a random application-session identifier. Every protected route revalidates the account and current role through the bridge. Restricted site lists are selected from the user's CloudPanel assignments before they reach the browser. Profile includes self-service authenticator enrollment and disable controls: unconfirmed secrets are encrypted in `.data`, expire after ten minutes, and are written to CloudPanel only after its own MFA verifier accepts the first code.
@@ -267,6 +275,7 @@ PHP versions are discovered from `/etc/php`. The create form deliberately prefer
 - Login, MFA, and site creation have in-process rate limits. Use a shared trusted rate limiter before multi-instance deployment.
 - API responses are non-cacheable. Middleware sets CSP, anti-framing, MIME-sniffing, referrer, and permissions headers.
 - Audit logs are structured and centrally redact passwords, MFA codes, cookies, CSRF values, and authorization data.
+- VPN secrets and complete client profiles are one-time browser payloads; VPN audit events retain only the action and non-secret device identifier.
 - Operations are allow-listed server plans with exact argument arrays, root containment checks, per-site serialization, bounded output, and role-aware host access; repository content never becomes a browser-supplied shell command.
 - Passwords are never persisted, echoed by APIs, or written to browser storage. A failed create clears the site password.
 - TLS verification must remain enabled in production.
@@ -283,6 +292,7 @@ PHP versions are discovered from `/etc/php`. The create form deliberately prefer
 6. Create a disposable site of each supported type, confirm it appears, then remove it through the original CloudPanel UI.
 7. Confirm the original CloudPanel interface on port 8443 still works (over an SSH tunnel when the firewall rule is active).
 8. Confirm the database manager at `https://database.<ip>.<base-domain>` serves phpMyAdmin with a trusted certificate, accepts a database user's credentials, and that a site's "Manage" button opens it already signed in.
+9. Before production VPN use, run the documented disposable-VM acceptance pass, add only the required provider UDP rule, and keep provider-console recovery available while validating firewall behavior.
 
 ## Commands
 

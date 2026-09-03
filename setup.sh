@@ -935,6 +935,8 @@ BOUNDARY_SUDOERS_FILE="/etc/sudoers.d/zz-panelavo-cloudpanel-boundary"
 LEGACY_SUDOERS_FILE="/etc/sudoers.d/panelavo-${SITE_USER}"
 
 # Root must never execute the site-user-owned bridge from the deployed tree.
+php "${SRC_DIR}/scripts/cloudpanel-bridge.php" --self-test-vpn >/dev/null \
+  || die "The CloudPanel broker failed its non-mutating VPN self-test."
 install -d -o root -g root -m 0755 "${BROKER_ROOT}"
 install -d -o root -g root -m 0700 /var/lib/panelavo/rootless-migrations
 install -o root -g root -m 0755 "${SRC_DIR}/scripts/panelavo-broker" "${BROKER_PATH}"
