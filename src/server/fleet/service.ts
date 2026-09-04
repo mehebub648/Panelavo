@@ -21,6 +21,7 @@ import {
   hashFleetSecret,
   matchesFleetSecret,
   mutateFleetState,
+  recordFleetHealth,
 } from "@/server/fleet/store";
 import {
   FLEET_CAPABILITIES,
@@ -741,27 +742,22 @@ export async function dispatchFleetAction(
       username: localActor.user.username,
     });
     const result = called.payload;
-    await mutateFleetState((current) => {
-      const item = current.nodes.find((node) => node.id === connection.id);
-      if (!item) return;
-      const summary =
-        action === "system.summary" && !("healthOnly" in (result as object))
-          ? (result as FleetServerSummary)
-          : undefined;
-      const pressured = action === "system.summary" && fleetHealthPressured(result);
-      item.status = pressured ? "degraded" : "online";
-      item.lastSeenAt = new Date().toISOString();
-      item.lastError = undefined;
-      current.health[connection.id] = {
-        serverId: connection.id,
-        label: connection.node.label,
-        origin: connection.node.origin,
-        status: item.status,
-        latencyMs: Date.now() - started,
-        checkedAt: new Date().toISOString(),
-        lastSuccessfulAt: new Date().toISOString(),
-        ...(summary ? { summary } : {}),
-      };
+    const summary =
+      action === "system.summary" && !("healthOnly" in (result as object))
+        ? (result as FleetServerSummary)
+        : undefined;
+    const pressured =
+      action === "system.summary" && fleetHealthPressured(result);
+    const now = new Date().toISOString();
+    await recordFleetHealth({
+      serverId: connection.id,
+      label: connection.node.label,
+      origin: connection.node.origin,
+      status: pressured ? "degraded" : "online",
+      latencyMs: Date.now() - started,
+      checkedAt: now,
+      lastSuccessfulAt: now,
+      ...(summary ? { summary } : {}),
     });
     await audit(
       `fleet.dispatch.${action}`,
@@ -780,22 +776,13 @@ export async function dispatchFleetAction(
     );
     return result;
   } catch (error) {
-    await mutateFleetState((current) => {
-      const item = current.nodes.find((node) => node.id === connection.id);
-      if (item) {
-        item.status = item.status === "suspended" ? "suspended" : "offline";
-        item.lastError =
-          error instanceof Error ? error.message : "Connection failed";
-        current.health[connection.id] = {
-          serverId: connection.id,
-          label: connection.node.label,
-          origin: connection.node.origin,
-          status: item.status,
-          checkedAt: new Date().toISOString(),
-          lastSuccessfulAt: current.health[connection.id]?.lastSuccessfulAt,
-          error: item.lastError,
-        };
-      }
+    await recordFleetHealth({
+      serverId: connection.id,
+      label: connection.node.label,
+      origin: connection.node.origin,
+      status: "offline",
+      checkedAt: new Date().toISOString(),
+      error: error instanceof Error ? error.message : "Connection failed",
     });
     await audit(
       `fleet.dispatch.${action}`,
@@ -863,9 +850,7 @@ export async function refreshFleetServers(localActor: PanelActor) {
           return (await getFleetState()).health[connection.id];
         })
       : [];
-  await mutateFleetState((current) => {
-    current.health.local = localHealth;
-  });
+  await recordFleetHealth(localHealth);
   return [localHealth, ...remote.filter(Boolean)];
 }
 
@@ -895,16 +880,7 @@ export async function refreshFleetNodesInBackground() {
         lastSuccessfulAt: now,
         ...("healthOnly" in result ? {} : { summary: result }),
       };
-      await mutateFleetState((current) => {
-        const item = current.nodes.find((node) => node.id === connection.id);
-        if (item) {
-          item.status = snapshot.status;
-          item.lastSeenAt = now;
-          item.lastError = undefined;
-        }
-        current.health[connection.id] = snapshot;
-      });
-      return snapshot;
+      return (await recordFleetHealth(snapshot)) ?? snapshot;
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Connection failed";
@@ -917,16 +893,7 @@ export async function refreshFleetNodesInBackground() {
         lastSuccessfulAt: state.health[connection.id]?.lastSuccessfulAt,
         error: message,
       };
-      await mutateFleetState((current) => {
-        const item = current.nodes.find((node) => node.id === connection.id);
-        if (item) {
-          item.status = item.status === "suspended" ? "suspended" : "offline";
-          item.lastError = message;
-          snapshot.status = item.status;
-        }
-        current.health[connection.id] = snapshot;
-      });
-      return snapshot;
+      return (await recordFleetHealth(snapshot)) ?? snapshot;
     }
   });
 }

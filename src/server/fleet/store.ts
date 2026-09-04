@@ -16,6 +16,7 @@ import type {
 
 type FleetState = {
   version: 1;
+  splitPersistence?: true;
   mode: FleetMode;
   localNodeId: string;
   hub?: { id: string; label: string; origin: string; enabledAt: string };
@@ -49,21 +50,126 @@ function clean(state: FleetState) {
   return state;
 }
 
-export async function getFleetState() {
-  return clean(await store.load());
+const healthStore = encryptedJsonStore<FleetState["health"] | null>(
+  "fleet-health.enc.json",
+  () => null,
+);
+const replayStore = encryptedJsonStore<FleetState["replays"] | null>(
+  "fleet-replays.enc.json",
+  () => null,
+);
+
+function serialized<T>(work: () => Promise<T>): Promise<T> {
+  const operation = mutationQueue.then(work);
+  mutationQueue = operation.catch(() => undefined);
+  return operation;
+}
+
+async function loadState(): Promise<FleetState> {
+  const state = clean(await store.load());
+  let [health, replays] = await Promise.all([
+    healthStore.load(),
+    replayStore.load(),
+  ]);
+  if (!state.splitPersistence) {
+    // Write auxiliary files first. A restart during migration can safely repeat
+    // the merge without forgetting any request already accepted by either file.
+    health = { ...state.health, ...health };
+    const seen = new Map<string, FleetState["replays"][number]>();
+    for (const entry of [...state.replays, ...(replays ?? [])]) {
+      if (entry.expiresAt > Date.now()) {
+        const key = JSON.stringify([entry.connectionId, entry.requestId]);
+        const previous = seen.get(key);
+        if (!previous || previous.expiresAt < entry.expiresAt)
+          seen.set(key, entry);
+      }
+    }
+    replays = [...seen.values()];
+    await healthStore.save(health);
+    await replayStore.save(replays);
+    state.splitPersistence = true;
+    await store.save({ ...state, health: {}, replays: [] });
+  }
+  if (replays === null)
+    throw new Error(
+      "Fleet replay protection is missing; refusing federation requests.",
+    );
+  state.replays = replays.filter((entry) => entry.expiresAt > Date.now());
+  state.health = health ?? {};
+  for (const node of state.nodes) {
+    const snapshot = state.health[node.id];
+    if (!snapshot) continue;
+    // Trust state always wins over telemetry. Health can never activate a
+    // pending connection or restore an administrator's suspended connection.
+    if (node.status === "pending" || node.status === "suspended") {
+      snapshot.status = node.status;
+    } else if (
+      snapshot.status !== "pending" &&
+      snapshot.status !== "suspended"
+    ) {
+      node.status = snapshot.status;
+    }
+    node.lastSeenAt = snapshot.lastSuccessfulAt ?? node.lastSeenAt;
+    node.lastError = snapshot.error;
+  }
+  return state;
+}
+
+export function getFleetState() {
+  return serialized(loadState);
+}
+
+export function recordFleetHealth(snapshot: FleetHealthSnapshot) {
+  return serialized(async () => {
+    const state = await loadState();
+    const node = state.nodes.find((item) => item.id === snapshot.serverId);
+    if (snapshot.serverId === "local") {
+      state.health.local = snapshot;
+      await healthStore.save(state.health);
+      return snapshot;
+    }
+    if (!node) return;
+    const previous = state.health[node.id];
+    if (
+      previous &&
+      Date.parse(previous.checkedAt) > Date.parse(snapshot.checkedAt)
+    )
+      return;
+    const next = {
+      ...snapshot,
+      label: node.node.label,
+      origin: node.node.origin,
+      lastSuccessfulAt:
+        Date.parse(previous?.lastSuccessfulAt ?? "") >
+        Date.parse(snapshot.lastSuccessfulAt ?? "1970-01-01")
+          ? previous?.lastSuccessfulAt
+          : snapshot.lastSuccessfulAt,
+      status:
+        node.status === "pending" || node.status === "suspended"
+          ? node.status
+          : snapshot.status,
+    };
+    state.health[node.id] = next;
+    await healthStore.save(state.health);
+    return next;
+  });
 }
 
 export function mutateFleetState<T>(
   mutation: (state: FleetState) => T | Promise<T>,
 ) {
-  const operation = mutationQueue.then(async () => {
-    const state = clean(await store.load());
+  return serialized(async () => {
+    const state = await loadState();
+    const previousHealth = JSON.stringify(state.health);
+    const previousReplays = JSON.stringify(state.replays);
     const result = await mutation(state);
-    await store.save(state);
+    if (JSON.stringify(state.health) !== previousHealth)
+      await healthStore.save(state.health);
+    if (JSON.stringify(state.replays) !== previousReplays)
+      await replayStore.save(state.replays);
+    await store.save({ ...state, health: {}, replays: [] });
     return result;
   });
-  mutationQueue = operation.catch(() => undefined);
-  return operation;
 }
 
 export function fleetSecret(length = 32) {
@@ -81,7 +187,8 @@ export function matchesFleetSecret(value: string, expected: string) {
 }
 
 export async function consumeReplay(connectionId: string, requestId: string) {
-  return mutateFleetState((state) => {
+  return serialized(async () => {
+    const state = await loadState();
     if (
       state.replays.some(
         (item) =>
@@ -94,6 +201,7 @@ export async function consumeReplay(connectionId: string, requestId: string) {
       requestId,
       expiresAt: Date.now() + 5 * 60_000,
     });
+    await replayStore.save(state.replays);
     return true;
   });
 }

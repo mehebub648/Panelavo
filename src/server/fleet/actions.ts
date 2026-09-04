@@ -103,7 +103,10 @@ export async function executeFleetAction(
       "Fleet actions require an active Super Admin.",
       403,
     );
-  if (action === "system.summary" && objectInput.parse(submitted).healthOnly === true)
+  if (
+    action === "system.summary" &&
+    objectInput.parse(submitted).healthOnly === true
+  )
     return getFleetHealthReport();
   const client = getCloudPanelClient();
   const serverIp = await getServerPublicIp();

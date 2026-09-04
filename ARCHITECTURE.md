@@ -111,3 +111,7 @@ Visible idle tabs check update status once per minute, switching to every two se
 ### Lightweight remote health reports
 
 Background Fleet checks request a compact authenticated health report from the shared minute resource sampler, avoiding site lists, software inventory and detailed runtime scans. Samples older than two minutes are omitted. Full summaries remain available on demand, and older peers remain compatible by returning their existing summary. Deploying peers one at a time requires no protocol or broker upgrade.
+
+### Separate Fleet telemetry and replay persistence
+
+Fleet health and replay records now use separate encrypted files, so routine requests do not rewrite connection credentials. Replay identifiers are saved before requests are accepted; missing or corrupt replay state fails closed. Migration merges existing records before marking the split complete, and health cannot reactivate pending or suspended connections. Preserve all three fleet-*.enc.json files in backups. Before downgrading below v0.1.127, stop Panelavo for at least five minutes to expire all previously signed requests; never delete the replay file from a running installation.
