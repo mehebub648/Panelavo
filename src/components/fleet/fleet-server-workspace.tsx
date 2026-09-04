@@ -22,12 +22,14 @@ import { Button } from "@/components/ui/button";
 import { UserManager } from "@/components/users/user-manager";
 import { VpnManager } from "@/components/vpn/vpn-manager";
 import { ResourcesView } from "@/components/server/resources-view";
+import { ServerInformationView } from "@/components/server/server-information-view";
 import type { AuditPage } from "@/server/security/log";
 import type { UpdateState } from "@/server/updates/panel-updater";
 import type {
   CloudPanelSite,
   CloudPanelUser,
   ServerInfo,
+  ServerInformation,
   ServerResources,
 } from "@/types/cloudpanel";
 import type { VpnState } from "@/types/vpn";
@@ -90,6 +92,7 @@ export function FleetServerWorkspace({
   const [tab, setTab] = useState<Tab>("overview");
   const [busy, setBusy] = useState(false);
   const [summary, setSummary] = useState<Summary | null>(null);
+  const [info, setInfo] = useState<ServerInformation | null>(null);
   const [users, setUsers] = useState<CloudPanelUser[]>([]);
   const [userSites, setUserSites] = useState<string[]>([]);
   const [audit, setAudit] = useState<AuditPage | null>(null);
@@ -104,11 +107,12 @@ export function FleetServerWorkspace({
             "overview",
             "websites",
             "resources",
-            "information",
             "updates",
           ].includes(selected)
         )
           setSummary(await call(serverId, "system.summary"));
+        else if (selected === "information")
+          setInfo(await call(serverId, "system.info"));
         else if (selected === "users") {
           const data = await call(serverId, "users.list");
           setUsers(data.users ?? []);
@@ -325,29 +329,8 @@ export function FleetServerWorkspace({
           apiBase={`/api/fleet/servers/${serverId}/proxy`}
         />
       )}
-      {summary && tab === "information" && (
-        <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-card">
-          <dl className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
-            {[
-              ["Hostname", summary.server.hostname],
-              ["Public IP", summary.server.ip],
-              ["Operating system", summary.server.os],
-              ["Kernel", summary.server.kernel],
-              ["Architecture", summary.server.arch],
-              [
-                "Processor",
-                `${summary.server.cpuModel} · ${summary.server.cpuCores} cores`,
-              ],
-            ].map(([key, value]) => (
-              <div key={key}>
-                <dt className="text-xs font-bold uppercase text-slate-400">
-                  {key}
-                </dt>
-                <dd className="mt-1 font-semibold">{value}</dd>
-              </div>
-            ))}
-          </dl>
-        </section>
+      {info && tab === "information" && (
+        <ServerInformationView info={info} />
       )}
       {tab === "users" && (
         <div className="space-y-3">

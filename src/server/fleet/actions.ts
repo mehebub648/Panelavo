@@ -12,6 +12,7 @@ import { getCloudPanelClient } from "@/server/cloudpanel";
 import { AppError } from "@/server/cloudpanel/errors";
 import type { FleetActionName, FleetServerSummary } from "@/server/fleet/types";
 import { getServerPublicIp } from "@/server/network/server-ip";
+import { completeServerInformation } from "@/server/network/server-information";
 import { readAuditEvents } from "@/server/security/log";
 import {
   createLinkedServiceForActor,
@@ -148,7 +149,10 @@ export async function executeFleetAction(
       );
     return { cleanup: await client.reclaimServerStorage(actor.cloudPanel) };
   }
-  if (action === "system.info") return client.getServerInfo(actor.cloudPanel);
+  if (action === "system.info")
+    return completeServerInformation(
+      await client.getServerInfo(actor.cloudPanel),
+    );
   if (action === "system.update.get")
     return getUpdateState(Boolean(objectInput.parse(submitted).check));
   if (action === "system.update.start") {

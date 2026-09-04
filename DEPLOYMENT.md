@@ -310,3 +310,7 @@ Fleet health and replay records now use separate encrypted files, so routine req
 ### Bounded concurrent website monitoring
 
 Website uptime and TLS checks run through four workers instead of a sequential queue. A slow or failing site no longer delays every later site, while the existing twelve-second network limits, failure thresholds and recovery alerts remain in place. HTTPS response bodies are cancelled after checking headers to release resources. Only the Panelavo process needs reloading; hosted applications are unchanged.
+
+### Connected-server information
+
+Panelavo v0.1.129 enriches the existing authenticated `system.info` Fleet action with the panel origin and public address families. No Fleet protocol or broker upgrade is required. Deploy connected nodes before the host for the complete response during rollout; the host UI falls back to the earlier response shape until each node is upgraded.

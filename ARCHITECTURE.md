@@ -119,3 +119,7 @@ Fleet health and replay records now use separate encrypted files, so routine req
 ### Bounded concurrent website monitoring
 
 Website uptime and TLS checks run through four workers instead of a sequential queue. A slow or failing site no longer delays every later site, while the existing twelve-second network limits, failure thresholds and recovery alerts remain in place. HTTPS response bodies are cancelled after checking headers to release resources. Only the Panelavo process needs reloading; hosted applications are unchanged.
+
+### Server information
+
+Local and connected-server Information pages share one rendering component. The remote `system.info` action retains its live Super Admin authorization and returns the normal administrator-only server inventory plus the panel origin and non-local address families. Link-local and private IPv6 interfaces are excluded, and missing address families are represented explicitly in the UI.
