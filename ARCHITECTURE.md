@@ -107,3 +107,7 @@ The minute-based Fleet scheduler skips ticks while its previous sweep is running
 ### Adaptive update status polling
 
 Visible idle tabs check update status once per minute, switching to every two seconds when an update is detected. Hidden tabs pause checks and refresh when visible again. Requests never overlap and are cancelled on hiding or unmounting; the maintenance lock survives transient failures. This frontend change needs only the normal panel build and reload.
+
+### Lightweight remote health reports
+
+Background Fleet checks request a compact authenticated health report from the shared minute resource sampler, avoiding site lists, software inventory and detailed runtime scans. Samples older than two minutes are omitted. Full summaries remain available on demand, and older peers remain compatible by returning their existing summary. Deploying peers one at a time requires no protocol or broker upgrade.

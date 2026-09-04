@@ -1,3 +1,4 @@
+import { getFleetHealthReport } from "@/server/fleet/health";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import QRCode from "qrcode";
@@ -102,6 +103,8 @@ export async function executeFleetAction(
       "Fleet actions require an active Super Admin.",
       403,
     );
+  if (action === "system.summary" && objectInput.parse(submitted).healthOnly === true)
+    return getFleetHealthReport();
   const client = getCloudPanelClient();
   const serverIp = await getServerPublicIp();
   if (action === "system.summary") {

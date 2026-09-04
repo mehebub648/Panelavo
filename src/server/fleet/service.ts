@@ -1,3 +1,4 @@
+import { fleetHealthPressured } from "@/server/fleet/health";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -744,16 +745,10 @@ export async function dispatchFleetAction(
       const item = current.nodes.find((node) => node.id === connection.id);
       if (!item) return;
       const summary =
-        action === "system.summary"
+        action === "system.summary" && !("healthOnly" in (result as object))
           ? (result as FleetServerSummary)
           : undefined;
-      const pressured = summary
-        ? Math.max(
-            summary.resources.cpu.usedPercent,
-            summary.resources.memory.usedPercent,
-            summary.resources.disk.usedPercent,
-          ) >= 90
-        : false;
+      const pressured = action === "system.summary" && fleetHealthPressured(result);
       item.status = pressured ? "degraded" : "online";
       item.lastSeenAt = new Date().toISOString();
       item.lastError = undefined;
@@ -884,16 +879,11 @@ export async function refreshFleetNodesInBackground() {
         await callFleetNode(
           connection,
           "system.summary",
-          {},
+          { healthOnly: true },
           { id: "fleet-health", username: "fleet-health" },
         )
       ).payload as FleetServerSummary;
-      const pressured =
-        Math.max(
-          result.resources.cpu.usedPercent,
-          result.resources.memory.usedPercent,
-          result.resources.disk.usedPercent,
-        ) >= 90;
+      const pressured = fleetHealthPressured(result);
       const now = new Date().toISOString();
       const snapshot: FleetHealthSnapshot = {
         serverId: connection.id,
@@ -903,7 +893,7 @@ export async function refreshFleetNodesInBackground() {
         latencyMs: Date.now() - started,
         checkedAt: now,
         lastSuccessfulAt: now,
-        summary: result,
+        ...("healthOnly" in result ? {} : { summary: result }),
       };
       await mutateFleetState((current) => {
         const item = current.nodes.find((node) => node.id === connection.id);
