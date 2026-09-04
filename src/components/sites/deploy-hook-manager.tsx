@@ -19,20 +19,26 @@ import {
   type DeployHookOperation,
 } from "@/lib/deploy-hooks";
 
-export function DeployHookManager({ domain }: { domain: string }) {
+export function DeployHookManager({
+  domain,
+  apiBase = "",
+}: {
+  domain: string;
+  apiBase?: string;
+}) {
   const [hooks, setHooks] = useState<DeployHookOperation[]>([]);
   const [command, setCommand] =
     useState<(typeof deployHookCommands)[number]>("node-install");
   const [argument, setArgument] = useState("");
   const [busy, setBusy] = useState(true);
   useEffect(() => {
-    fetch(`/api/sites/${encodeURIComponent(domain)}/deploy-hooks`)
+    fetch(`${apiBase}/api/sites/${encodeURIComponent(domain)}/deploy-hooks`)
       .then((response) => response.json())
       .then((result) => {
         if (result.success) setHooks(result.data);
       })
       .finally(() => setBusy(false));
-  }, [domain]);
+  }, [apiBase, domain]);
   const needsScript = command === "node-run" || command === "npm-run";
   const needsName = command === "pm2-restart-one";
   function add() {
@@ -58,7 +64,7 @@ export function DeployHookManager({ domain }: { domain: string }) {
     setBusy(true);
     try {
       const response = await fetch(
-        `/api/sites/${encodeURIComponent(domain)}/deploy-hooks`,
+        `${apiBase}/api/sites/${encodeURIComponent(domain)}/deploy-hooks`,
         {
           method: "PUT",
           headers: { "content-type": "application/json" },

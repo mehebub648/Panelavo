@@ -192,9 +192,11 @@ function runStatus(run: OperationRun) {
 export function ActionsManager({
   domain,
   initialData,
+  apiBase = "",
 }: {
   domain: string;
   initialData: OperationsData;
+  apiBase?: string;
 }) {
   const router = useRouter();
   const [data, setData] = useState(initialData);
@@ -205,9 +207,10 @@ export function ActionsManager({
   const [confirmation, setConfirmation] = useState<ConfirmationRequest | null>(
     null,
   );
-  const [envFixValues, setEnvFixValues] = useState<Record<string, string> | null>(
-    null,
-  );
+  const [envFixValues, setEnvFixValues] = useState<Record<
+    string,
+    string
+  > | null>(null);
   const [showEnvFixValues, setShowEnvFixValues] = useState(false);
   const [savingEnvFix, setSavingEnvFix] = useState(false);
   const [isRefreshing, startRefresh] = useTransition();
@@ -254,7 +257,7 @@ export function ActionsManager({
     setSavingEnvFix(true);
     try {
       const response = await fetch(
-        `/api/sites/${encodeURIComponent(domain)}/sections/env`,
+        `${apiBase}/api/sites/${encodeURIComponent(domain)}/sections/env`,
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -266,13 +269,17 @@ export function ActionsManager({
         error?: { message?: string };
       } | null;
       if (!response.ok || !result?.success)
-        throw new Error(result?.error?.message || "The values could not be saved.");
+        throw new Error(
+          result?.error?.message || "The values could not be saved.",
+        );
       setEnvFixValues(null);
       toast.success("Missing environment values saved to .env.");
       startRefresh(() => router.refresh());
     } catch (error) {
       toast.error(
-        error instanceof Error ? error.message : "The values could not be saved.",
+        error instanceof Error
+          ? error.message
+          : "The values could not be saved.",
       );
     } finally {
       setSavingEnvFix(false);
@@ -293,7 +300,7 @@ export function ActionsManager({
     setRunning(key);
     try {
       const response = await fetch(
-        `/api/sites/${encodeURIComponent(domain)}/sections/actions`,
+        `${apiBase}/api/sites/${encodeURIComponent(domain)}/sections/actions`,
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -445,7 +452,10 @@ export function ActionsManager({
   const ReadinessIcon = readiness.icon;
   const runtime = data.runtime;
   const hasRuntime = Boolean(
-    data.pm2?.length || runtime?.containers?.length || runtime?.listeners?.length || data.compose?.rootless,
+    data.pm2?.length ||
+    runtime?.containers?.length ||
+    runtime?.listeners?.length ||
+    data.compose?.rootless,
   );
   const envDrift = (runtime?.env ?? []).filter(
     (item) => item.status === "differs" || item.status === "missing",
@@ -831,7 +841,10 @@ export function ActionsManager({
                 id="runtime-title"
                 className="flex items-center gap-2 font-bold text-ink"
               >
-                <Activity className="h-4 w-4 text-panel-600" aria-hidden="true" />
+                <Activity
+                  className="h-4 w-4 text-panel-600"
+                  aria-hidden="true"
+                />
                 Runtime
               </h3>
               <p className="mt-1 text-sm text-slate-500">
@@ -848,7 +861,10 @@ export function ActionsManager({
               onClick={() => startRefresh(() => router.refresh())}
             >
               {isRefreshing ? (
-                <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
+                <LoaderCircle
+                  className="h-4 w-4 animate-spin"
+                  aria-hidden="true"
+                />
               ) : (
                 <RefreshCw className="h-4 w-4" aria-hidden="true" />
               )}
@@ -859,42 +875,62 @@ export function ActionsManager({
           {data.compose?.rootless ? (
             <div className="mt-4 grid gap-3 rounded-xl border border-slate-200/80 bg-slate-50/70 p-4 sm:grid-cols-2 xl:grid-cols-4">
               <div>
-                <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Docker engine</p>
+                <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                  Docker engine
+                </p>
                 <p className="mt-1 text-sm font-semibold text-slate-700">
-                  Rootless · {data.compose.rootless.ready ? "Ready" : "Needs setup"}
+                  Rootless ·{" "}
+                  {data.compose.rootless.ready ? "Ready" : "Needs setup"}
                 </p>
               </div>
               <div>
-                <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Owner</p>
+                <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                  Owner
+                </p>
                 <p className="mt-1 truncate font-mono text-xs text-slate-700">
                   {data.compose.rootless.user ?? "site user"}
-                  {data.compose.rootless.uid !== undefined ? ` · UID ${data.compose.rootless.uid}` : ""}
+                  {data.compose.rootless.uid !== undefined
+                    ? ` · UID ${data.compose.rootless.uid}`
+                    : ""}
                 </p>
               </div>
               <div>
-                <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Storage</p>
+                <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                  Storage
+                </p>
                 <p className="mt-1 text-sm font-semibold text-slate-700">
                   {data.compose.rootless.storageDriver || "Not available"}
                 </p>
                 <p className="mt-1 text-[11px] text-slate-500">
-                  Images {data.compose.rootless.imageUsage || "unknown"} · {data.compose.rootless.imageReclaimable || "unknown"} reclaimable
+                  Images {data.compose.rootless.imageUsage || "unknown"} ·{" "}
+                  {data.compose.rootless.imageReclaimable || "unknown"}{" "}
+                  reclaimable
                 </p>
               </div>
               <div>
-                <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Home filesystem free</p>
+                <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                  Home filesystem free
+                </p>
                 <p className="mt-1 text-sm font-semibold text-slate-700">
-                  {typeof data.compose.rootless.availableBytes === "number" ? formatBytes(data.compose.rootless.availableBytes) : "Unknown"}
+                  {typeof data.compose.rootless.availableBytes === "number"
+                    ? formatBytes(data.compose.rootless.availableBytes)
+                    : "Unknown"}
                 </p>
               </div>
               <p className="break-all font-mono text-[11px] text-slate-500 sm:col-span-2 xl:col-span-4">
                 Socket: {data.compose.rootless.socket || "not initialized"}
-                {data.compose.rootless.cgroupVersion ? ` · cgroup v${data.compose.rootless.cgroupVersion}` : ""}
-                {data.compose.rootless.networkHelperAvailable ? " · userspace network ready" : " · network helper missing"}
+                {data.compose.rootless.cgroupVersion
+                  ? ` · cgroup v${data.compose.rootless.cgroupVersion}`
+                  : ""}
+                {data.compose.rootless.networkHelperAvailable
+                  ? " · userspace network ready"
+                  : " · network helper missing"}
               </p>
             </div>
           ) : null}
 
-          {data.migration?.legacyRootfulDetected || data.migration?.recoveryRequired ? (
+          {data.migration?.legacyRootfulDetected ||
+          data.migration?.recoveryRequired ? (
             <div className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800 ring-1 ring-inset ring-amber-200">
               {data.migration.recoveryRequired
                 ? "An ownership recovery journal is active. Recover it before another cutover."
@@ -1088,7 +1124,10 @@ export function ActionsManager({
           {runtime?.containers?.length ? (
             <div className="mt-5">
               <h4 className="flex items-center gap-2 text-sm font-bold text-ink">
-                <Container className="h-4 w-4 text-panel-600" aria-hidden="true" />
+                <Container
+                  className="h-4 w-4 text-panel-600"
+                  aria-hidden="true"
+                />
                 Compose containers
               </h4>
               <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
@@ -1221,7 +1260,8 @@ export function ActionsManager({
               const Icon = ICONS[action.iconKey];
               const runnable = isActionReady(action.status);
               const actionBusy = running === key;
-              const showBlockedReason = !runnable && blockingChecks.length === 0;
+              const showBlockedReason =
+                !runnable && blockingChecks.length === 0;
               return (
                 <button
                   key={key}
@@ -1489,12 +1529,15 @@ export function ActionsManager({
           >
             <div className="flex items-start justify-between gap-3">
               <div>
-                <h3 id="compose-env-fix-title" className="text-lg font-bold text-ink">
+                <h3
+                  id="compose-env-fix-title"
+                  className="text-lg font-bold text-ink"
+                >
                   Add missing environment values
                 </h3>
                 <p className="mt-1 text-sm text-slate-500">
-                  Panelavo will add only these keys to <code>.env</code>. Existing
-                  settings and comments are preserved.
+                  Panelavo will add only these keys to <code>.env</code>.
+                  Existing settings and comments are preserved.
                 </p>
               </div>
               <Button
@@ -1548,11 +1591,15 @@ export function ActionsManager({
               <Button
                 type="submit"
                 disabled={
-                  savingEnvFix || Object.values(envFixValues).some((value) => !value.trim())
+                  savingEnvFix ||
+                  Object.values(envFixValues).some((value) => !value.trim())
                 }
               >
                 {savingEnvFix && (
-                  <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
+                  <LoaderCircle
+                    className="h-4 w-4 animate-spin"
+                    aria-hidden="true"
+                  />
                 )}
                 Save and recheck
               </Button>

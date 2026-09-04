@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import React, { useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
@@ -10,6 +10,7 @@ import {
   Bot,
   Cloud,
   Globe2,
+  Network,
   Info,
   LogOut,
   Menu,
@@ -36,8 +37,9 @@ export function AppShell({
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
-  const title =
-    pathname === "/domains"
+  const title = pathname.startsWith("/fleet")
+    ? "Fleet"
+    : pathname === "/domains"
       ? "Domains & DNS"
       : pathname === "/ai-access"
         ? "AI access"
@@ -64,6 +66,9 @@ export function AppShell({
                             : "Websites";
   const elevated = ["super-admin", "manager"].includes(user.panelRole ?? "");
   const nav = [
+    ...(user.panelRole === "super-admin"
+      ? [{ href: "/fleet", label: "Fleet", icon: Network }]
+      : []),
     { href: "/sites", label: "Websites", icon: Globe2 },
     { href: "/domains", label: "Domains", icon: Cloud },
     { href: "/ai-access", label: "AI access", icon: Bot },
@@ -177,15 +182,17 @@ export function AppShell({
                 {title}
               </h1>
               <p className="mt-0.5 hidden text-xs text-slate-400 sm:block">
-                {title === "Website workspace"
-                  ? "Configure and maintain your website"
-                  : title === "AI access"
-                    ? "Connect an assistant to the websites you can access"
-                    : title === "About panelavo"
-                      ? "Product details and project notices"
-                      : title === "WireGuard VPN"
-                        ? "Private, full-tunnel internet access from this server"
-                        : "Manage your server websites"}
+                {title === "Fleet"
+                  ? "Manage every connected Panelavo server"
+                  : title === "Website workspace"
+                    ? "Configure and maintain your website"
+                    : title === "AI access"
+                      ? "Connect an assistant to the websites you can access"
+                      : title === "About panelavo"
+                        ? "Product details and project notices"
+                        : title === "WireGuard VPN"
+                          ? "Private, full-tunnel internet access from this server"
+                          : "Manage your server websites"}
               </p>
             </div>
           </div>

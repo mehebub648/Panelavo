@@ -41,9 +41,11 @@ type ConfirmState =
 export function GitManager({
   domain,
   initialData,
+  apiBase = "",
 }: {
   domain: string;
   initialData: GitData;
+  apiBase?: string;
 }) {
   const [data, setData] = useState(initialData);
   const [busy, setBusy] = useState(false);
@@ -55,7 +57,7 @@ export function GitManager({
     setBusy(true);
     try {
       const result = await fetch(
-        `/api/sites/${encodeURIComponent(domain)}/sections/git`,
+        `${apiBase}/api/sites/${encodeURIComponent(domain)}/sections/git`,
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -208,7 +210,7 @@ export function GitManager({
           </div>
         </div>
       </section>
-      <DeployHookManager domain={domain} />
+      <DeployHookManager domain={domain} apiBase={apiBase} />
       <div className="grid gap-5 lg:grid-cols-[1fr_420px]">
         <section className="rounded-2xl border bg-white shadow-card">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b px-5 py-4">

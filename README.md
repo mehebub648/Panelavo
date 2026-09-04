@@ -69,6 +69,14 @@ panelavo exposes four roles on top of CloudPanel's three native ones:
 
 The "Admin" tier is stored as a CloudPanel `user` plus an entry in `.data/panel-roles.json`, so CloudPanel itself keeps restricting their site list. Sites an Admin creates are automatically assigned to them; other users' sites stay invisible to them. Role changes and deletes made from the Users page keep the overlay in sync.
 
+## Fleet Hub
+
+Super Admins can opt one Panelavo installation into **Fleet Hub** mode from `/fleet`, then enroll up to 100 other Panelavo installations as Nodes. The Hub includes its own local server and provides aggregate health, searchable server and website inventories, the existing website workspaces, resources, server information, WireGuard, users, audit, updates, and sequential rolling Node updates. Fleet navigation, pages, and browser APIs are absent or forbidden for every other role; ordinary local routes are unchanged.
+
+Pairing uses a ten-minute single-use invitation. The Node initiates every connection over its existing public HTTPS port 443, so Fleet needs no SSH key, CloudPanel password, root credential, extra listener, or inbound firewall rule. Each connection has independent Ed25519 keys encrypted under `.data`, pins both HTTPS origins and peer public keys, signs content-covered one-minute request and response envelopes, persists replay identifiers, and supports key rotation and explicit revocation. Outbound Fleet requests resolve and pin only globally reachable public A/AAAA addresses, reject redirects and special/private ranges, send no cookies, and retain normal TLS certificate validation.
+
+Every Node action reconstructs the actor from the enrolling Super Admin's stable CloudPanel identity and revalidates that account, active status, and Super Admin role. Password or MFA changes and account role/update/reset/delete operations immediately remove local Node trust; later role or status drift also fails on the next request. Remote calls are selected from a finite capability registry and reuse the same actor-aware services, confirmations, site locks, broker checks, application-root boundaries, rootless Docker rules, backups, and audit redaction as local management. Sign-in, profile, MFA, sessions, personal API/MCP access, invitations, Fleet trust, Cloudflare credential disclosure, public-database credentials, phpMyAdmin one-time access, panel security/settings secrets, and large artifact relay stay local to each Node.
+
 ## Stack
 
 Next.js App Router, strict TypeScript, Tailwind CSS, shadcn-style local UI components, Lucide, Zod, pnpm, ESLint, Prettier, and Vitest. Local development requires Node.js 20.9 or newer.

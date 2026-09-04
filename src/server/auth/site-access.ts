@@ -10,7 +10,7 @@ type UserSession = Awaited<ReturnType<typeof requireUser>>;
 export type PanelActor = {
   user: CloudPanelUser;
   cloudPanel: CloudPanelSession;
-  authentication: "session" | "api-token" | "mcp";
+  authentication: "session" | "api-token" | "mcp" | "fleet";
   credentialId?: string;
 };
 

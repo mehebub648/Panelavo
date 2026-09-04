@@ -19,7 +19,11 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
 export type EnvEntry = { key: string; value: string };
-export type EnvFileData = { name: string; exists: boolean; entries: EnvEntry[] };
+export type EnvFileData = {
+  name: string;
+  exists: boolean;
+  entries: EnvEntry[];
+};
 export type EnvSectionData = {
   path: string;
   files: EnvFileData[];
@@ -44,15 +48,20 @@ export function EnvManager({
   domain,
   initialData,
   canWrite,
+  apiBase = "",
 }: {
   domain: string;
   initialData: EnvSectionData;
   canWrite: boolean;
+  apiBase?: string;
 }) {
   const [data, setData] = useState(initialData);
   const [file, setFile] = useState(() => defaultFile(initialData));
   const [rows, setRows] = useState<Row[]>(() =>
-    toRows(initialData.files.find((item) => item.name === defaultFile(initialData))?.entries ?? []),
+    toRows(
+      initialData.files.find((item) => item.name === defaultFile(initialData))
+        ?.entries ?? [],
+    ),
   );
   const [showValues, setShowValues] = useState(false);
   const [syncProfile, setSyncProfile] = useState(true);
@@ -77,18 +86,23 @@ export function EnvManager({
     }
     return found;
   }, [rows]);
-  const invalid = rows.some((row) => !KEY_PATTERN.test(row.key)) || duplicates.size > 0;
+  const invalid =
+    rows.some((row) => !KEY_PATTERN.test(row.key)) || duplicates.size > 0;
   const profileOnly = data.userEnv.filter((entry) => !savedKeys.has(entry.key));
 
   function selectFile(name: string) {
     if (busy) return;
     setFile(name);
-    setRows(toRows(data.files.find((item) => item.name === name)?.entries ?? []));
+    setRows(
+      toRows(data.files.find((item) => item.name === name)?.entries ?? []),
+    );
     setDirty(false);
   }
 
   function edit(id: number, patch: Partial<Row>) {
-    setRows((current) => current.map((row) => (row.id === id ? { ...row, ...patch } : row)));
+    setRows((current) =>
+      current.map((row) => (row.id === id ? { ...row, ...patch } : row)),
+    );
     setDirty(true);
   }
 
@@ -96,25 +110,39 @@ export function EnvManager({
     if (busy || invalid) return;
     setBusy(true);
     try {
-      const response = await fetch(`/api/sites/${encodeURIComponent(domain)}/sections/env`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          action: "save",
-          file,
-          entries: rows.map(({ key, value }) => ({ key, value })),
-          syncProfile: file === ".env" ? syncProfile : false,
-        }),
-      });
+      const response = await fetch(
+        `${apiBase}/api/sites/${encodeURIComponent(domain)}/sections/env`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            action: "save",
+            file,
+            entries: rows.map(({ key, value }) => ({ key, value })),
+            syncProfile: file === ".env" ? syncProfile : false,
+          }),
+        },
+      );
       const result = await response.json();
-      if (!result.success) throw new Error(result.error?.message || "The environment could not be saved.");
+      if (!result.success)
+        throw new Error(
+          result.error?.message || "The environment could not be saved.",
+        );
       const next = result.data as EnvSectionData;
       setData(next);
-      setRows(toRows(next.files.find((item) => item.name === file)?.entries ?? []));
+      setRows(
+        toRows(next.files.find((item) => item.name === file)?.entries ?? []),
+      );
       setDirty(false);
-      toast.success(`${file} saved${file === ".env" && syncProfile ? " and synced to the user environment" : ""}`);
+      toast.success(
+        `${file} saved${file === ".env" && syncProfile ? " and synced to the user environment" : ""}`,
+      );
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "The environment could not be saved.");
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "The environment could not be saved.",
+      );
     } finally {
       setBusy(false);
     }
@@ -124,8 +152,10 @@ export function EnvManager({
   // only meaningful for the primary .env, which is the file that mirrors.
   function syncState(row: Row): { label: string; className: string } | null {
     if (file !== ".env" || !KEY_PATTERN.test(row.key)) return null;
-    if (!savedKeys.has(row.key)) return { label: "Unsaved", className: "bg-slate-100 text-slate-500" };
-    if (!userEnv.has(row.key)) return { label: "File only", className: "bg-amber-50 text-amber-700" };
+    if (!savedKeys.has(row.key))
+      return { label: "Unsaved", className: "bg-slate-100 text-slate-500" };
+    if (!userEnv.has(row.key))
+      return { label: "File only", className: "bg-amber-50 text-amber-700" };
     return userEnv.get(row.key) === row.value
       ? { label: "Synced", className: "bg-emerald-50 text-emerald-700" }
       : { label: "Out of sync", className: "bg-amber-50 text-amber-700" };
@@ -141,8 +171,9 @@ export function EnvManager({
           <div>
             <h3 className="font-bold">Environment</h3>
             <p className="mt-0.5 text-sm text-slate-500">
-              Auto-detected dotenv files in <code className="text-xs">{data.path}</code>, kept in
-              sync with the site user&apos;s environment.
+              Auto-detected dotenv files in{" "}
+              <code className="text-xs">{data.path}</code>, kept in sync with
+              the site user&apos;s environment.
             </p>
           </div>
         </div>
@@ -152,7 +183,11 @@ export function EnvManager({
           size="sm"
           onClick={() => setShowValues((current) => !current)}
         >
-          {showValues ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+          {showValues ? (
+            <EyeOff className="h-4 w-4" />
+          ) : (
+            <Eye className="h-4 w-4" />
+          )}
           {showValues ? "Hide values" : "Show values"}
         </Button>
       </div>
@@ -173,21 +208,26 @@ export function EnvManager({
               )}
             >
               {item.name}
-              {!item.exists && <span className="ml-1.5 font-normal text-slate-400">(new)</span>}
+              {!item.exists && (
+                <span className="ml-1.5 font-normal text-slate-400">(new)</span>
+              )}
             </button>
           ))}
         </div>
 
         <div className="space-y-2">
           {rows.map((row) => {
-            const badKey = !KEY_PATTERN.test(row.key) || duplicates.has(row.key);
+            const badKey =
+              !KEY_PATTERN.test(row.key) || duplicates.has(row.key);
             const sync = syncState(row);
             return (
               <div key={row.id} className="flex flex-wrap items-center gap-2">
                 <Input
                   value={row.key}
                   disabled={!canWrite || busy}
-                  onChange={(event) => edit(row.id, { key: event.target.value })}
+                  onChange={(event) =>
+                    edit(row.id, { key: event.target.value })
+                  }
                   placeholder="KEY"
                   aria-label="Variable name"
                   className={cn(
@@ -199,14 +239,21 @@ export function EnvManager({
                   value={row.value}
                   type={showValues ? "text" : "password"}
                   disabled={!canWrite || busy}
-                  onChange={(event) => edit(row.id, { value: event.target.value })}
+                  onChange={(event) =>
+                    edit(row.id, { value: event.target.value })
+                  }
                   placeholder="value"
                   aria-label={`Value for ${row.key || "variable"}`}
                   className="min-w-40 flex-1 font-mono text-xs"
                   autoComplete="off"
                 />
                 {sync && (
-                  <span className={cn("rounded-full px-2 py-1 text-[11px] font-semibold", sync.className)}>
+                  <span
+                    className={cn(
+                      "rounded-full px-2 py-1 text-[11px] font-semibold",
+                      sync.className,
+                    )}
+                  >
                     {sync.label}
                   </span>
                 )}
@@ -217,7 +264,9 @@ export function EnvManager({
                     disabled={busy}
                     className="rounded-lg p-2 opacity-60 transition hover:bg-red-50 hover:opacity-100"
                     onClick={() => {
-                      setRows((current) => current.filter((item) => item.id !== row.id));
+                      setRows((current) =>
+                        current.filter((item) => item.id !== row.id),
+                      );
                       setDirty(true);
                     }}
                   >
@@ -236,7 +285,8 @@ export function EnvManager({
           )}
           {duplicates.size > 0 && (
             <p className="flex items-center gap-2 text-xs font-medium text-red-600">
-              <TriangleAlert className="h-3.5 w-3.5" /> Duplicate keys: {[...duplicates].join(", ")}
+              <TriangleAlert className="h-3.5 w-3.5" /> Duplicate keys:{" "}
+              {[...duplicates].join(", ")}
             </p>
           )}
         </div>
@@ -244,8 +294,8 @@ export function EnvManager({
         {profileOnly.length > 0 && file === ".env" && (
           <div className="rounded-xl border border-amber-200/70 bg-amber-50/50 p-3 text-xs text-amber-800">
             <span className="font-bold">Only in the user environment:</span>{" "}
-            {profileOnly.map((entry) => entry.key).join(", ")} — saving .env with sync enabled
-            replaces the managed block, removing them.
+            {profileOnly.map((entry) => entry.key).join(", ")} — saving .env
+            with sync enabled replaces the managed block, removing them.
           </div>
         )}
 
@@ -258,7 +308,10 @@ export function EnvManager({
                 size="sm"
                 disabled={busy}
                 onClick={() => {
-                  setRows((current) => [...current, { id: ++rowId, key: "", value: "" }]);
+                  setRows((current) => [
+                    ...current,
+                    { id: ++rowId, key: "", value: "" },
+                  ]);
                   setDirty(true);
                 }}
               >
@@ -281,15 +334,24 @@ export function EnvManager({
             <div className="flex items-center gap-3">
               {dirty ? (
                 <span className="flex items-center gap-1.5 text-xs font-medium text-amber-600">
-                  <span className="h-2 w-2 rounded-full bg-amber-500" /> Unsaved changes
+                  <span className="h-2 w-2 rounded-full bg-amber-500" /> Unsaved
+                  changes
                 </span>
               ) : (
                 <span className="flex items-center gap-1.5 text-xs font-medium text-emerald-600">
                   <CheckCircle2 className="h-3.5 w-3.5" /> Saved
                 </span>
               )}
-              <Button type="button" disabled={busy || invalid || !dirty} onClick={() => void save()}>
-                {busy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+              <Button
+                type="button"
+                disabled={busy || invalid || !dirty}
+                onClick={() => void save()}
+              >
+                {busy ? (
+                  <LoaderCircle className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Save className="h-4 w-4" />
+                )}
                 Save {file}
               </Button>
             </div>
@@ -297,10 +359,11 @@ export function EnvManager({
         )}
 
         <p className="text-xs leading-5 text-slate-400">
-          Applications that read {file} pick changes up on their next restart. Variables from .env
-          are also exported to the site user&apos;s login environment (SSH, terminal, cron) and
-          injected into PM2 launches from Operations, so the app does not have to parse .env
-          itself. Restart the application from Operations to apply changes to a running process.
+          Applications that read {file} pick changes up on their next restart.
+          Variables from .env are also exported to the site user&apos;s login
+          environment (SSH, terminal, cron) and injected into PM2 launches from
+          Operations, so the app does not have to parse .env itself. Restart the
+          application from Operations to apply changes to a running process.
         </p>
       </div>
     </section>

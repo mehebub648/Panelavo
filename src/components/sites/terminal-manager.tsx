@@ -35,10 +35,12 @@ export function TerminalManager({
   domain,
   initialData,
   canWrite,
+  apiBase = "",
 }: {
   domain: string;
   initialData: TerminalData;
   canWrite: boolean;
+  apiBase?: string;
 }) {
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
   const [cwd, setCwd] = useState(initialData.root);
@@ -70,7 +72,7 @@ export function TerminalManager({
     const startedIn = cwd;
     try {
       const response = await fetch(
-        `/api/sites/${encodeURIComponent(domain)}/sections/terminal`,
+        `${apiBase}/api/sites/${encodeURIComponent(domain)}/sections/terminal`,
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -79,7 +81,9 @@ export function TerminalManager({
       );
       const result = await response.json();
       if (!result.success)
-        throw new Error(result.error?.message || "The command could not be executed.");
+        throw new Error(
+          result.error?.message || "The command could not be executed.",
+        );
       const data = result.data as {
         output: string;
         exitCode: number;
@@ -100,7 +104,9 @@ export function TerminalManager({
       if (data.cwd) setCwd(data.cwd);
     } catch (error) {
       toast.error(
-        error instanceof Error ? error.message : "The command could not be executed.",
+        error instanceof Error
+          ? error.message
+          : "The command could not be executed.",
       );
     } finally {
       setBusy(false);
@@ -132,7 +138,9 @@ export function TerminalManager({
               <h3 className="text-sm font-bold text-slate-100">
                 {initialData.user}@{domain}
               </h3>
-              <p className="font-mono text-xs text-slate-500">{shortPath(cwd)}</p>
+              <p className="font-mono text-xs text-slate-500">
+                {shortPath(cwd)}
+              </p>
             </div>
           </div>
           <Button
@@ -156,21 +164,27 @@ export function TerminalManager({
         >
           {!entries.length && (
             <p className="text-slate-500">
-              Commands run as <b className="text-slate-300">{initialData.user}</b> with a
-              3-minute limit — the same access as SSH, never root. Long-lived processes
-              (dev servers, watchers) will be stopped when the limit is reached; use PM2
-              or Operations for anything that must keep running.
+              Commands run as{" "}
+              <b className="text-slate-300">{initialData.user}</b> with a
+              3-minute limit — the same access as SSH, never root. Long-lived
+              processes (dev servers, watchers) will be stopped when the limit
+              is reached; use PM2 or Operations for anything that must keep
+              running.
             </p>
           )}
           {entries.map((entry) => (
             <div key={entry.id} className="mb-3">
               <p className="break-all text-slate-300">
-                <span className="text-emerald-400">{shortPath(entry.cwd)} $</span>{" "}
+                <span className="text-emerald-400">
+                  {shortPath(entry.cwd)} $
+                </span>{" "}
                 {entry.command}
                 {entry.timedOut ? (
                   <span className="ml-2 text-amber-400">(timed out)</span>
                 ) : entry.exitCode !== 0 ? (
-                  <span className="ml-2 text-red-400">(exit {entry.exitCode})</span>
+                  <span className="ml-2 text-red-400">
+                    (exit {entry.exitCode})
+                  </span>
                 ) : null}
               </p>
               {entry.output && (
@@ -239,13 +253,17 @@ export function TerminalManager({
         </div>
         <div className="mt-4 grid gap-4 lg:grid-cols-2">
           <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
-            <p className="text-xs font-bold uppercase tracking-wider text-slate-500">SSH</p>
+            <p className="text-xs font-bold uppercase tracking-wider text-slate-500">
+              SSH
+            </p>
             <CopyValue value={sshCommand} className="mt-2 w-full px-2 py-1.5">
               <code className="text-sm text-slate-700">{sshCommand}</code>
             </CopyValue>
             <p className="mt-2 text-xs text-slate-500">
               SFTP works with the same credentials:{" "}
-              <code>sftp {initialData.user}@{initialData.host || "<server-ip>"}</code>
+              <code>
+                sftp {initialData.user}@{initialData.host || "<server-ip>"}
+              </code>
             </p>
           </div>
           <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
@@ -254,12 +272,14 @@ export function TerminalManager({
             </p>
             <ul className="mt-2 list-disc space-y-1.5 pl-4 text-xs leading-5 text-slate-600">
               <li>
-                Use the <b>{initialData.user}</b> password chosen when the website was
-                created, or ask an administrator to reset it.
+                Use the <b>{initialData.user}</b> password chosen when the
+                website was created, or ask an administrator to reset it.
               </li>
               <li>
                 For key-based login, append your public key to{" "}
-                <code className={cn("break-all")}>{initialData.home}/.ssh/authorized_keys</code>{" "}
+                <code className={cn("break-all")}>
+                  {initialData.home}/.ssh/authorized_keys
+                </code>{" "}
                 (you can do that right here in the terminal).
               </li>
               <li>

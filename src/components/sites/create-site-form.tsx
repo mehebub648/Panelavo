@@ -112,7 +112,10 @@ const initial: Values = {
   reverseProxyUrl: "",
 };
 
-export function CreateSiteForm() {
+export function CreateSiteForm({
+  apiBase = "",
+  routeBase = "/sites",
+}: { apiBase?: string; routeBase?: string } = {}) {
   const router = useRouter();
   const [options, setOptions] = useState<SiteCreationOptions | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -133,7 +136,7 @@ export function CreateSiteForm() {
   useEffect(() => {
     (async () => {
       try {
-        const result = await fetch("/api/sites/options", {
+        const result = await fetch(`${apiBase}/api/sites/options`, {
           cache: "no-store",
         }).then((r) => r.json());
         if (!result.success)
@@ -162,7 +165,7 @@ export function CreateSiteForm() {
         setLoading(false);
       }
     })();
-  }, []);
+  }, [apiBase]);
   const selected = useMemo(
     () => types.find((item) => item.id === type),
     [type],
@@ -236,7 +239,7 @@ export function CreateSiteForm() {
                 }
               : shared;
     try {
-      const response = await fetch("/api/sites", {
+      const response = await fetch(`${apiBase}/api/sites`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
@@ -251,7 +254,7 @@ export function CreateSiteForm() {
         toast.warning(warning, { duration: 12000 });
       setValues(initial);
       router.push(
-        `/sites?created=${encodeURIComponent(result.data.site.domain)}`,
+        `${routeBase}?created=${encodeURIComponent(result.data.site.domain)}`,
       );
       router.refresh();
     } catch (reason) {
@@ -279,7 +282,7 @@ export function CreateSiteForm() {
         <h2 className="text-xl font-bold">Site options unavailable</h2>
         <p className="mt-2 text-sm text-slate-500">{loadError}</p>
         <Button asChild variant="outline" className="mt-6">
-          <Link href="/sites">Back to websites</Link>
+          <Link href={routeBase}>Back to websites</Link>
         </Button>
       </div>
     );
@@ -287,7 +290,7 @@ export function CreateSiteForm() {
   return (
     <div className="mx-auto max-w-5xl">
       <Link
-        href="/sites"
+        href={routeBase}
         className="mb-5 inline-flex items-center gap-2 text-sm font-semibold text-slate-500 hover:text-slate-800"
       >
         <ArrowLeft className="h-4 w-4" />
@@ -333,7 +336,7 @@ export function CreateSiteForm() {
           <span>
             No base domain is configured, so system subdomains cannot be
             generated. Ask a super administrator to set one on the{" "}
-            <Link href="/settings" className="font-semibold underline">
+            <Link href={routeBase} className="font-semibold underline">
               Settings page
             </Link>
             .
@@ -717,7 +720,7 @@ export function CreateSiteForm() {
           </div>
           <div className="flex items-center justify-end gap-3 border-t border-slate-100 bg-slate-50/60 px-5 py-4 sm:px-7">
             <Button type="button" variant="ghost" asChild>
-              <Link href="/sites">Cancel</Link>
+              <Link href={routeBase}>Cancel</Link>
             </Button>
             <Button type="submit" disabled={busy || !category || !baseDomain}>
               {busy ? (

@@ -7,6 +7,7 @@ import { AppError } from "@/server/cloudpanel/errors";
 import { assertWriteRequest, rateLimit } from "@/server/security/request";
 import { fail, ok } from "@/server/http";
 import { revokeAllMcpConnections } from "@/server/mcp/oauth";
+import { revokeFleetAuthorizationForUser } from "@/server/fleet/service";
 import {
   getSecuritySettings,
   passwordPolicyError,
@@ -72,6 +73,7 @@ export async function POST(request: NextRequest) {
     if (action === "change-password") {
       await revokeOtherUserSessions(session.user.username, session.id);
       await revokeAllMcpConnections(session.user.id, session.user.username);
+      await revokeFleetAuthorizationForUser(session.user);
     }
     return ok({ user });
   } catch (error) {

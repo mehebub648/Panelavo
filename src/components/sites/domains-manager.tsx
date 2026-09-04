@@ -28,27 +28,40 @@ type Meta = {
   redirectTo?: string;
 };
 type DnsEntry = { name: string; ip: string | null; pointed: boolean };
-type Data = { meta: Meta | null; serverIp: string; dns: DnsEntry[]; warnings?: string[] };
+type Data = {
+  meta: Meta | null;
+  serverIp: string;
+  dns: DnsEntry[];
+  warnings?: string[];
+};
 
 export function DomainsManager({
   domain,
   canWrite,
+  apiBase = "",
 }: {
   domain: string;
   canWrite: boolean;
+  apiBase?: string;
 }) {
   const [data, setData] = useState<Data | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string>("");
   const [aliasDraft, setAliasDraft] = useState("");
   const [sslSelection, setSslSelection] = useState<string[]>([domain]);
-  const [confirm, setConfirm] = useState<{ title: string; message: string; onConfirm: () => void } | null>(null);
+  const [confirm, setConfirm] = useState<{
+    title: string;
+    message: string;
+    onConfirm: () => void;
+  } | null>(null);
 
-  const base = `/api/sites/${encodeURIComponent(domain)}/domains`;
+  const base = `${apiBase}/api/sites/${encodeURIComponent(domain)}/domains`;
 
   const refresh = useCallback(async () => {
     try {
-      const result = await fetch(base, { cache: "no-store" }).then((r) => r.json());
+      const result = await fetch(base, { cache: "no-store" }).then((r) =>
+        r.json(),
+      );
       if (result.success) setData(result.data);
     } finally {
       setLoading(false);
@@ -59,7 +72,11 @@ export function DomainsManager({
     void refresh();
   }, [refresh]);
 
-  async function act(body: Record<string, unknown>, key: string, success: string) {
+  async function act(
+    body: Record<string, unknown>,
+    key: string,
+    success: string,
+  ) {
     setBusy(key);
     try {
       const response = await fetch(base, {
@@ -69,13 +86,20 @@ export function DomainsManager({
       });
       const result = await response.json();
       if (!result.success)
-        throw new Error(result.error?.message || "The change could not be applied.");
+        throw new Error(
+          result.error?.message || "The change could not be applied.",
+        );
       setData(result.data);
-      for (const warning of (result.data.warnings as string[] | undefined) ?? [])
+      for (const warning of (result.data.warnings as string[] | undefined) ??
+        [])
         toast.warning(warning, { duration: 12000 });
       toast.success(success);
     } catch (reason) {
-      toast.error(reason instanceof Error ? reason.message : "The change could not be applied.");
+      toast.error(
+        reason instanceof Error
+          ? reason.message
+          : "The change could not be applied.",
+      );
     } finally {
       setBusy("");
     }
@@ -85,9 +109,11 @@ export function DomainsManager({
     setBusy(`dns-${targetDomain}`);
     try {
       // 1. Check DNS status to get zone and credential
-      const getRes = await fetch(`/api/sites/${encodeURIComponent(targetDomain)}/dns`).then(r => r.json());
+      const getRes = await fetch(
+        `${apiBase}/api/sites/${encodeURIComponent(targetDomain)}/dns`,
+      ).then((r) => r.json());
       if (!getRes.success) throw new Error("Could not check DNS status.");
-      
+
       const status = getRes.data;
       if (!status.zoneId || !status.credentialId) {
         throw new Error("No connected Cloudflare zone found for this domain.");
@@ -95,30 +121,36 @@ export function DomainsManager({
 
       // 2. Point it
       const doPoint = async (replace = false) => {
-        const postRes = await fetch(`/api/sites/${encodeURIComponent(targetDomain)}/dns`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            zoneId: status.zoneId,
-            credentialId: status.credentialId,
-            replace,
-            proxied: false,
-          }),
-        });
+        const postRes = await fetch(
+          `${apiBase}/api/sites/${encodeURIComponent(targetDomain)}/dns`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              zoneId: status.zoneId,
+              credentialId: status.credentialId,
+              replace,
+              proxied: false,
+            }),
+          },
+        );
         const postResult = await postRes.json();
-        if (!postResult.success) throw new Error(postResult.error?.message || "Failed to update DNS");
-        
+        if (!postResult.success)
+          throw new Error(postResult.error?.message || "Failed to update DNS");
+
         // Optimistically update the UI state so the user sees immediate feedback
-        setData(current => {
+        setData((current) => {
           if (!current) return current;
           return {
             ...current,
-            dns: current.dns.map(d => 
-              d.name === targetDomain ? { ...d, ip: status.serverIp, pointed: true } : d
-            )
+            dns: current.dns.map((d) =>
+              d.name === targetDomain
+                ? { ...d, ip: status.serverIp, pointed: true }
+                : d,
+            ),
           };
         });
-        
+
         toast.success("DNS record updated successfully");
         // We delay the refresh slightly to give Cloudflare and public resolvers a moment to propagate
         setTimeout(() => void refresh(), 3000);
@@ -132,7 +164,7 @@ export function DomainsManager({
             setConfirm(null);
             setBusy(`dns-${targetDomain}`);
             void doPoint(true).finally(() => setBusy(""));
-          }
+          },
         });
       } else {
         await doPoint(false);
@@ -145,10 +177,13 @@ export function DomainsManager({
   }
 
   if (loading)
-    return <div className="h-72 animate-pulse rounded-2xl border border-slate-200 bg-white" />;
+    return (
+      <div className="h-72 animate-pulse rounded-2xl border border-slate-200 bg-white" />
+    );
 
   const meta = data?.meta ?? null;
-  const dnsFor = (name: string) => data?.dns.find((entry) => entry.name === name);
+  const dnsFor = (name: string) =>
+    data?.dns.find((entry) => entry.name === name);
 
   if (!meta)
     return (
@@ -157,8 +192,8 @@ export function DomainsManager({
           <TriangleAlert className="h-5 w-5" /> No domain metadata
         </p>
         <p className="mt-2">
-          This website was created outside the panel&apos;s id scheme, so alias and
-          system-domain management is not available for it.
+          This website was created outside the panel&apos;s id scheme, so alias
+          and system-domain management is not available for it.
         </p>
       </div>
     );
@@ -196,7 +231,9 @@ export function DomainsManager({
             )}
           </div>
           <div>
-            <Label htmlFor="blockMode">When someone opens the system domain</Label>
+            <Label htmlFor="blockMode">
+              When someone opens the system domain
+            </Label>
             <div className="mt-1.5 flex flex-col gap-2 sm:flex-row">
               <Select
                 id="blockMode"
@@ -227,7 +264,11 @@ export function DomainsManager({
                   disabled={!canWrite || busy !== ""}
                   onChange={(event) =>
                     void act(
-                      { action: "set-block", block: "redirect", redirectTo: event.target.value },
+                      {
+                        action: "set-block",
+                        block: "redirect",
+                        redirectTo: event.target.value,
+                      },
                       "block",
                       "Redirect target saved",
                     )
@@ -273,7 +314,11 @@ export function DomainsManager({
                 const alias = aliasDraft.trim().toLowerCase();
                 if (!alias) return;
                 setAliasDraft("");
-                void act({ action: "add-alias", domain: alias }, "add", `${alias} added`);
+                void act(
+                  { action: "add-alias", domain: alias },
+                  "add",
+                  `${alias} added`,
+                );
               }}
             >
               <Input
@@ -282,7 +327,10 @@ export function DomainsManager({
                 placeholder="example.com"
                 autoComplete="off"
               />
-              <Button type="submit" disabled={busy !== "" || !aliasDraft.trim()}>
+              <Button
+                type="submit"
+                disabled={busy !== "" || !aliasDraft.trim()}
+              >
                 {busy === "add" ? (
                   <LoaderCircle className="h-4 w-4 animate-spin" />
                 ) : (
@@ -294,7 +342,8 @@ export function DomainsManager({
           )}
           {meta.aliases.length === 0 ? (
             <p className="rounded-xl bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
-              No domains added yet — the website is reachable on its system domain.
+              No domains added yet — the website is reachable on its system
+              domain.
             </p>
           ) : (
             <ul className="divide-y divide-slate-100 rounded-xl border border-slate-100">
@@ -305,7 +354,9 @@ export function DomainsManager({
                     key={alias}
                     className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-sm"
                   >
-                    <span className="break-all font-medium text-slate-800">{alias}</span>
+                    <span className="break-all font-medium text-slate-800">
+                      {alias}
+                    </span>
                     <span className="flex items-center gap-2">
                       {dns?.pointed ? (
                         <span className="flex items-center gap-1.5 text-emerald-600">
@@ -318,14 +369,16 @@ export function DomainsManager({
                             {dns?.ip ? `Points to ${dns.ip}` : "No DNS record"}
                           </span>
                           {canWrite && (
-                            <Button 
-                              size="sm" 
-                              variant="outline" 
-                              className="h-7 text-xs border-amber-200 text-amber-700 hover:bg-amber-50"
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-7 border-amber-200 text-xs text-amber-700 hover:bg-amber-50"
                               disabled={busy !== ""}
                               onClick={() => pointDns(alias, dns?.ip ?? null)}
                             >
-                              {busy === `dns-${alias}` ? <LoaderCircle className="mr-1.5 h-3 w-3 animate-spin" /> : null}
+                              {busy === `dns-${alias}` ? (
+                                <LoaderCircle className="mr-1.5 h-3 w-3 animate-spin" />
+                              ) : null}
                               Point to this server
                             </Button>
                           )}
@@ -377,8 +430,8 @@ export function DomainsManager({
           <div>
             <h3 className="font-bold">SSL certificate</h3>
             <p className="text-sm text-slate-500">
-              Issue one Let&apos;s Encrypt certificate covering the selected domains.
-              Every selected domain must already point to this server.
+              Issue one Let&apos;s Encrypt certificate covering the selected
+              domains. Every selected domain must already point to this server.
             </p>
           </div>
         </div>
@@ -404,11 +457,17 @@ export function DomainsManager({
                     selected
                       ? "border-panel-400 bg-panel-50 text-panel-700"
                       : "border-slate-200 text-slate-600 hover:bg-slate-50"
-                  } ${name === domain ? "opacity-75 cursor-not-allowed" : ""}`}
+                  } ${name === domain ? "cursor-not-allowed opacity-75" : ""}`}
                 >
-                  {selected ? <CheckCircle2 className="h-4 w-4" /> : <Ban className="h-4 w-4 opacity-30" />}
+                  {selected ? (
+                    <CheckCircle2 className="h-4 w-4" />
+                  ) : (
+                    <Ban className="h-4 w-4 opacity-30" />
+                  )}
                   <span className="break-all">{name}</span>
-                  {!pointed && <TriangleAlert className="h-3.5 w-3.5 text-amber-500" />}
+                  {!pointed && (
+                    <TriangleAlert className="h-3.5 w-3.5 text-amber-500" />
+                  )}
                 </button>
               );
             })}
@@ -453,9 +512,10 @@ export function DomainsManager({
             </div>
           )}
           <p className="text-xs text-slate-400">
-            Installed certificates are shown below on this page. Issuing can take up
-            to a minute. &quot;Recheck DNS &amp; secure&quot; re-points what it can,
-            then extends the certificate to every domain that points here.
+            Installed certificates are shown below on this page. Issuing can
+            take up to a minute. &quot;Recheck DNS &amp; secure&quot; re-points
+            what it can, then extends the certificate to every domain that
+            points here.
           </p>
         </div>
       </section>

@@ -8,6 +8,7 @@ import { AppError } from "@/server/cloudpanel/errors";
 import { assertWriteRequest, rateLimit } from "@/server/security/request";
 import { fail, ok } from "@/server/http";
 import { revokeAllMcpConnections } from "@/server/mcp/oauth";
+import { revokeFleetAuthorizationForUser } from "@/server/fleet/service";
 
 const PANEL_ROLES: PanelRole[] = ["super-admin", "manager", "admin", "user"];
 
@@ -98,7 +99,9 @@ export async function POST(request: NextRequest) {
       body.role = cloudRoleFor(panelRole);
     }
     const client = getCloudPanelClient();
-    const credentialResetTarget = ["reset-password", "delete"].includes(action)
+    const mutationTarget = ["update", "reset-password", "delete"].includes(
+      action,
+    )
       ? (await client.listUsers(session.record.cloudPanel)).find(
           (candidate) => candidate.username.toLowerCase() === username,
         )
@@ -106,11 +109,9 @@ export async function POST(request: NextRequest) {
     await client.manageUser(session.record.cloudPanel, body);
     if (panelRole) await setPanelAdmin(username, panelRole === "admin");
     if (action === "delete") await setPanelAdmin(username, false);
-    if (credentialResetTarget)
-      await revokeAllMcpConnections(
-        credentialResetTarget.id,
-        credentialResetTarget.username,
-      );
+    if (mutationTarget && ["reset-password", "delete"].includes(action))
+      await revokeAllMcpConnections(mutationTarget.id, mutationTarget.username);
+    if (mutationTarget) await revokeFleetAuthorizationForUser(mutationTarget);
     return ok({});
   } catch (error) {
     return fail(error);
