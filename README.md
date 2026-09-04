@@ -327,3 +327,7 @@ src/server/security     origin checks, limits, and redacted logs
 src/server/storage      private atomic JSON persistence
 src/types               CloudPanel adapter contracts
 ```
+
+### Concurrent session persistence
+
+Session startup shares one disk load, and atomic saves run in order. Refreshes cannot restore revoked sessions. Persistence failures remain best-effort and are retried on later requests; no session format or deployment migration is required.

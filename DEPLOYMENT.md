@@ -286,3 +286,7 @@ pm2 monit               # live dashboard (CPU / memory per process)
 | Status           | `pm2 status`                    |
 | Live logs        | `pm2 logs panelavo`             |
 | Persist for boot | `pm2 save` + `pm2 startup`      |
+
+### Concurrent session persistence
+
+Session startup shares one disk load, and atomic saves run in order. Refreshes cannot restore revoked sessions. Persistence failures remain best-effort and are retried on later requests; no session format or deployment migration is required.

@@ -4,7 +4,7 @@ import {
   randomUUID,
   timingSafeEqual,
 } from "node:crypto";
-import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { cookies, headers } from "next/headers";
 import type { CloudPanelSession, CloudPanelUser } from "@/types/cloudpanel";
@@ -28,6 +28,8 @@ export interface SessionRecord {
 const globalSessions = globalThis as typeof globalThis & {
   __panelSessions?: Map<string, SessionRecord>;
   __panelSessionsLoaded?: boolean;
+  __panelSessionsLoading?: Promise<void>;
+  __panelSessionsSaving?: Promise<void>;
   __panelSessionsLastPersist?: number;
 };
 const sessions = (globalSessions.__panelSessions ??= new Map<
@@ -40,35 +42,46 @@ const PERSIST_THROTTLE_MS = 10_000;
 
 async function ensureLoaded() {
   if (globalSessions.__panelSessionsLoaded) return;
-  globalSessions.__panelSessionsLoaded = true;
-  try {
-    const parsed = JSON.parse(await readFile(SESSION_FILE, "utf8")) as Record<
-      string,
-      SessionRecord
-    >;
-    const now = Date.now();
-    for (const [key, value] of Object.entries(parsed)) {
-      if (value?.expiresAt > now) sessions.set(key, value);
-    }
-  } catch {
-    // No persisted sessions yet, or the file is unreadable — start empty.
+  if (!globalSessions.__panelSessionsLoading) {
+    globalSessions.__panelSessionsLoading = (async () => {
+      try {
+        const parsed = JSON.parse(
+          await readFile(SESSION_FILE, "utf8"),
+        ) as Record<string, SessionRecord>;
+        for (const [key, value] of Object.entries(parsed)) {
+          if (value?.expiresAt > Date.now()) sessions.set(key, value);
+        }
+      } catch {
+        // No persisted sessions yet, or the file is unreadable — start empty.
+      }
+      globalSessions.__panelSessionsLoaded = true;
+    })();
   }
+  await globalSessions.__panelSessionsLoading;
 }
 
-// Atomic write (temp file + rename) with restrictive permissions, since the
-// file holds live authentication material.
+// Serialize snapshots and atomic replacement across module reloads, so an old
+// write can never overwrite a newer revocation.
 async function saveSessions() {
   globalSessions.__panelSessionsLastPersist = Date.now();
-  try {
-    await mkdir(DATA_DIR, { recursive: true, mode: 0o700 });
+  const operation = (
+    globalSessions.__panelSessionsSaving ?? Promise.resolve()
+  ).then(async () => {
     const tmp = `${SESSION_FILE}.${randomUUID()}.tmp`;
-    await writeFile(tmp, JSON.stringify(Object.fromEntries(sessions)), {
-      mode: 0o600,
-    });
-    await rename(tmp, SESSION_FILE);
-  } catch {
-    // Persistence is best-effort; the in-memory map remains authoritative.
-  }
+    try {
+      await mkdir(DATA_DIR, { recursive: true, mode: 0o700 });
+      await writeFile(tmp, JSON.stringify(Object.fromEntries(sessions)), {
+        mode: 0o600,
+      });
+      await rename(tmp, SESSION_FILE);
+    } catch {
+      // Allow the next request to retry; memory remains authoritative.
+      globalSessions.__panelSessionsLastPersist = 0;
+      await rm(tmp, { force: true }).catch(() => undefined);
+    }
+  });
+  globalSessions.__panelSessionsSaving = operation;
+  await operation;
 }
 
 // updateSession runs on every authenticated request, so its writes are
@@ -194,9 +207,10 @@ export async function getSession(options: { allowPending?: boolean } = {}) {
 
 export async function updateSession(id: string, patch: Partial<SessionRecord>) {
   await ensureLoaded();
-  const current = sessions.get(id);
-  if (current) {
+  if (sessions.has(id)) {
     const age = await maxAge();
+    const current = sessions.get(id);
+    if (!current) return;
     sessions.set(id, {
       ...current,
       ...patch,
@@ -285,5 +299,7 @@ export async function destroySession() {
 export function clearSessionStoreForTests() {
   sessions.clear();
   globalSessions.__panelSessionsLoaded = false;
+  globalSessions.__panelSessionsLoading = undefined;
+  globalSessions.__panelSessionsSaving = undefined;
   globalSessions.__panelSessionsLastPersist = 0;
 }
