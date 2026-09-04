@@ -20,6 +20,7 @@ export async function probeSite(domain: string) {
   try {
     const response = await fetch(`https://${domain}/`, { method: "GET", redirect: "manual", headers: { "user-agent": "Panelavo-Uptime/1" }, signal: AbortSignal.timeout(12_000) });
     const up = response.status >= 200 && response.status < 400;
+    await response.body?.cancel().catch(() => undefined);
     return { up, statusCode: response.status, message: up ? undefined : `HTTP ${response.status}` };
   } catch (error) { return { up: false, message: error instanceof Error ? error.message.slice(0, 200) : "Request failed" }; }
 }
@@ -36,8 +37,7 @@ export function certificateExpiry(domain: string): Promise<Date> {
   });
 }
 
-async function checkUptime() {
-  for (const { domain, settings } of await claimDueUptime()) {
+async function checkSite({ domain, settings }: Awaited<ReturnType<typeof claimDueUptime>>[number]) {
     const probe = await probeSite(domain);
     const result = await updateUptimeState(domain, (current) => {
       const failures = probe.up ? 0 : current.failures + 1;
@@ -52,7 +52,18 @@ async function checkUptime() {
         if (await updateSslState(domain, expiry.toISOString(), days < settings.sslDays)) await sendNotification({ title: `${domain} TLS certificate expires soon`, message: `The certificate expires in ${days} day${days === 1 ? "" : "s"} (${expiry.toISOString()}).`, severity: "warning", event: "ssl.expiring", site: domain });
       } catch { /* A failed HTTPS probe already covers unreachable TLS. */ }
     }
-  }
+}
+
+async function checkUptime() {
+  const due = await claimDueUptime();
+  let cursor = 0;
+  await Promise.all(Array.from({ length: Math.min(4, due.length) }, async () => {
+    while (cursor < due.length) {
+      const item = due[cursor++];
+      // Isolate each site's network, notification, and persistence failures.
+      await checkSite(item).catch(() => undefined);
+    }
+  }));
 }
 
 async function checkUpdates() {

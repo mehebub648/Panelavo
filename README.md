@@ -347,3 +347,7 @@ Background Fleet checks request a compact authenticated health report from the s
 ### Separate Fleet telemetry and replay persistence
 
 Fleet health and replay records now use separate encrypted files, so routine requests do not rewrite connection credentials. Replay identifiers are saved before requests are accepted; missing or corrupt replay state fails closed. Migration merges existing records before marking the split complete, and health cannot reactivate pending or suspended connections. Preserve all three fleet-*.enc.json files in backups. Before downgrading below v0.1.127, stop Panelavo for at least five minutes to expire all previously signed requests; never delete the replay file from a running installation.
+
+### Bounded concurrent website monitoring
+
+Website uptime and TLS checks run through four workers instead of a sequential queue. A slow or failing site no longer delays every later site, while the existing twelve-second network limits, failure thresholds and recovery alerts remain in place. HTTPS response bodies are cancelled after checking headers to release resources. Only the Panelavo process needs reloading; hosted applications are unchanged.
