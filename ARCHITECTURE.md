@@ -99,3 +99,7 @@ Installation offers exactly two address modes: sslip.io is recommended and selec
 ### Concurrent session persistence
 
 Session startup shares one disk load, and atomic saves run in order. Refreshes cannot restore revoked sessions. Persistence failures remain best-effort and are retried on later requests; no session format or deployment migration is required.
+
+### Bounded Fleet health sweeps
+
+The minute-based Fleet scheduler skips ticks while its previous sweep is running, including across module reloads. Failed sweeps release the guard so monitoring resumes on the next tick. Existing per-sweep concurrency remains bounded; deployment requires no broker or data migration.
