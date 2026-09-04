@@ -294,3 +294,7 @@ Session startup shares one disk load, and atomic saves run in order. Refreshes c
 ### Bounded Fleet health sweeps
 
 The minute-based Fleet scheduler skips ticks while its previous sweep is running, including across module reloads. Failed sweeps release the guard so monitoring resumes on the next tick. Existing per-sweep concurrency remains bounded; deployment requires no broker or data migration.
+
+### Adaptive update status polling
+
+Visible idle tabs check update status once per minute, switching to every two seconds when an update is detected. Hidden tabs pause checks and refresh when visible again. Requests never overlap and are cancelled on hiding or unmounting; the maintenance lock survives transient failures. This frontend change needs only the normal panel build and reload.
