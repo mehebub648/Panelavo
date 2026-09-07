@@ -3,10 +3,12 @@ import {
   createMcpHandler,
   hostHeaderValidationResponse,
   originValidationResponse,
+  isLegacyRequest,
 } from "@modelcontextprotocol/server";
 import { resolveMcpActor } from "@/server/mcp/oauth";
 import { createPanelavoMcpServer } from "@/server/mcp/server";
 import { getMcpPublicUrls } from "@/server/mcp/public-url";
+import { createLegacyMcpHandler } from "./legacy-handler";
 
 function getActor(authInfo?: AuthInfo) {
   if (!authInfo) throw new Error("MCP authentication is required.");
@@ -16,12 +18,16 @@ function getActor(authInfo?: AuthInfo) {
 const handler = createMcpHandler(
   ({ authInfo }) => createPanelavoMcpServer(getActor(authInfo)),
   {
-    legacy: "stateless",
+    legacy: "reject",
     responseMode: "auto",
     onerror(error) {
       console.error("MCP request failed:", error.message);
     },
   },
+);
+
+const legacyHandler = createLegacyMcpHandler((authInfo) =>
+  createPanelavoMcpServer(getActor(authInfo)),
 );
 
 function allowedHostname(request: Request) {
@@ -46,6 +52,7 @@ export function validateMcpRequestOrigin(request: Request) {
   );
 }
 
-export function serveMcpRequest(request: Request, authInfo: AuthInfo) {
+export async function serveMcpRequest(request: Request, authInfo: AuthInfo) {
+  if (await isLegacyRequest(request)) return legacyHandler(request, authInfo);
   return handler.fetch(request, { authInfo });
 }
