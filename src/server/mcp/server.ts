@@ -13,6 +13,7 @@ import {
 } from "@/server/auth/site-access";
 import { getCloudPanelClient } from "@/server/cloudpanel";
 import { AppError } from "@/server/cloudpanel/errors";
+import { requiresMcpConfirmation } from "@/server/mcp/confirmation-policy";
 import {
   createMcpConfirmationManager,
   type McpConfirmationRequest,
@@ -380,6 +381,8 @@ async function requireSiteActionConfirmation(
   request: McpConfirmationRequest & { domain: string },
 ) {
   await writableSiteForActor(actor, request.domain);
+  if (!requiresMcpConfirmation(request.tool, request.arguments))
+    return undefined;
   return confirmation.require(request);
 }
 
@@ -474,7 +477,7 @@ export function createPanelavoMcpServer(actor: PanelActor) {
     { name: "Panelavo", version: "1.0.0" },
     {
       instructions:
-        "Manage only the websites visible to this signed-in Panelavo user. Inspect before changing, prefer a backup before deployment, and ask for explicit confirmation before destructive or service-disrupting actions. Account security, user administration, and Panelavo settings remain UI-only.",
+        "Manage only the websites visible to this signed-in Panelavo user. Inspect before changing and prefer a backup before deployment. Authorized site-user terminal commands, deployments and ordinary file edits run without an extra Panelavo prompt. Destructive actions retain explicit confirmation. Account security, user administration, and Panelavo settings remain UI-only.",
       requestState: { verify: confirmationManager.verifyRequestState },
     },
   );
@@ -762,6 +765,201 @@ export function createPanelavoMcpServer(actor: PanelActor) {
           {},
           () => listProjectPortsForActor(actor, domain),
         ),
+    );
+
+    async function commonSectionCall(
+      tool: string,
+      domain: string,
+      section: "file-manager" | "logs" | "actions",
+      operation: Record<string, unknown>,
+    ) {
+      const parsed = siteSectionToolSchema.parse({
+        domain,
+        section,
+        operation,
+      });
+      return runTool(
+        actor,
+        tool,
+        { type: "site", id: domain },
+        { section, action: operation.action },
+        async () => {
+          await writableSiteForActor(actor, domain);
+          if (section === "actions") {
+            assertReadyOperation(
+              await getSiteSectionForActor(actor, domain, "actions"),
+              "command",
+              String(operation.command),
+            );
+          }
+          return manageSiteSectionForActor(
+            actor,
+            domain,
+            parsed.section,
+            parsed.operation,
+          );
+        },
+      );
+    }
+
+    const commonPath = z
+      .string()
+      .max(4096)
+      .describe(
+        "Path relative to the website user's home, as returned by File Manager. An empty or omitted folder path means the website user’s home.",
+      );
+    server.registerTool(
+      "panelavo_list_files",
+      {
+        title: "List website files",
+        description:
+          "List a website folder directly, without a terminal command or extra confirmation. Requires current website-write access.",
+        inputSchema: z.object({
+          domain: domainSchema,
+          path: commonPath.default(""),
+        }),
+        annotations: {
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
+      },
+      async ({ domain, path }) =>
+        commonSectionCall("panelavo_list_files", domain, "file-manager", {
+          action: "list",
+          path,
+        }),
+    );
+
+    server.registerTool(
+      "panelavo_read_file",
+      {
+        title: "Read a website file",
+        description:
+          "Read a contained website file directly. Use base64 encoding for binary data. Requires current website-write access; file content is not recorded in the audit log.",
+        inputSchema: z.object({
+          domain: domainSchema,
+          path: commonPath.min(1),
+          encoding: z.literal("base64").optional(),
+        }),
+        annotations: {
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
+      },
+      async ({ domain, path, encoding }) =>
+        commonSectionCall("panelavo_read_file", domain, "file-manager", {
+          action: "read",
+          path,
+          encoding,
+        }),
+    );
+
+    server.registerTool(
+      "panelavo_write_file",
+      {
+        title: "Write a website text file",
+        description:
+          "Create or replace a text file in the selected website folder using explicit filename and content. Preserves the existing File Manager path, size and permission checks. Back up an existing file before replacing it.",
+        inputSchema: z.object({
+          domain: domainSchema,
+          path: commonPath.default(""),
+          name: z.string().min(1).max(255),
+          content: z.string().max(5 * 1024 * 1024),
+        }),
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: true,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
+      },
+      async ({ domain, path, name, content }) =>
+        commonSectionCall("panelavo_write_file", domain, "file-manager", {
+          action: "save-file",
+          path,
+          name,
+          content,
+        }),
+    );
+
+    server.registerTool(
+      "panelavo_upload_file",
+      {
+        title: "Upload a website file",
+        description:
+          "Upload a file of up to 64 MiB directly to a website folder using base64 content. For larger releases use the resumable artifact upload tools. The existing file, if any, is replaced.",
+        inputSchema: z.object({
+          domain: domainSchema,
+          path: commonPath.default(""),
+          name: z.string().min(1).max(255),
+          content: z.string().max(89_478_488).describe("Base64 file content."),
+        }),
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: true,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
+      },
+      async ({ domain, path, name, content }) =>
+        commonSectionCall("panelavo_upload_file", domain, "file-manager", {
+          action: "upload",
+          path,
+          name,
+          content,
+        }),
+    );
+
+    server.registerTool(
+      "panelavo_read_site_log",
+      {
+        title: "Read a website log",
+        description:
+          "Read one website log directly. Use a log name returned by the website logs section; this does not clear the log.",
+        inputSchema: z.object({
+          domain: domainSchema,
+          name: commonPath.min(1),
+        }),
+        annotations: {
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
+      },
+      async ({ domain, name }) =>
+        commonSectionCall("panelavo_read_site_log", domain, "logs", {
+          action: "read",
+          name,
+        }),
+    );
+
+    server.registerTool(
+      "panelavo_restart_site",
+      {
+        title: "Restart a website application",
+        description:
+          "Restart the site's own PM2 application or rootless Docker Compose project. Select the runtime shown as ready in Operations. Rechecks preflight and runs the server-owned restart plan as the site user.",
+        inputSchema: z.object({
+          domain: domainSchema,
+          runtime: z.enum(["pm2", "compose"]),
+        }),
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: true,
+          idempotentHint: false,
+          openWorldHint: false,
+        },
+      },
+      async ({ domain, runtime }) =>
+        commonSectionCall("panelavo_restart_site", domain, "actions", {
+          action: "run",
+          command: runtime + "-restart",
+        }),
     );
 
     server.registerTool(

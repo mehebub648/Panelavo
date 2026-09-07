@@ -11,6 +11,9 @@ import type { PanelRole } from "@/types/cloudpanel";
 
 const mocks = vi.hoisted(() => ({
   audit: vi.fn(),
+  listSites: vi.fn(),
+  manageSiteSectionForActor: vi.fn(),
+  getSiteSectionForActor: vi.fn(),
   getServerPublicIp: vi.fn(),
   getSiteDomainsForActor: vi.fn(),
   getSiteDnsForActor: vi.fn(),
@@ -53,6 +56,11 @@ vi.mock("@/server/sites/site-automation-service", () => ({
   saveSiteOffsiteDestinationForActor: vi.fn(),
   saveSiteUptimeForActor: vi.fn(),
 }));
+vi.mock("@/server/sites/site-section-service", () => ({
+  manageSiteSectionForActor: mocks.manageSiteSectionForActor,
+  getSiteSectionForActor: mocks.getSiteSectionForActor,
+}));
+
 vi.mock("@/server/cloudpanel", () => ({
   getCloudPanelClient: mocks.getCloudPanelClient,
 }));
@@ -76,6 +84,12 @@ const CREATE_TOOLS = [
 ];
 
 const WRITE_TOOLS = [
+  "panelavo_list_files",
+  "panelavo_read_file",
+  "panelavo_write_file",
+  "panelavo_upload_file",
+  "panelavo_read_site_log",
+  "panelavo_restart_site",
   "panelavo_begin_artifact_upload",
   "panelavo_cancel_site_job",
   "panelavo_configure_backup_schedule",
@@ -217,8 +231,11 @@ describe("MCP role-aware tool surface", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.audit.mockResolvedValue(undefined);
+    mocks.listSites.mockResolvedValue([{ domain: "site.example.test" }]);
+    mocks.manageSiteSectionForActor.mockResolvedValue({ success: true });
     mocks.getServerPublicIp.mockResolvedValue("203.0.113.10");
     mocks.getCloudPanelClient.mockReturnValue({
+      listSites: mocks.listSites,
       getServerInfo: vi.fn(),
       getServerResources: vi.fn(),
     });
@@ -251,6 +268,70 @@ describe("MCP role-aware tool surface", () => {
       expect(toolNames(await toolsFor(role))).toEqual(expected.sort());
     },
   );
+
+  it("runs direct file and terminal calls without client elicitation", async () => {
+    const client = await connect(createPanelavoMcpServer(actor("admin")));
+    connected.push(client);
+    for (const [name, input] of [
+      ["panelavo_list_files", { domain: "site.example.test" }],
+      [
+        "panelavo_read_file",
+        { domain: "site.example.test", path: "htdocs/site/index.php" },
+      ],
+      [
+        "panelavo_write_file",
+        { domain: "site.example.test", name: "test.txt", content: "test" },
+      ],
+      [
+        "panelavo_read_site_log",
+        { domain: "site.example.test", name: "php/error.log" },
+      ],
+      [
+        "panelavo_execute_terminal_command",
+        { domain: "site.example.test", command: "pwd" },
+      ],
+      [
+        "panelavo_manage_site_section",
+        {
+          domain: "site.example.test",
+          section: "file-manager",
+          operation: { action: "list", path: "" },
+        },
+      ],
+    ] as const) {
+      const result = await client.callTool(name, input);
+      expect(result).toMatchObject({ structuredContent: { success: true } });
+      expect(result.isError).not.toBe(true);
+    }
+    expect(mocks.manageSiteSectionForActor).toHaveBeenCalledWith(
+      expect.anything(),
+      "site.example.test",
+      "terminal",
+      { action: "exec", command: "pwd", cwd: undefined },
+    );
+  });
+
+  it("rechecks website access before direct tools execute", async () => {
+    const client = await connect(createPanelavoMcpServer(actor("admin")));
+    connected.push(client);
+    mocks.listSites.mockResolvedValue([]);
+    const result = await client.callTool("panelavo_list_files", {
+      domain: "site.example.test",
+    });
+    expect(result.isError).toBe(true);
+    expect(mocks.manageSiteSectionForActor).not.toHaveBeenCalled();
+  });
+
+  it("rejects traversal in direct file tools before calling the service", async () => {
+    const client = await connect(createPanelavoMcpServer(actor("admin")));
+    connected.push(client);
+    const result = await client.callTool("panelavo_read_file", {
+      domain: "site.example.test",
+      path: "../other-site/.env",
+    });
+    expect(result.isError).toBe(true);
+    expect(mocks.manageSiteSectionForActor).not.toHaveBeenCalled();
+  });
 
   it("keeps domain orchestration dedicated and hides raw domain sections", async () => {
     const userTools = await toolsFor("user");
