@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { redirect } from "next/navigation";
 import { destroySession, getSession, updateSession } from "./session";
 import { decorateUser } from "./panel-roles";
@@ -5,7 +6,7 @@ import { getCloudPanelClient } from "@/server/cloudpanel";
 import { AppError } from "@/server/cloudpanel/errors";
 import { isPanelUpdateRunning } from "@/server/updates/panel-updater";
 
-export async function requireUser(options: { allowDuringUpdate?: boolean } = {}) {
+const requireUserForRender = cache(async (allowDuringUpdate: boolean) => {
   const session = await getSession();
   if (!session)
     throw new AppError(
@@ -13,8 +14,12 @@ export async function requireUser(options: { allowDuringUpdate?: boolean } = {})
       "Your session has expired. Please sign in again.",
       401,
     );
-  if (!options.allowDuringUpdate && await isPanelUpdateRunning())
-    throw new AppError("PANEL_UPDATING", "Panelavo is being updated. Try again when the update is complete.", 503);
+  if (!allowDuringUpdate && (await isPanelUpdateRunning()))
+    throw new AppError(
+      "PANEL_UPDATING",
+      "Panelavo is being updated. Try again when the update is complete.",
+      503,
+    );
   try {
     const user = await decorateUser(
       await getCloudPanelClient().getCurrentUser(session.record.cloudPanel),
@@ -26,9 +31,15 @@ export async function requireUser(options: { allowDuringUpdate?: boolean } = {})
       await destroySession();
     throw error;
   }
+});
+
+export function requireUser(options: { allowDuringUpdate?: boolean } = {}) {
+  return requireUserForRender(Boolean(options.allowDuringUpdate));
 }
 
-export async function requireUserOrRedirect(options: { allowDuringUpdate?: boolean } = {}) {
+export async function requireUserOrRedirect(
+  options: { allowDuringUpdate?: boolean } = {},
+) {
   try {
     return await requireUser(options);
   } catch (error) {

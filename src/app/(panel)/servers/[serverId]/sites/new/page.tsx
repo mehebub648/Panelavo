@@ -15,13 +15,13 @@ export default async function FleetCreateSitePage({
   const state = await getFleetPublicState();
   if (
     serverId !== "local" &&
-    (state.mode !== "hub" || !state.nodes.some((item) => item.id === serverId))
+    !state.nodes.some((item) => item.id === serverId)
   )
     notFound();
   return (
     <CreateSiteForm
       apiBase={`/api/fleet/servers/${serverId}/proxy`}
-      routeBase={`/fleet/servers/${serverId}`}
+      routeBase={`/servers/${serverId}`}
     />
   );
 }

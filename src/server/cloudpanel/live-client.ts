@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { spawn } from "node:child_process";
 import { readdir } from "node:fs/promises";
 import type {
@@ -486,6 +487,18 @@ export function vpnBridgeError(result: BridgeResult) {
   );
 }
 
+// React limits this memoization to a single server render. Every new request
+// still checks live CloudPanel authority; writes never use this path.
+const readForRender = cache(
+  async (action: "user" | "sites", username: string) => {
+    await checkCloudPanelBroker();
+    return invokeBroker({ action, username });
+  },
+);
+
+let serverInfoSnapshot: { value: ServerInfo; expiresAt: number } | undefined;
+let pendingServerInfo: Promise<ServerInfo> | undefined;
+
 export class LiveCloudPanelClient implements CloudPanelClient {
   private async bridge(
     input: Record<string, unknown>,
@@ -582,10 +595,7 @@ export class LiveCloudPanelClient implements CloudPanelClient {
   }
 
   async getCurrentUser(session: CloudPanelSession) {
-    const result = await this.bridge({
-      action: "user",
-      username: this.sessionUser(session),
-    });
+    const result = await readForRender("user", this.sessionUser(session));
     if (!result.ok || !result.user)
       throw new AppError(
         "SESSION_EXPIRED",
@@ -596,10 +606,7 @@ export class LiveCloudPanelClient implements CloudPanelClient {
   }
 
   async listSites(session: CloudPanelSession) {
-    const result = await this.bridge({
-      action: "sites",
-      username: this.sessionUser(session),
-    });
+    const result = await readForRender("sites", this.sessionUser(session));
     if (!result.ok || !result.sites)
       throw new AppError(
         "CLOUDPANEL_UNAVAILABLE",
@@ -1269,20 +1276,39 @@ export class LiveCloudPanelClient implements CloudPanelClient {
   }
 
   async getServerInfo(session: CloudPanelSession) {
-    const result = await this.bridge(
-      {
-        action: "server-info",
-        username: this.sessionUser(session),
-      },
-      60_000,
-    );
-    if (!result.ok || !result.data)
+    // Software inventory launches many host tools. Share it briefly, but check
+    // live authority before serving either cached data or an in-flight result.
+    const user = await this.getCurrentUser(session);
+    if (
+      !["admin", "site-manager"].includes(user.role ?? "") ||
+      user.status === false
+    )
       throw new AppError(
         "FORBIDDEN",
         "Server information is available to administrators only.",
         403,
       );
-    return result.data as ServerInfo;
+    if (serverInfoSnapshot && serverInfoSnapshot.expiresAt > Date.now())
+      return serverInfoSnapshot.value;
+    pendingServerInfo ??= this.bridge(
+      { action: "server-info", username: this.sessionUser(session) },
+      60_000,
+    )
+      .then((result) => {
+        if (!result.ok || !result.data)
+          throw new AppError(
+            "FORBIDDEN",
+            "Server information is available to administrators only.",
+            403,
+          );
+        const value = result.data as ServerInfo;
+        serverInfoSnapshot = { value, expiresAt: Date.now() + 30_000 };
+        return value;
+      })
+      .finally(() => {
+        pendingServerInfo = undefined;
+      });
+    return pendingServerInfo;
   }
 
   async getVpnState(session: CloudPanelSession) {

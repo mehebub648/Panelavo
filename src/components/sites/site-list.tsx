@@ -64,7 +64,7 @@ function TypeBadge({ type }: { type?: SiteType }) {
     </span>
   );
 }
-export function SiteList({ user }: { user: CloudPanelUser }) {
+export function SiteList({ user, apiBase = "", routeBase = "", listHref = "/sites" }: { user: CloudPanelUser; apiBase?: string; routeBase?: string; listHref?: string }) {
   const router = useRouter();
   const params = useSearchParams();
   const [sites, setSites] = useState<ListedSite[]>([]);
@@ -80,7 +80,7 @@ export function SiteList({ user }: { user: CloudPanelUser }) {
       else setLoading(true);
       setError("");
       try {
-        const response = await fetch("/api/sites", { cache: "no-store" });
+        const response = await fetch(`${apiBase}/api/sites`, { cache: "no-store" });
         const result = await response.json();
         if (response.status === 401) {
           router.replace("/login?reason=session-expired");
@@ -103,7 +103,7 @@ export function SiteList({ user }: { user: CloudPanelUser }) {
         setRefreshing(false);
       }
     },
-    [router],
+    [router, apiBase],
   );
   useEffect(() => {
     void load();
@@ -112,9 +112,9 @@ export function SiteList({ user }: { user: CloudPanelUser }) {
     const created = params.get("created");
     if (created) {
       toast.success(`${created} was created`);
-      router.replace("/sites", { scroll: false });
+      router.replace(listHref, { scroll: false });
     }
-  }, [params, router]);
+  }, [params, router, listHref]);
   const types = useMemo(
     () =>
       [
@@ -202,7 +202,7 @@ export function SiteList({ user }: { user: CloudPanelUser }) {
         </div>
         {user.canCreateSites && (
           <Button asChild>
-            <Link href="/sites/new">
+            <Link href={`${routeBase}/sites/new`}>
               <Plus className="h-4 w-4" />
               Add website
             </Link>
@@ -260,7 +260,7 @@ export function SiteList({ user }: { user: CloudPanelUser }) {
               </p>
               {user.canCreateSites && (
                 <Button asChild className="mt-6">
-                  <Link href="/sites/new">
+                  <Link href={`${routeBase}/sites/new`}>
                     <Plus className="h-4 w-4" />
                     Create website
                   </Link>
@@ -341,7 +341,7 @@ export function SiteList({ user }: { user: CloudPanelUser }) {
                       <td className="px-6 py-4">
                         <div className="flex justify-end gap-1">
                           <Button variant="ghost" size="icon" asChild>
-                            <Link href={`/sites/${encodeURIComponent(site.domain)}`} aria-label={`Manage ${site.domain}`}>
+                            <Link href={`${routeBase}/sites/${encodeURIComponent(site.domain)}`} aria-label={`Manage ${site.domain}`}>
                               <Settings className="h-4 w-4" />
                             </Link>
                           </Button>
@@ -424,7 +424,7 @@ export function SiteList({ user }: { user: CloudPanelUser }) {
                   </div>
                   <div className="grid grid-cols-2 divide-x divide-slate-100 border-t border-slate-100 bg-slate-50/40">
                     <Link
-                      href={`/sites/${encodeURIComponent(site.domain)}`}
+                      href={`${routeBase}/sites/${encodeURIComponent(site.domain)}`}
                       className="flex h-11 items-center justify-center gap-2 text-sm font-semibold text-panel-700 active:bg-panel-50"
                     >
                       <Settings className="h-4 w-4" /> Manage

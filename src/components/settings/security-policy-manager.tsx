@@ -10,15 +10,17 @@ import type { SecuritySettings } from "@/server/settings/store";
 
 export function SecurityPolicyManager({
   initialSettings,
+  apiBase = "",
 }: {
   initialSettings: SecuritySettings;
+  apiBase?: string;
 }) {
   const [value, setValue] = useState(initialSettings);
   const [busy, setBusy] = useState(false);
   async function save() {
     setBusy(true);
     try {
-      const response = await fetch("/api/security/settings", {
+      const response = await fetch(`${apiBase}/api/security/settings`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(value),

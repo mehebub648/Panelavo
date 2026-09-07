@@ -1,21 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import Link from "next/link";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   Activity,
-  ArrowLeft,
-  CheckCircle2,
   Cpu,
-  Globe2,
   HardDrive,
-  Info,
   LoaderCircle,
   RefreshCw,
-  ScrollText,
-  Server,
-  Shield,
-  Users,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -23,6 +14,20 @@ import { UserManager } from "@/components/users/user-manager";
 import { VpnManager } from "@/components/vpn/vpn-manager";
 import { ResourcesView } from "@/components/server/resources-view";
 import { ServerInformationView } from "@/components/server/server-information-view";
+import { DomainManager } from "@/components/domains/domain-manager";
+import { McpSetupGuide } from "@/components/mcp/mcp-setup-guide";
+import type { PublicMcpConnection } from "@/server/mcp/oauth";
+import { PanelAddress } from "@/components/settings/panel-address";
+import { ConnectedServers } from "@/components/settings/connected-servers";
+import { UpdateManager } from "@/components/settings/update-manager";
+import {
+  NotificationManager,
+  type PublicNotificationSettings,
+} from "@/components/settings/notification-manager";
+import { MonitoringManager } from "@/components/settings/monitoring-manager";
+import { SecurityPolicyManager } from "@/components/settings/security-policy-manager";
+import type { MonitoringSettings } from "@/server/monitoring/store";
+import type { SecuritySettings } from "@/server/settings/store";
 import type { AuditPage } from "@/server/security/log";
 import type { UpdateState } from "@/server/updates/panel-updater";
 import type {
@@ -33,16 +38,9 @@ import type {
   ServerResources,
 } from "@/types/cloudpanel";
 import type { VpnState } from "@/types/vpn";
+import { type FleetSection } from "@/lib/fleet-navigation";
 
-type Tab =
-  | "overview"
-  | "websites"
-  | "resources"
-  | "information"
-  | "vpn"
-  | "users"
-  | "audit"
-  | "updates";
+type Tab = FleetSection;
 type Summary = {
   label: string;
   origin: string;
@@ -66,53 +64,66 @@ async function call(serverId: string, action: string, input?: unknown) {
   const result = await response.json();
   if (!result.success)
     throw new Error(
-      result.error?.message || "The Fleet Node could not complete the request.",
+      result.error?.message ||
+        "The connected server could not complete the request.",
     );
   return result.data;
 }
 
-const tabs: Array<{ id: Tab; label: string; icon: typeof Server }> = [
-  { id: "overview", label: "Overview", icon: Server },
-  { id: "websites", label: "Websites", icon: Globe2 },
-  { id: "resources", label: "Resources", icon: Activity },
-  { id: "information", label: "Information", icon: Info },
-  { id: "vpn", label: "VPN", icon: Shield },
-  { id: "users", label: "Users", icon: Users },
-  { id: "audit", label: "Audit", icon: ScrollText },
-  { id: "updates", label: "Updates", icon: RefreshCw },
-];
-
 export function FleetServerWorkspace({
   serverId,
   label,
+  user,
+  tab = "overview",
 }: {
   serverId: string;
   label: string;
+  user: CloudPanelUser;
+  tab?: Tab;
 }) {
-  const [tab, setTab] = useState<Tab>("overview");
+  const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [summary, setSummary] = useState<Summary | null>(null);
+  const [resources, setResources] = useState<ServerResources | null>(null);
   const [info, setInfo] = useState<ServerInformation | null>(null);
+  const [about, setAbout] = useState<Pick<
+    Summary,
+    "panelVersion" | "brokerProtocolVersion" | "server"
+  > | null>(null);
+  const [update, setUpdate] = useState<UpdateState | null>(null);
   const [users, setUsers] = useState<CloudPanelUser[]>([]);
   const [userSites, setUserSites] = useState<string[]>([]);
   const [audit, setAudit] = useState<AuditPage | null>(null);
   const [vpn, setVpn] = useState<VpnState | null>(null);
+  const [mcp, setMcp] = useState<{
+    endpoint: string;
+    connections: PublicMcpConnection[];
+  } | null>(null);
+  const [settings, setSettings] = useState<{
+    update: UpdateState;
+    notifications: PublicNotificationSettings;
+    monitoring: MonitoringSettings;
+    security: SecuritySettings;
+  } | null>(null);
 
   const load = useCallback(
     async (selected: Tab, notice = false) => {
       setBusy(true);
+      setLoadError(null);
       try {
-        if (
-          [
-            "overview",
-            "websites",
-            "resources",
-            "updates",
-          ].includes(selected)
-        )
+        if (selected === "settings")
+          setSettings(await call(serverId, "panel.settings.get"));
+        else if (selected === "overview")
           setSummary(await call(serverId, "system.summary"));
+        else if (selected === "resources")
+          setResources((await call(serverId, "system.resources")).resources);
         else if (selected === "information")
           setInfo(await call(serverId, "system.info"));
+        else if (selected === "about")
+          setAbout(await call(serverId, "system.about"));
+        else if (selected === "updates")
+          setUpdate(await call(serverId, "system.update.get"));
         else if (selected === "users") {
           const data = await call(serverId, "users.list");
           setUsers(data.users ?? []);
@@ -122,8 +133,16 @@ export function FleetServerWorkspace({
             await call(serverId, "audit.list", { page: 1, pageSize: 50 }),
           );
         else if (selected === "vpn") setVpn(await call(serverId, "vpn.get"));
+        else if (selected === "ai-access")
+          setMcp(await call(serverId, "mcp.connections.list"));
+        setLoaded(true);
         if (notice) toast.success("Server refreshed");
       } catch (error) {
+        setLoadError(
+          error instanceof Error
+            ? error.message
+            : "Server could not be loaded.",
+        );
         toast.error(
           error instanceof Error
             ? error.message
@@ -139,76 +158,14 @@ export function FleetServerWorkspace({
     void load(tab);
   }, [load, tab]);
 
-  async function connectionAction(action: "rotate-key" | "disconnect-node") {
-    const phrase = action === "rotate-key" ? "ROTATE FLEET KEY" : label;
-    if (window.prompt(`Type ${phrase} to continue.`) !== phrase) return;
-    setBusy(true);
-    try {
-      const response = await fetch("/api/fleet", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action, serverId, confirmation: phrase }),
-      });
-      const result = await response.json();
-      if (!result.success)
-        throw new Error(
-          result.error?.message || "The Fleet connection could not be changed.",
-        );
-      toast.success(
-        action === "rotate-key"
-          ? "Fleet keys rotated"
-          : "Fleet Node disconnected",
-      );
-      if (action === "disconnect-node") window.location.assign("/fleet");
-    } catch (error) {
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : "The Fleet connection could not be changed.",
-      );
-    } finally {
-      setBusy(false);
-    }
-  }
-
   return (
     <div className="mx-auto max-w-[1450px] space-y-6">
       <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
-        <div className="flex items-center gap-3">
-          <Button asChild variant="outline" size="icon">
-            <Link href="/fleet" aria-label="Back to Fleet">
-              <ArrowLeft className="h-4 w-4" />
-            </Link>
-          </Button>
-          <div>
-            <p className="text-xs font-bold uppercase tracking-wide text-slate-400">
-              Fleet server
-            </p>
-            <h2 className="text-2xl font-bold text-ink">
-              {summary?.label || label}
-            </h2>
-            <p className="text-xs text-slate-400">{summary?.origin}</p>
-          </div>
+        <div>
+          <h2 className="text-xl font-bold text-ink">{label}</h2>
+          <p className="text-xs text-slate-500">Connected server</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          {serverId !== "local" && (
-            <>
-              <Button
-                variant="outline"
-                onClick={() => void connectionAction("rotate-key")}
-                disabled={busy}
-              >
-                Rotate trust
-              </Button>
-              <Button
-                variant="danger"
-                onClick={() => void connectionAction("disconnect-node")}
-                disabled={busy}
-              >
-                Disconnect
-              </Button>
-            </>
-          )}
           <Button
             variant="outline"
             onClick={() => void load(tab, true)}
@@ -219,25 +176,18 @@ export function FleetServerWorkspace({
           </Button>
         </div>
       </div>
-      <nav
-        className="flex gap-1 overflow-x-auto rounded-2xl border border-slate-200 bg-white p-2 shadow-card"
-        aria-label="Fleet server sections"
-      >
-        {tabs.map(({ id, label: itemLabel, icon: Icon }) => (
-          <button
-            key={id}
-            onClick={() => setTab(id)}
-            className={`flex shrink-0 items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold ${tab === id ? "bg-panel-50 text-panel-700" : "text-slate-500 hover:bg-slate-50"}`}
-          >
-            <Icon className="h-4 w-4" />
-            {itemLabel}
-          </button>
-        ))}
-      </nav>
-      {busy && !summary && (
+      {busy && !loaded && (
         <div className="grid min-h-72 place-items-center">
           <LoaderCircle className="h-7 w-7 animate-spin text-panel-600" />
         </div>
+      )}
+      {loadError && (
+        <p
+          role="alert"
+          className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700"
+        >
+          {loadError} Use Refresh to try again, or switch to another server.
+        </p>
       )}
       {summary && tab === "overview" && (
         <div className="space-y-5">
@@ -284,72 +234,82 @@ export function FleetServerWorkspace({
           </section>
         </div>
       )}
-      {summary && tab === "websites" && (
-        <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-card">
-          <div className="flex items-center justify-between border-b border-slate-100 p-5">
-            <div>
-              <h3 className="font-bold">Websites</h3>
-              <p className="text-sm text-slate-500">
-                {summary.sites.length} websites on this server
-              </p>
-            </div>
-            <Button asChild>
-              <Link href={`/fleet/servers/${serverId}/sites/new`}>
-                Add website
-              </Link>
-            </Button>
-          </div>
-          <div className="divide-y divide-slate-100">
-            {summary.sites.map((site) => (
-              <Link
-                key={site.domain}
-                href={`/fleet/servers/${serverId}/sites/${encodeURIComponent(site.domain)}/settings`}
-                className="flex items-center justify-between gap-4 p-5 hover:bg-slate-50"
-              >
-                <div>
-                  <p className="font-semibold text-panel-700">
-                    {site.label || site.domain}
-                  </p>
-                  <p className="text-xs text-slate-400">{site.domain}</p>
-                </div>
-                <div className="text-right text-xs text-slate-500">
-                  <p>{site.type}</p>
-                  <p>{site.status}</p>
-                </div>
-              </Link>
-            ))}
-          </div>
-        </section>
-      )}
-      {summary && tab === "resources" && (
+      {resources && tab === "resources" && (
         <ResourcesView
-          initialData={summary.resources}
+          initialData={resources}
           initialHistory={[]}
           canReclaimStorage
           apiBase={`/api/fleet/servers/${serverId}/proxy`}
         />
       )}
-      {info && tab === "information" && (
-        <ServerInformationView info={info} />
+      {tab === "domains" && loaded && (
+        <DomainManager apiBase={`/api/fleet/servers/${serverId}/proxy`} />
       )}
-      {tab === "users" && (
+      {tab === "ai-access" && mcp && (
+        <McpSetupGuide
+          user={user}
+          endpoint={mcp.endpoint}
+          initialConnections={mcp.connections}
+          apiBase={`/api/fleet/servers/${serverId}/proxy/api/profile/mcp-connections`}
+        />
+      )}
+      {tab === "settings" && settings && (
+        <div className="space-y-5">
+          <ConnectedServers apiBase={`/api/fleet/servers/${serverId}/proxy`} />
+          <PanelAddress apiBase={`/api/fleet/servers/${serverId}/proxy`} />
+          <UpdateManager
+            initialState={settings.update}
+            apiBase={`/api/fleet/servers/${serverId}/proxy`}
+          />
+          <NotificationManager
+            initialSettings={settings.notifications}
+            apiBase={`/api/fleet/servers/${serverId}/proxy`}
+          />
+          <MonitoringManager
+            initialSettings={settings.monitoring}
+            apiBase={`/api/fleet/servers/${serverId}/proxy`}
+          />
+          <SecurityPolicyManager
+            initialSettings={settings.security}
+            apiBase={`/api/fleet/servers/${serverId}/proxy`}
+          />
+        </div>
+      )}
+      {info && tab === "information" && <ServerInformationView info={info} />}
+      {about && tab === "about" && (
+        <div className="grid gap-4 md:grid-cols-3">
+          {[
+            ["Panelavo", `v${about.panelVersion}`],
+            ["Broker protocol", String(about.brokerProtocolVersion)],
+            ["Server", about.server.hostname],
+          ].map(([title, detail]) => (
+            <section
+              key={title}
+              className="rounded-2xl border border-slate-200 bg-white p-6 shadow-card"
+            >
+              <p className="text-xs font-bold uppercase tracking-wide text-slate-400">
+                {title}
+              </p>
+              <p className="mt-2 break-words text-lg font-bold text-ink">
+                {detail}
+              </p>
+            </section>
+          ))}
+        </div>
+      )}
+      {tab === "users" && loaded && (
         <div className="space-y-3">
-          <p className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800">
-            The Fleet connection owner and passwordless invitations remain
-            managed locally on this Node.
-          </p>
           <UserManager
             initialUsers={users}
             sites={userSites}
             apiBase={`/api/fleet/servers/${serverId}/proxy`}
-            allowInvites={false}
           />
         </div>
       )}
       {tab === "audit" && audit && (
         <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-card">
           <div className="border-b border-slate-100 p-5">
-            <h3 className="font-bold">Node audit</h3>
+            <h3 className="font-bold">Server audit</h3>
             <p className="text-sm text-slate-500">
               {audit.pagination.total} retained events · integrity{" "}
               {audit.integrity.valid ? "verified" : "needs attention"}
@@ -385,74 +345,11 @@ export function FleetServerWorkspace({
           apiBase={`/api/fleet/servers/${serverId}/proxy`}
         />
       )}
-      {summary && tab === "updates" && (
-        <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-card">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <h3 className="font-bold">Panelavo update</h3>
-              <p className="mt-1 text-sm text-slate-500">
-                Current v{summary.panelVersion} · {summary.update.status}
-              </p>
-              {summary.update.notice && (
-                <p className="mt-2 text-sm text-amber-700">
-                  {summary.update.notice}
-                </p>
-              )}
-            </div>
-            <CheckCircle2 className="text-emerald-600" />
-          </div>
-          <div className="mt-5 flex gap-2">
-            <Button
-              variant="outline"
-              disabled={busy}
-              onClick={async () => {
-                setBusy(true);
-                try {
-                  await call(serverId, "system.update.get", { check: true });
-                  await load("updates", true);
-                } catch (error) {
-                  toast.error(
-                    error instanceof Error
-                      ? error.message
-                      : "Update check failed.",
-                  );
-                } finally {
-                  setBusy(false);
-                }
-              }}
-            >
-              Check updates
-            </Button>
-            <Button
-              disabled={busy || summary.update.status !== "available"}
-              onClick={async () => {
-                if (
-                  !confirm(
-                    "Install the available Panelavo update on this server?",
-                  )
-                )
-                  return;
-                setBusy(true);
-                try {
-                  await call(serverId, "system.update.start", {
-                    confirmation: "UPDATE PANELAVO",
-                  });
-                  toast.success("Update queued");
-                } catch (error) {
-                  toast.error(
-                    error instanceof Error
-                      ? error.message
-                      : "Update could not be queued.",
-                  );
-                } finally {
-                  setBusy(false);
-                }
-              }}
-            >
-              Install update
-            </Button>
-          </div>
-        </section>
+      {update && tab === "updates" && (
+        <UpdateManager
+          initialState={update}
+          apiBase={`/api/fleet/servers/${serverId}/proxy`}
+        />
       )}
     </div>
   );

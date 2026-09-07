@@ -1,3 +1,4 @@
+import { getFleetSiteForRender } from "@/server/fleet/page-data";
 import { notFound } from "next/navigation";
 import { ActionsManager } from "@/components/sites/actions-manager";
 import {
@@ -21,7 +22,7 @@ import { SERVICE_SECTIONS } from "@/components/sites/site-sections";
 import { panelActorFromSession } from "@/server/auth/site-access";
 import { requireFleetSuperAdminOrRedirect } from "@/server/fleet/auth";
 import { dispatchFleetAction } from "@/server/fleet/service";
-import type { CloudPanelSite, ServerInfo } from "@/types/cloudpanel";
+import type { ServerInfo } from "@/types/cloudpanel";
 import type { OperationsData } from "@/types/operations";
 
 const sections = new Set([
@@ -72,12 +73,7 @@ export default async function FleetSiteSectionPage({
   if (!sections.has(section)) notFound();
   const domain = decodeURIComponent(encoded);
   const actor = panelActorFromSession(session);
-  const site = (await dispatchFleetAction(
-    serverId,
-    "site.get",
-    { domain },
-    actor,
-  )) as CloudPanelSite;
+  const site = await getFleetSiteForRender(serverId, domain);
   if (site.meta?.parent && !SERVICE_SECTIONS.has(section)) notFound();
   const apiBase = `/api/fleet/servers/${serverId}/proxy`;
   if (section === "settings") {
@@ -99,7 +95,7 @@ export default async function FleetSiteSectionPage({
           user={session.user}
           uptime={uptime as Parameters<typeof SiteSettings>[0]["uptime"]}
           apiBase={apiBase}
-          routeBase={`/fleet/servers/${serverId}`}
+          routeBase={`/servers/${serverId}`}
         />
         {site.meta && !site.meta.parent ? (
           <LinkedServices parentDomain={domain} canWrite apiBase={apiBase} />
@@ -307,7 +303,7 @@ export default async function FleetSiteSectionPage({
         section={section}
         initialData={(data ?? {}) as Record<string, unknown>}
         apiBase={apiBase}
-        allowLocalSecrets={false}
+        allowLocalSecrets
       />
     </Section>
   );

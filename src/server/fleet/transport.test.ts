@@ -5,12 +5,21 @@ const mocks = vi.hoisted(() => ({
   resolve4: vi.fn(),
   resolve6: vi.fn(),
   request: vi.fn(),
+  agents: [] as Array<{ options: unknown; destroy: ReturnType<typeof vi.fn> }>,
 }));
 vi.mock("node:dns/promises", () => ({
   resolve4: mocks.resolve4,
   resolve6: mocks.resolve6,
 }));
-vi.mock("node:https", () => ({ request: mocks.request }));
+vi.mock("node:https", () => ({
+  request: mocks.request,
+  Agent: class {
+    destroy = vi.fn();
+    constructor(public options: unknown) {
+      mocks.agents.push(this);
+    }
+  },
+}));
 
 import { postFleetJson } from "./network";
 
@@ -40,6 +49,7 @@ describe("Fleet HTTPS transport", () => {
     mocks.resolve4.mockResolvedValue(["1.1.1.1"]);
     mocks.resolve6.mockResolvedValue([]);
     mocks.request.mockReset();
+    mocks.agents.length = 0;
   });
 
   it("pins a validated DNS answer and refuses redirects", async () => {
@@ -54,6 +64,13 @@ describe("Fleet HTTPS transport", () => {
     const options = mocks.request.mock.calls[0][0];
     expect(options.hostname).toBe("node.example.com");
     expect(options.port).toBe(443);
+    expect(options.family).toBe(4);
+    expect(options.agent).toBeDefined();
+    expect(mocks.agents[0].options).toMatchObject({
+      keepAlive: true,
+      maxSockets: 5,
+      maxFreeSockets: 2,
+    });
     expect(options.headers.cookie).toBeUndefined();
     await new Promise<void>((resolve, reject) =>
       options.lookup(
@@ -61,6 +78,17 @@ describe("Fleet HTTPS transport", () => {
         {},
         (error: Error | null, address: string) =>
           error ? reject(error) : (expect(address).toBe("1.1.1.1"), resolve()),
+      ),
+    );
+    await new Promise<void>((resolve, reject) =>
+      options.lookup(
+        "node.example.com",
+        { all: true },
+        (error: Error | null, addresses: unknown) => {
+          if (error) return reject(error);
+          expect(addresses).toEqual([{ address: "1.1.1.1", family: 4 }]);
+          resolve();
+        },
       ),
     );
   });

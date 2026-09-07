@@ -1,6 +1,7 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { encryptedJsonStore } from "@/server/storage/encrypted-json-store";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   consumeReplay,
@@ -42,5 +43,37 @@ describe("Fleet encrypted persistent state", () => {
     expect(await consumeReplay("connection", "request")).toBe(true);
     expect(await consumeReplay("connection", "request")).toBe(false);
     expect((await getFleetState()).mode).toBe("hub");
+  });
+
+  it("persists one identity on a fresh installation", async () => {
+    expect((await getFleetState()).localNodeId).toBe(
+      (await getFleetState()).localNodeId,
+    );
+  });
+
+  it("migrates single-manager trust without changing ids or key material", async () => {
+    const oldLink = {
+      connectionId: "existing",
+      owner: { id: "owner", username: "owner" },
+      nodePrivateKey: "private-test-material",
+    };
+    const previous = encryptedJsonStore("fleet-state.enc.json", () => ({}));
+    await previous.save({
+      version: 1,
+      mode: "node",
+      localNodeId: "stable",
+      nodeLink: oldLink,
+      nodes: [],
+      invitations: [],
+      replays: [],
+      health: {},
+      rollingUpdates: [],
+    });
+    const migrated = await getFleetState();
+    expect(migrated.localNodeId).toBe("stable");
+    expect(migrated.nodeLinks).toEqual([oldLink]);
+    expect(migrated.nodeLink).toBeUndefined();
+    await mutateFleetState(() => undefined);
+    expect((await getFleetState()).nodeLinks).toEqual([oldLink]);
   });
 });

@@ -7,7 +7,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { UpdateState } from "@/server/updates/panel-updater";
 
-export function UpdateManager({ initialState }: { initialState: UpdateState }) {
+export function UpdateManager({
+  initialState,
+  apiBase = "",
+}: {
+  initialState: UpdateState;
+  apiBase?: string;
+}) {
   const [state, setState] = useState(initialState);
   const [repository, setRepository] = useState(initialState.repository);
   const [busy, setBusy] = useState<"check" | "save" | "update" | null>(null);
@@ -31,7 +37,7 @@ export function UpdateManager({ initialState }: { initialState: UpdateState }) {
   async function check() {
     setBusy("check");
     try {
-      await call("/api/updates?check=true");
+      await call(`${apiBase}/api/updates?check=true`);
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : "Update check failed.",
@@ -43,7 +49,7 @@ export function UpdateManager({ initialState }: { initialState: UpdateState }) {
   async function save() {
     setBusy("save");
     try {
-      await call("/api/updates", {
+      await call(`${apiBase}/api/updates`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "save-repository", repository }),
@@ -60,7 +66,7 @@ export function UpdateManager({ initialState }: { initialState: UpdateState }) {
   async function update() {
     setBusy("update");
     try {
-      await call("/api/updates", {
+      await call(`${apiBase}/api/updates`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "update" }),
@@ -79,10 +85,10 @@ export function UpdateManager({ initialState }: { initialState: UpdateState }) {
   useEffect(() => {
     if (!running) return;
     const timer = setInterval(() => {
-      void call("/api/updates").catch(() => undefined);
+      void call(`${apiBase}/api/updates`).catch(() => undefined);
     }, 3000);
     return () => clearInterval(timer);
-  }, [running]);
+  }, [running, apiBase]);
 
   const short = (value?: string) => (value ? value.slice(0, 10) : "unknown");
   const installLabel = running

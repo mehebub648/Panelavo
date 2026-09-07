@@ -12,7 +12,8 @@ type Credential = { id: string; label: string; createdAt: string };
 type Zone = { id: string; name: string; credentialId: string; credentialLabel: string };
 type Record = { id: string; type: string; name: string; content: string; proxied: boolean; ttl: number };
 
-export function DomainManager() {
+export function DomainManager({ apiBase = "" }: { apiBase?: string }) {
+  const endpoint = (path: string) => `${apiBase}${path}`;
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const [zones, setZones] = useState<Zone[]>([]);
   const [selected, setSelected] = useState<Zone | null>(null);
@@ -29,8 +30,8 @@ export function DomainManager() {
     setBusy(true);
     try {
       const [c, z] = await Promise.all([
-        fetch("/api/cloudflare/credentials").then((r) => r.json()),
-        fetch(`/api/cloudflare/zones${refresh ? "?refresh=true" : ""}`).then((r) => r.json()),
+        fetch(endpoint("/api/cloudflare/credentials")).then((r) => r.json()),
+        fetch(endpoint(`/api/cloudflare/zones${refresh ? "?refresh=true" : ""}`)).then((r) => r.json()),
       ]);
       if (!c.success) throw new Error(c.error.message);
       if (!z.success) throw new Error(z.error.message);
@@ -58,7 +59,7 @@ export function DomainManager() {
     setBusy(true);
     try {
       const result = await fetch(
-        `/api/cloudflare/records?credentialId=${encodeURIComponent(zone.credentialId)}&zoneId=${encodeURIComponent(zone.id)}`
+        endpoint(`/api/cloudflare/records?credentialId=${encodeURIComponent(zone.credentialId)}&zoneId=${encodeURIComponent(zone.id)}`)
       ).then((r) => r.json());
       if (!result.success) throw new Error(result.error.message);
       setRecords(result.data.records);
@@ -74,7 +75,7 @@ export function DomainManager() {
     setBusy(true);
     const values = Object.fromEntries(new FormData(event.currentTarget));
     try {
-      const result = await fetch("/api/cloudflare/credentials", {
+      const result = await fetch(endpoint("/api/cloudflare/credentials"), {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(values),
@@ -101,7 +102,7 @@ export function DomainManager() {
         setPromptAction(null);
         setBusy(true);
         try {
-          const result = await fetch("/api/cloudflare/credentials", {
+          const result = await fetch(endpoint("/api/cloudflare/credentials"), {
             method: "DELETE",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ id: item.id }),
@@ -127,7 +128,7 @@ export function DomainManager() {
     setBusy(true);
     const values = Object.fromEntries(new FormData(event.currentTarget));
     try {
-      const result = await fetch("/api/cloudflare/records", {
+      const result = await fetch(endpoint("/api/cloudflare/records"), {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -156,7 +157,7 @@ export function DomainManager() {
       message: `Are you sure you want to delete ${record.name}?`,
       onConfirm: async () => {
         setConfirmAction(null);
-        await fetch("/api/cloudflare/records", {
+        await fetch(endpoint("/api/cloudflare/records"), {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({

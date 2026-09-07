@@ -23,6 +23,19 @@ function mapped(
 ): { action: FleetActionName; input?: unknown; status?: number } {
   if (segments[0] === "api") segments = segments.slice(1);
   const [root, first, second, third] = segments.map(decodeURIComponent);
+  if (root === "panel-address" && !first && ["GET", "POST"].includes(method))
+    return {
+      action: method === "GET" ? "panel.address.get" : "panel.address.change",
+      input: submitted,
+    };
+  if (root === "connections" && !first && ["GET", "POST"].includes(method))
+    return {
+      action:
+        method === "GET"
+          ? "panel.connections.list"
+          : "panel.connections.manage",
+      input: submitted,
+    };
   if (root === "sites" && !first) {
     if (method === "GET") return { action: "sites.list" };
     if (method === "POST")
@@ -165,6 +178,37 @@ function mapped(
     if (method === "DELETE")
       return { action: "site.offsite.remove", input: { domain: first } };
   }
+  if (root === "cloudflare" && first === "credentials") {
+    if (method === "GET") return { action: "cloudflare.credentials.list" };
+    if (method === "POST")
+      return { action: "cloudflare.credentials.add", input: submitted };
+    if (method === "DELETE")
+      return { action: "cloudflare.credentials.delete", input: submitted };
+  }
+  if (root === "cloudflare" && first === "zones" && method === "GET")
+    return {
+      action: "cloudflare.zones.list",
+      input: { refresh: searchParams.get("refresh") === "true" },
+    };
+  if (root === "cloudflare" && first === "records") {
+    if (method === "GET")
+      return {
+        action: "cloudflare.records.list",
+        input: {
+          credentialId: searchParams.get("credentialId"),
+          zoneId: searchParams.get("zoneId"),
+        },
+      };
+    if (method === "POST")
+      return { action: "cloudflare.records.manage", input: submitted };
+  }
+  if (root === "profile" && first === "mcp-connections") {
+    if (method === "GET") return { action: "mcp.connections.list" };
+    if (method === "POST")
+      return { action: "mcp.connections.create", input: submitted };
+    if (method === "DELETE")
+      return { action: "mcp.connections.revoke", input: submitted };
+  }
   if (root === "server" && first === "resources" && method === "GET")
     return { action: "system.resources" };
   if (root === "server" && first === "storage" && !second)
@@ -190,11 +234,27 @@ function mapped(
     };
   if (root === "audit" && method === "GET")
     return { action: "audit.list", input: Object.fromEntries(searchParams) };
-  if (root === "updates")
+  if (root === "updates") {
+    if (method === "GET")
+      return {
+        action: "system.update.get",
+        input: { check: searchParams.get("check") === "true" },
+      };
+    if (method === "POST")
+      return { action: "panel.update.manage", input: submitted };
+  }
+  if (root === "notifications" && first === "settings")
     return {
-      action: method === "GET" ? "system.update.get" : "system.update.start",
-      input: submitted,
+      action: "panel.notifications.manage",
+      input:
+        method === "PUT"
+          ? { action: "save", settings: submitted }
+          : { action: "test" },
     };
+  if (root === "monitoring" && first === "settings" && method === "PUT")
+    return { action: "panel.monitoring.save", input: submitted };
+  if (root === "security" && first === "settings" && method === "PUT")
+    return { action: "panel.security.save", input: submitted };
   throw new AppError(
     "INVALID_REQUEST",
     "That Fleet route is not available.",

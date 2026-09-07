@@ -43,7 +43,9 @@ export type FleetNodeDescriptor = {
 };
 
 export type FleetConnection = {
+  addressRevision?: number;
   id: string;
+  nickname?: string;
   node: FleetNodeDescriptor;
   hubId: string;
   hubPublicKey: string;
@@ -57,7 +59,10 @@ export type FleetConnection = {
 };
 
 export type FleetNodeLink = {
+  fullAdmin?: boolean;
+  addressRevision?: number;
   connectionId: string;
+  nickname?: string;
   hubId: string;
   hubOrigin: string;
   hubLabel: string;
@@ -73,6 +78,7 @@ export type FleetNodeLink = {
 };
 
 export type FleetInvitation = {
+  scope?: "super-admin";
   id: string;
   codeHash: string;
   createdAt: string;
@@ -107,6 +113,11 @@ export type FleetServerSummary = {
 
 export type FleetActionName =
   | "fleet.rotate-key"
+  | "system.about"
+  | "panel.address.get"
+  | "panel.address.change"
+  | "panel.connections.list"
+  | "panel.connections.manage"
   | "system.summary"
   | "system.resources"
   | "system.storage"
@@ -141,6 +152,20 @@ export type FleetActionName =
   | "site.offsite.save"
   | "site.offsite.manage"
   | "site.offsite.remove"
+  | "cloudflare.credentials.list"
+  | "cloudflare.credentials.add"
+  | "cloudflare.credentials.delete"
+  | "cloudflare.zones.list"
+  | "cloudflare.records.list"
+  | "cloudflare.records.manage"
+  | "mcp.connections.list"
+  | "mcp.connections.create"
+  | "mcp.connections.revoke"
+  | "panel.settings.get"
+  | "panel.update.manage"
+  | "panel.notifications.manage"
+  | "panel.monitoring.save"
+  | "panel.security.save"
   | "users.list"
   | "users.manage"
   | "vpn.get"
@@ -149,6 +174,11 @@ export type FleetActionName =
 
 export const FLEET_ACTION_NAMES = [
   "fleet.rotate-key",
+  "system.about",
+  "panel.address.get",
+  "panel.address.change",
+  "panel.connections.list",
+  "panel.connections.manage",
   "system.summary",
   "system.resources",
   "system.storage",
@@ -183,6 +213,20 @@ export const FLEET_ACTION_NAMES = [
   "site.offsite.save",
   "site.offsite.manage",
   "site.offsite.remove",
+  "cloudflare.credentials.list",
+  "cloudflare.credentials.add",
+  "cloudflare.credentials.delete",
+  "cloudflare.zones.list",
+  "cloudflare.records.list",
+  "cloudflare.records.manage",
+  "mcp.connections.list",
+  "mcp.connections.create",
+  "mcp.connections.revoke",
+  "panel.settings.get",
+  "panel.update.manage",
+  "panel.notifications.manage",
+  "panel.monitoring.save",
+  "panel.security.save",
   "users.list",
   "users.manage",
   "vpn.get",

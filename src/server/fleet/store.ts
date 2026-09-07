@@ -21,6 +21,7 @@ type FleetState = {
   localNodeId: string;
   hub?: { id: string; label: string; origin: string; enabledAt: string };
   nodeLink?: FleetNodeLink;
+  nodeLinks: FleetNodeLink[];
   nodes: FleetConnection[];
   invitations: FleetInvitation[];
   replays: { connectionId: string; requestId: string; expiresAt: number }[];
@@ -33,6 +34,7 @@ const store = encryptedJsonStore<FleetState>("fleet-state.enc.json", () => ({
   mode: "standalone",
   localNodeId: randomUUID(),
   nodes: [],
+  nodeLinks: [],
   invitations: [],
   replays: [],
   health: {},
@@ -41,6 +43,9 @@ const store = encryptedJsonStore<FleetState>("fleet-state.enc.json", () => ({
 let mutationQueue: Promise<unknown> = Promise.resolve();
 
 function clean(state: FleetState) {
+  // Read old single-manager installations without losing their pinned trust.
+  state.nodeLinks ??= state.nodeLink ? [state.nodeLink] : [];
+  delete state.nodeLink;
   const now = Date.now();
   state.invitations = state.invitations.filter(
     (item) => Date.parse(item.expiresAt) > now,
@@ -152,6 +157,26 @@ export function recordFleetHealth(snapshot: FleetHealthSnapshot) {
     state.health[node.id] = next;
     await healthStore.save(state.health);
     return next;
+  });
+}
+
+export function revokeFleetAuthorizations(user: {
+  id: string;
+  username: string;
+}) {
+  return mutateFleetState((state) => {
+    const before = state.nodeLinks.length;
+    state.nodeLinks = state.nodeLinks.filter(
+      (link) =>
+        link.owner.id !== user.id &&
+        link.owner.username.toLowerCase() !== user.username.toLowerCase(),
+    );
+    state.invitations = state.invitations.filter(
+      (item) =>
+        item.createdBy.id !== user.id &&
+        item.createdBy.username.toLowerCase() !== user.username.toLowerCase(),
+    );
+    return state.nodeLinks.length !== before;
   });
 }
 

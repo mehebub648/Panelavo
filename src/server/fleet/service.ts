@@ -22,6 +22,7 @@ import {
   matchesFleetSecret,
   mutateFleetState,
   recordFleetHealth,
+  revokeFleetAuthorizations,
 } from "@/server/fleet/store";
 import {
   FLEET_CAPABILITIES,
@@ -37,6 +38,7 @@ import {
   type FleetSignedEnvelope,
 } from "@/server/fleet/types";
 import { audit, auditContext } from "@/server/security/log";
+import { getPanelAddressState } from "@/server/settings/panel-address-store";
 
 const invitationSchema = z
   .object({
@@ -44,6 +46,7 @@ const invitationSchema = z
     hubId: z.string().uuid(),
     hubOrigin: z.string(),
     code: z.string().min(32).max(100),
+    scope: z.literal("super-admin").optional(),
   })
   .strict();
 
@@ -75,6 +78,7 @@ function invitationText(input: {
   hubId: string;
   hubOrigin: string;
   code: string;
+  scope?: "super-admin";
 }) {
   return `pnl_fleet_${Buffer.from(JSON.stringify({ v: FLEET_PROTOCOL_VERSION, ...input }), "utf8").toString("base64url")}`;
 }
@@ -139,20 +143,19 @@ export async function getFleetPublicState() {
     mode: state.mode,
     localNodeId: state.localNodeId,
     hub: state.hub,
-    nodeLink: state.nodeLink
-      ? {
-          connectionId: state.nodeLink.connectionId,
-          hubId: state.nodeLink.hubId,
-          hubOrigin: state.nodeLink.hubOrigin,
-          hubLabel: state.nodeLink.hubLabel,
-          owner: state.nodeLink.owner,
-          status: state.nodeLink.status,
-          createdAt: state.nodeLink.createdAt,
-          connectedAt: state.nodeLink.connectedAt,
-        }
-      : undefined,
+    nodeLinks: state.nodeLinks.map((link) => ({
+      connectionId: link.connectionId,
+      hubOrigin: link.hubOrigin,
+      hubLabel: link.hubLabel,
+      nickname: link.nickname,
+      owner: link.owner,
+      status: link.status,
+      fullAdmin: link.fullAdmin === true,
+      connectedAt: link.connectedAt,
+    })),
     nodes: state.nodes.map((connection) => ({
       id: connection.id,
+      nickname: connection.nickname,
       node: { ...connection.node, publicKey: undefined },
       owner: connection.owner,
       createdAt: connection.createdAt,
@@ -169,13 +172,15 @@ export async function getFleetPublicState() {
 export async function enableFleetHub(label: string, origin: string) {
   const canonical = parseFleetOrigin(origin);
   return mutateFleetState((state) => {
-    if (state.mode === "node")
-      throw new AppError(
-        "INVALID_REQUEST",
-        "Disconnect this panel from its current Fleet Hub first.",
-        409,
-      );
-    if (state.mode === "hub") return state.hub!;
+    if (state.hub) {
+      if (state.hub.origin !== canonical)
+        throw new AppError(
+          "INVALID_REQUEST",
+          "The configured server origin changed. Existing trust must be revoked before changing origins.",
+          409,
+        );
+      return state.hub;
+    }
     const hub = {
       id: randomUUID(),
       label: label.trim().slice(0, 100) || "Panelavo Fleet",
@@ -193,7 +198,13 @@ export async function createFleetInvitation(actor: {
   username: string;
 }) {
   return mutateFleetState((state) => {
-    if (state.mode !== "hub" || !state.hub)
+    if (getPanelAddressState().pending)
+      throw new AppError(
+        "INVALID_REQUEST",
+        "Finish the pending panel address change first.",
+        409,
+      );
+    if (!state.hub)
       throw new AppError(
         "INVALID_REQUEST",
         "Enable Fleet Hub mode first.",
@@ -207,6 +218,7 @@ export async function createFleetInvitation(actor: {
       );
     const code = fleetSecret();
     const invitation = {
+      scope: "super-admin" as const,
       id: randomUUID(),
       codeHash: hashFleetSecret(code),
       createdAt: new Date().toISOString(),
@@ -219,6 +231,7 @@ export async function createFleetInvitation(actor: {
         hubId: state.hub.id,
         hubOrigin: state.hub.origin,
         code,
+        scope: invitation.scope,
       }),
       expiresAt: invitation.expiresAt,
     };
@@ -226,6 +239,12 @@ export async function createFleetInvitation(actor: {
 }
 
 export async function acceptFleetEnrollment(raw: unknown) {
+  if (getPanelAddressState().pending)
+    throw new AppError(
+      "INVALID_REQUEST",
+      "Finish the panel address change before connecting another server.",
+      409,
+    );
   const input = enrollmentSchema.parse(raw);
   const invitation = parseFleetInvitation(input.invitation);
   const descriptor = {
@@ -239,8 +258,13 @@ export async function acceptFleetEnrollment(raw: unknown) {
       409,
     );
   return mutateFleetState((state) => {
+    if (getPanelAddressState().pending)
+      throw new AppError(
+        "INVALID_REQUEST",
+        "Finish the pending panel address change first.",
+        409,
+      );
     if (
-      state.mode !== "hub" ||
       !state.hub ||
       state.hub.id !== invitation.hubId ||
       state.hub.origin !== invitation.hubOrigin
@@ -271,6 +295,12 @@ export async function acceptFleetEnrollment(raw: unknown) {
         "This Node is already connected.",
         409,
       );
+    if (state.nodes.length >= FLEET_MAX_NODES)
+      throw new AppError(
+        "INVALID_REQUEST",
+        "The connected server limit was reached.",
+        409,
+      );
     const storedInvitation = state.invitations.find(
       (item) =>
         Date.parse(item.expiresAt) > Date.now() &&
@@ -280,6 +310,12 @@ export async function acceptFleetEnrollment(raw: unknown) {
       throw new AppError(
         "FORBIDDEN",
         "The Fleet invitation expired or was already used.",
+        403,
+      );
+    if (storedInvitation.scope !== invitation.scope)
+      throw new AppError(
+        "FORBIDDEN",
+        "The token permission scope was altered.",
         403,
       );
     state.invitations = state.invitations.filter(
@@ -333,10 +369,13 @@ export async function connectToFleetHub(
 ) {
   const invitation = parseFleetInvitation(invitationValue);
   const state = await getFleetState();
-  if (state.mode !== "standalone")
+  if (
+    state.nodeLinks.length >= FLEET_MAX_NODES ||
+    state.nodeLinks.some((link) => link.hubOrigin === invitation.hubOrigin)
+  )
     throw new AppError(
       "INVALID_REQUEST",
-      "This panel is already using Fleet mode.",
+      "This server is already shared with that server, or the connection limit was reached.",
       409,
     );
   const keys = generateFleetKeyPair();
@@ -367,14 +406,23 @@ export async function connectToFleetHub(
       502,
     );
   await mutateFleetState((current) => {
-    if (current.mode !== "standalone")
+    if (getPanelAddressState().pending)
       throw new AppError(
         "INVALID_REQUEST",
-        "Fleet mode changed while connecting.",
+        "Finish the pending panel address change first.",
         409,
       );
-    current.mode = "node";
-    current.nodeLink = {
+    if (
+      current.nodeLinks.length >= FLEET_MAX_NODES ||
+      current.nodeLinks.some((link) => link.hubOrigin === invitation.hubOrigin)
+    )
+      throw new AppError(
+        "INVALID_REQUEST",
+        "The connection already exists or the connection limit was reached.",
+        409,
+      );
+    current.nodeLinks.push({
+      fullAdmin: invitation.scope === "super-admin",
       connectionId: result.connectionId,
       hubId: result.hubId,
       hubOrigin: result.hubOrigin,
@@ -385,7 +433,7 @@ export async function connectToFleetHub(
       owner: { id: actor.user.id, username: actor.user.username },
       createdAt: new Date().toISOString(),
       status: "pending",
-    };
+    });
   });
   const envelope = createFleetEnvelope(
     { ready: true },
@@ -400,24 +448,34 @@ export async function connectToFleetHub(
     },
     keys.privateKey,
   );
-  await postFleetJson(
-    invitation.hubOrigin,
-    "/api/federation/v1/handshake",
-    envelope,
-  );
+  try {
+    await postFleetJson(
+      invitation.hubOrigin,
+      "/api/federation/v1/handshake",
+      envelope,
+    );
+  } catch (error) {
+    await disconnectNodeFromHub(actor, result.connectionId);
+    throw error;
+  }
   await mutateFleetState((current) => {
-    if (current.nodeLink?.connectionId === result.connectionId) {
-      current.nodeLink.status = "online";
-      current.nodeLink.connectedAt = new Date().toISOString();
+    const link = current.nodeLinks.find(
+      (item) => item.connectionId === result.connectionId,
+    );
+    if (link) {
+      link.status = "online";
+      link.connectedAt = new Date().toISOString();
     }
   });
   return getFleetPublicState();
 }
 
-async function fleetActorForNode() {
+export async function fleetActorForNode(connectionId: string) {
   const state = await getFleetState();
-  const link = state.nodeLink;
-  if (state.mode !== "node" || !link)
+  const link = state.nodeLinks.find(
+    (item) => item.connectionId === connectionId,
+  );
+  if (!link || link.status === "suspended")
     throw new AppError(
       "FORBIDDEN",
       "This panel is not connected as a Fleet Node.",
@@ -450,7 +508,10 @@ async function fleetActorForNode() {
     };
   } catch {
     await mutateFleetState((current) => {
-      if (current.nodeLink) current.nodeLink.status = "suspended";
+      const item = current.nodeLinks.find(
+        (candidate) => candidate.connectionId === connectionId,
+      );
+      if (item) item.status = "suspended";
     });
     throw new AppError(
       "FORBIDDEN",
@@ -461,7 +522,10 @@ async function fleetActorForNode() {
 }
 
 export async function executeFederationRequest(envelope: FleetSignedEnvelope) {
-  const { link, actor } = await fleetActorForNode();
+  const preview = JSON.parse(
+    Buffer.from(envelope.protected, "base64url").toString("utf8"),
+  ) as { connectionId: string };
+  const { link, actor } = await fleetActorForNode(preview.connectionId);
   const expected = {
     typ: "panelavo-federation-request+json" as const,
     connectionId: link.connectionId,
@@ -496,18 +560,30 @@ export async function executeFederationRequest(envelope: FleetSignedEnvelope) {
   const action = verified.protected.action as FleetActionName;
   let result: unknown;
   try {
+    if (
+      (action.startsWith("panel.") || action === "users.manage") &&
+      !link.fullAdmin
+    )
+      throw new AppError(
+        "FORBIDDEN",
+        "Reconnect using a new full Super Admin token to manage panel settings and sharing.",
+        403,
+      );
     if (action === "fleet.rotate-key") {
       const input = z
         .object({ publicKey: z.string().min(80).max(2048) })
         .strict()
         .parse(verified.payload);
       await mutateFleetState((state) => {
-        if (state.nodeLink?.connectionId !== link.connectionId) return;
-        state.nodeLink.previousHubPublicKey = state.nodeLink.hubPublicKey;
-        state.nodeLink.previousHubPublicKeyExpiresAt = new Date(
+        const item = state.nodeLinks.find(
+          (candidate) => candidate.connectionId === link.connectionId,
+        );
+        if (!item) return;
+        item.previousHubPublicKey = item.hubPublicKey;
+        item.previousHubPublicKeyExpiresAt = new Date(
           Date.now() + 10 * 60_000,
         ).toISOString();
-        state.nodeLink.hubPublicKey = input.publicKey;
+        item.hubPublicKey = input.publicKey;
       });
       result = { rotated: true };
     } else result = await executeFleetAction(actor, action, verified.payload);
@@ -560,7 +636,12 @@ export async function executeFederationRequest(envelope: FleetSignedEnvelope) {
 }
 
 function fleetActionTimeout(action: FleetActionName) {
-  if (action === "system.summary") return 15_000;
+  if (
+    action === "panel.address.change" ||
+    action === "panel.connections.manage"
+  )
+    return 300_000;
+  if (action === "system.summary") return 60_000;
   if (
     [
       "sites.create",
@@ -595,6 +676,17 @@ export function fleetCapabilityForAction(
   )
     return "sites.write";
   if (action.startsWith("site.")) return "site-sections.write";
+  if (
+    action === "cloudflare.credentials.list" ||
+    action === "cloudflare.zones.list" ||
+    action === "cloudflare.records.list"
+  )
+    return "site-sections.read";
+  if (action.startsWith("cloudflare.")) return "site-sections.write";
+  if (action === "mcp.connections.list") return "sites.read";
+  if (action.startsWith("mcp.connections.")) return "sites.write";
+  if (action === "panel.settings.get") return "system.read";
+  if (action.startsWith("panel.")) return "system.update";
   if (action === "users.list") return "users.read";
   if (action === "users.manage") return "users.write";
   if (action === "vpn.get") return "vpn.read";
@@ -659,8 +751,6 @@ export async function completeFleetHandshake(envelope: FleetSignedEnvelope) {
     Buffer.from(envelope.protected, "base64url").toString("utf8"),
   ) as { connectionId?: string };
   const state = await getFleetState();
-  if (state.mode !== "hub")
-    throw new AppError("FORBIDDEN", "This panel is not a Fleet Hub.", 403);
   const connection = state.nodes.find(
     (item) => item.id === protectedPreview.connectionId,
   );
@@ -703,6 +793,12 @@ export async function dispatchFleetAction(
   input: unknown,
   localActor: PanelActor,
 ) {
+  if (localActor.user.panelRole !== "super-admin")
+    throw new AppError(
+      "FORBIDDEN",
+      "Connected servers require an active Super Admin.",
+      403,
+    );
   if (serverId === "local") {
     try {
       const result = await executeFleetAction(localActor, action, input);
@@ -730,8 +826,6 @@ export async function dispatchFleetAction(
     }
   }
   const state = await getFleetState();
-  if (state.mode !== "hub")
-    throw new AppError("FORBIDDEN", "This panel is not a Fleet Hub.", 403);
   const connection = state.nodes.find((item) => item.id === serverId);
   if (!connection)
     throw new AppError("SITE_NOT_FOUND", "Fleet server not found.", 404);
@@ -835,7 +929,7 @@ export async function refreshFleetServers(localActor: PanelActor) {
     summary: localSummary,
   };
   const remote =
-    state.mode === "hub"
+    state.nodes.length > 0
       ? await mapLimit(state.nodes, 5, async (connection) => {
           try {
             await dispatchFleetAction(
@@ -856,7 +950,6 @@ export async function refreshFleetServers(localActor: PanelActor) {
 
 export async function refreshFleetNodesInBackground() {
   const state = await getFleetState();
-  if (state.mode !== "hub") return [];
   return mapLimit(state.nodes, 5, async (connection) => {
     const started = Date.now();
     try {
@@ -924,29 +1017,18 @@ export async function rotateFleetConnection(
 }
 
 export async function disconnectFleet(serverId?: string) {
+  if (!serverId)
+    throw new AppError(
+      "INVALID_REQUEST",
+      "Choose an individual connection to disconnect.",
+      400,
+    );
   return mutateFleetState((state) => {
-    if (state.mode === "node") {
-      state.mode = "standalone";
-      state.nodeLink = undefined;
-      return;
-    }
-    if (state.mode === "hub" && serverId) {
-      state.nodes = state.nodes.filter((item) => item.id !== serverId);
-      delete state.health[serverId];
-      return;
-    }
-    if (state.mode === "hub" && !serverId) {
-      if (state.nodes.length)
-        throw new AppError(
-          "INVALID_REQUEST",
-          "Disconnect every Fleet Node before disabling the Hub.",
-          409,
-        );
-      state.mode = "standalone";
-      state.hub = undefined;
-      state.invitations = [];
-      state.health = {};
-    }
+    state.nodes = state.nodes.filter((item) => item.id !== serverId);
+    state.nodeLinks = state.nodeLinks.filter(
+      (item) => item.connectionId !== serverId,
+    );
+    delete state.health[serverId];
   });
 }
 
@@ -955,63 +1037,46 @@ export async function revokeFederationRequest(envelope: FleetSignedEnvelope) {
     Buffer.from(envelope.protected, "base64url").toString("utf8"),
   ) as { connectionId?: string };
   const state = await getFleetState();
-  const nodeLink = state.nodeLink;
+  const link = state.nodeLinks.find(
+    (item) => item.connectionId === preview.connectionId,
+  );
+  const connection = state.nodes.find(
+    (item) => item.id === preview.connectionId,
+  );
+  if (!link && !connection)
+    throw new AppError("FORBIDDEN", "The connection is unknown.", 403);
+  const verified = verifyFleetEnvelope(
+    envelope,
+    link?.hubPublicKey ?? connection!.node.publicKey,
+    {
+      typ: "panelavo-federation-request+json",
+      connectionId: link?.connectionId ?? connection!.id,
+      issuerId: link?.hubId ?? connection!.node.nodeId,
+      audienceId: link ? state.localNodeId : connection!.hubId,
+      action: "fleet.revoke",
+    },
+  );
   if (
-    state.mode === "node" &&
-    nodeLink &&
-    nodeLink.connectionId === preview.connectionId
-  ) {
-    const link = nodeLink;
-    const verified = verifyFleetEnvelope(envelope, link.hubPublicKey, {
-      typ: "panelavo-federation-request+json",
-      connectionId: link.connectionId,
-      issuerId: link.hubId,
-      audienceId: state.localNodeId,
-      action: "fleet.revoke",
-    });
-    if (!(await consumeReplay(link.connectionId, verified.protected.requestId)))
-      throw new AppError(
-        "FORBIDDEN",
-        "The federation request was already used.",
-        401,
-      );
-    await disconnectFleet();
-    return { revoked: true };
-  }
-  if (state.mode === "hub") {
-    const connection = state.nodes.find(
-      (item) => item.id === preview.connectionId,
-    );
-    if (!connection)
-      throw new AppError("FORBIDDEN", "The Fleet connection is unknown.", 403);
-    const verified = verifyFleetEnvelope(envelope, connection.node.publicKey, {
-      typ: "panelavo-federation-request+json",
-      connectionId: connection.id,
-      issuerId: connection.node.nodeId,
-      audienceId: connection.hubId,
-      action: "fleet.revoke",
-    });
-    if (!(await consumeReplay(connection.id, verified.protected.requestId)))
-      throw new AppError(
-        "FORBIDDEN",
-        "The federation request was already used.",
-        401,
-      );
-    await disconnectFleet(connection.id);
-    return { revoked: true };
-  }
-  throw new AppError("FORBIDDEN", "The Fleet connection is unknown.", 403);
+    !(await consumeReplay(
+      verified.protected.connectionId,
+      verified.protected.requestId,
+    ))
+  )
+    throw new AppError("FORBIDDEN", "The request was already used.", 401);
+  await disconnectFleet(verified.protected.connectionId);
+  return { revoked: true };
 }
 
-export async function disconnectNodeFromHub(actor: PanelActor) {
+export async function disconnectNodeFromHub(
+  actor: PanelActor,
+  connectionId?: string,
+) {
   const state = await getFleetState();
-  const link = state.nodeLink;
-  if (state.mode !== "node" || !link)
-    throw new AppError(
-      "INVALID_REQUEST",
-      "This panel is not connected to a Fleet Hub.",
-      409,
-    );
+  const link = state.nodeLinks.find(
+    (item) => item.connectionId === connectionId,
+  );
+  if (!link)
+    throw new AppError("INVALID_REQUEST", "Choose a connected server.", 404);
   const envelope = createFleetEnvelope(
     {},
     {
@@ -1030,7 +1095,7 @@ export async function disconnectNodeFromHub(actor: PanelActor) {
     "/api/federation/v1/revoke",
     envelope,
   ).catch(() => undefined);
-  await disconnectFleet();
+  await disconnectFleet(link.connectionId);
   return { disconnected: true };
 }
 
@@ -1038,10 +1103,11 @@ export async function disconnectFleetNodeFromHub(
   serverId: string,
   actor: PanelActor,
 ) {
-  const state = await getFleetState();
-  const connection = state.nodes.find((item) => item.id === serverId);
+  const connection = (await getFleetState()).nodes.find(
+    (item) => item.id === serverId,
+  );
   if (!connection)
-    throw new AppError("SITE_NOT_FOUND", "Fleet server not found.", 404);
+    throw new AppError("SITE_NOT_FOUND", "Connected server not found.", 404);
   const envelope = createFleetEnvelope(
     {},
     {
@@ -1064,21 +1130,16 @@ export async function disconnectFleetNodeFromHub(
   return { disconnected: true };
 }
 
-export async function revokeFleetAuthorizationForUser(user: {
-  id: string;
-  username: string;
-}) {
+export const revokeFleetAuthorizationForUser = revokeFleetAuthorizations;
+
+export async function renameConnectedServer(id: string, nickname: string) {
   return mutateFleetState((state) => {
-    if (state.mode !== "node" || !state.nodeLink) return false;
-    if (
-      state.nodeLink.owner.id !== user.id &&
-      state.nodeLink.owner.username.toLowerCase() !==
-        user.username.toLowerCase()
-    )
-      return false;
-    state.mode = "standalone";
-    state.nodeLink = undefined;
-    return true;
+    const item =
+      state.nodes.find((node) => node.id === id) ??
+      state.nodeLinks.find((link) => link.connectionId === id);
+    if (!item)
+      throw new AppError("SITE_NOT_FOUND", "Connected server not found.", 404);
+    item.nickname = nickname.trim() || undefined;
   });
 }
 

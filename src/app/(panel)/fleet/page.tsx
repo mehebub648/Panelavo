@@ -1,13 +1,7 @@
-import { notFound } from "next/navigation";
-import { FleetManager } from "@/components/fleet/fleet-manager";
+import { notFound, redirect } from "next/navigation";
 import { requireFleetSuperAdminOrRedirect } from "@/server/fleet/auth";
-import { getFleetPublicState } from "@/server/fleet/service";
 
-export const dynamic = "force-dynamic";
-export default async function FleetPage() {
-  const session = await requireFleetSuperAdminOrRedirect({
-    allowDuringUpdate: true,
-  });
-  if (!session) notFound();
-  return <FleetManager initialState={await getFleetPublicState()} />;
+export default async function LegacyFleetPage() {
+  if (!(await requireFleetSuperAdminOrRedirect())) notFound();
+  redirect("/settings#connected-servers");
 }

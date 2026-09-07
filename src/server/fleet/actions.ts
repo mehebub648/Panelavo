@@ -1,10 +1,34 @@
 import { getFleetHealthReport } from "@/server/fleet/health";
+import { createUserInvitation } from "@/server/auth/user-invitation";
+import { changePanelAddress } from "@/server/fleet/address";
+import {
+  listServerConnections,
+  manageServerConnections,
+} from "@/server/fleet/connections";
+import { getPanelAddressState } from "@/server/settings/panel-address-store";
+import { parseFleetOrigin } from "@/server/fleet/network";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import QRCode from "qrcode";
 import { z } from "zod";
+import {
+  addCredential,
+  deleteCredential,
+  getRecords,
+  getZones,
+  listCredentials,
+  mutateRecord,
+} from "@/server/cloudflare/store";
+import { revokeFleetAuthorizations } from "@/server/fleet/store";
 import { cloudRoleFor, setPanelAdmin } from "@/server/auth/panel-roles";
-import { revokeAllMcpConnections } from "@/server/mcp/oauth";
+import {
+  createMcpPersonalToken,
+  listMcpConnections,
+  revokeAllMcpConnections,
+  revokeMcpConnection,
+} from "@/server/mcp/oauth";
+import type { McpPublicUrls } from "@/server/mcp/public-url";
+import { getPanelPublicDomain } from "@/server/sites/panel-self";
 import { createSiteSchema, updateSiteSchema } from "@/schemas/sites";
 import type { PanelActor } from "@/server/auth/site-access";
 import type { PanelRole } from "@/types/cloudpanel";
@@ -52,8 +76,28 @@ import {
 } from "@/server/sites/site-service";
 import { getResourceHistory } from "@/server/system/resource-history";
 import { getServerResourceSnapshot } from "@/server/system/resource-snapshot";
-import { getUpdateState, queueUpdate } from "@/server/updates/panel-updater";
+import {
+  getUpdateState,
+  queueUpdate,
+  validateUpdateRepository,
+} from "@/server/updates/panel-updater";
 import { vpnManageSchema } from "@/server/vpn/schema";
+import {
+  getPublicNotificationSettings,
+  notificationSettingsSchema,
+  saveNotificationSettings,
+} from "@/server/notifications/store";
+import { sendNotification } from "@/server/notifications/send";
+import {
+  getMonitoringSettings,
+  monitoringSettingsSchema,
+  saveMonitoringSettings,
+} from "@/server/monitoring/store";
+import {
+  getSecuritySettings,
+  setSecuritySettings,
+  setUpdateRepository,
+} from "@/server/settings/store";
 
 const objectInput = z.record(z.unknown()).default({});
 const domainInput = z
@@ -75,6 +119,16 @@ const auditInput = z
     to: z.string().max(40).optional(),
   })
   .strict();
+const cloudflareId = z.string().trim().min(1).max(128);
+const cloudflareRecordInput = z
+  .object({
+    credentialId: cloudflareId,
+    zoneId: cloudflareId,
+    action: z.enum(["create", "update", "delete"]),
+    id: cloudflareId.optional(),
+    record: z.record(z.unknown()).optional(),
+  })
+  .strict();
 
 async function packageMetadata() {
   const value = JSON.parse(
@@ -90,6 +144,27 @@ async function packageMetadata() {
     panelVersion: String(value.version ?? "unknown"),
     brokerProtocolVersion: Number(value.panelavo?.brokerProtocolVersion ?? 0),
     fleetProtocolVersion: Number(value.panelavo?.fleetProtocolVersion ?? 0),
+  };
+}
+
+function localMcpUrls(): McpPublicUrls {
+  const domain = getPanelPublicDomain();
+  if (!domain)
+    throw new AppError(
+      "INTERNAL_ERROR",
+      "The selected server has no public panel address.",
+      503,
+    );
+  const origin = `https://${domain}`;
+  return {
+    origin,
+    issuer: origin,
+    resource: `${origin}/mcp`,
+    authorizationEndpoint: `${origin}/oauth/authorize`,
+    tokenEndpoint: `${origin}/oauth/token`,
+    registrationEndpoint: `${origin}/oauth/register`,
+    revocationEndpoint: `${origin}/oauth/revoke`,
+    resourceMetadataEndpoint: `${origin}/.well-known/oauth-protected-resource/mcp`,
   };
 }
 
@@ -110,7 +185,33 @@ export async function executeFleetAction(
   )
     return getFleetHealthReport();
   const client = getCloudPanelClient();
-  const serverIp = await getServerPublicIp();
+  if (action === "system.about")
+    return {
+      ...(await packageMetadata()),
+      server: await client.getServerInfo(actor.cloudPanel),
+    };
+  if (action === "panel.address.get")
+    return {
+      origin: localMcpUrls().origin,
+      pendingOrigin: getPanelAddressState().pending?.origin,
+    };
+  if (action === "panel.address.change") {
+    const input = z
+      .object({
+        origin: z.string().max(300).transform(parseFleetOrigin),
+        confirmation: z.string().max(253),
+      })
+      .strict()
+      .refine(
+        (value) => value.confirmation === new URL(value.origin).hostname,
+        "Type the new hostname exactly to confirm.",
+      )
+      .parse(submitted);
+    return changePanelAddress(input.origin, localMcpUrls().origin, actor);
+  }
+  if (action === "panel.connections.list") return listServerConnections();
+  if (action === "panel.connections.manage")
+    return manageServerConnections(actor, submitted, localMcpUrls().origin);
   if (action === "system.summary") {
     const [server, resources, sites, update, metadata] = await Promise.all([
       client.getServerInfo(actor.cloudPanel),
@@ -152,6 +253,7 @@ export async function executeFleetAction(
   if (action === "system.info")
     return completeServerInformation(
       await client.getServerInfo(actor.cloudPanel),
+      localMcpUrls().origin,
     );
   if (action === "system.update.get")
     return getUpdateState(Boolean(objectInput.parse(submitted).check));
@@ -169,7 +271,7 @@ export async function executeFleetAction(
   if (action === "sites.creation-details") return getSiteCreationDetails(actor);
   if (action === "sites.create")
     return createManagedSite(actor, createSiteSchema.parse(submitted), {
-      serverIp,
+      serverIp: await getServerPublicIp(),
     });
   if (action === "site.get")
     return getManagedSite(actor, domainInput.parse(submitted).domain);
@@ -189,7 +291,9 @@ export async function executeFleetAction(
         "Type the exact website domain to delete it.",
         400,
       );
-    return deleteManagedSite(actor, input.domain, { serverIp });
+    return deleteManagedSite(actor, input.domain, {
+      serverIp: await getServerPublicIp(),
+    });
   }
   if (action === "site.section.get") {
     const input = sectionInput.parse(submitted);
@@ -197,20 +301,6 @@ export async function executeFleetAction(
   }
   if (action === "site.section.manage") {
     const input = sectionInput.parse(submitted);
-    const sectionAction =
-      input.data && typeof input.data === "object" && "action" in input.data
-        ? String((input.data as { action?: unknown }).action ?? "")
-        : "";
-    if (
-      input.section === "databases" &&
-      (sectionAction === "manage-login" ||
-        sectionAction.startsWith("exposure-"))
-    )
-      throw new AppError(
-        "FORBIDDEN",
-        "Database exposure credentials and one-time phpMyAdmin access remain local to the Node.",
-        403,
-      );
     return manageSiteSectionForActor(
       actor,
       input.domain,
@@ -220,19 +310,33 @@ export async function executeFleetAction(
   }
   if (action === "site.domains.get") {
     const input = domainInput.parse(submitted);
-    return getSiteDomainsForActor(actor, input.domain, serverIp);
+    return getSiteDomainsForActor(
+      actor,
+      input.domain,
+      await getServerPublicIp(),
+    );
   }
   if (action === "site.domains.manage") {
     const input = domainInput.parse(submitted);
-    return manageSiteDomainsForActor(actor, input.domain, input.data, serverIp);
+    return manageSiteDomainsForActor(
+      actor,
+      input.domain,
+      input.data,
+      await getServerPublicIp(),
+    );
   }
   if (action === "site.dns.get") {
     const input = domainInput.parse(submitted);
-    return getSiteDnsForActor(actor, input.domain, serverIp);
+    return getSiteDnsForActor(actor, input.domain, await getServerPublicIp());
   }
   if (action === "site.dns.manage") {
     const input = domainInput.parse(submitted);
-    return pointSiteDnsForActor(actor, input.domain, input.data, serverIp);
+    return pointSiteDnsForActor(
+      actor,
+      input.domain,
+      input.data,
+      await getServerPublicIp(),
+    );
   }
   if (action === "site.uptime.get")
     return getSiteUptimeForActor(actor, domainInput.parse(submitted).domain);
@@ -257,7 +361,7 @@ export async function executeFleetAction(
   if (action === "site.services.create") {
     const input = domainInput.parse(submitted);
     return createLinkedServiceForActor(actor, input.domain, input.data, {
-      serverIp,
+      serverIp: await getServerPublicIp(),
     });
   }
   if (action === "site.service.verify") {
@@ -266,7 +370,7 @@ export async function executeFleetAction(
       actor,
       input.domain,
       String(input.serviceDomain),
-      { serverIp },
+      { serverIp: await getServerPublicIp() },
     );
   }
   if (action === "site.service.update") {
@@ -328,6 +432,160 @@ export async function executeFleetAction(
       actor,
       domainInput.parse(submitted).domain,
     );
+  if (action === "cloudflare.credentials.list")
+    return { credentials: await listCredentials(actor.user.id) };
+  if (action === "cloudflare.credentials.add") {
+    const input = z
+      .object({
+        label: z.string().trim().min(1).max(80),
+        token: z.string().trim().min(20).max(4096),
+      })
+      .strict()
+      .parse(submitted);
+    return {
+      credential: await addCredential(actor.user.id, input.label, input.token),
+    };
+  }
+  if (action === "cloudflare.credentials.delete") {
+    const input = z.object({ id: z.string().uuid() }).strict().parse(submitted);
+    await deleteCredential(actor.user.id, input.id);
+    return {};
+  }
+  if (action === "cloudflare.zones.list") {
+    const input = z
+      .object({ refresh: z.boolean().optional() })
+      .strict()
+      .parse(submitted ?? {});
+    return getZones(actor.user.id, input.refresh === true);
+  }
+  if (action === "cloudflare.records.list") {
+    const input = z
+      .object({ credentialId: cloudflareId, zoneId: cloudflareId })
+      .strict()
+      .parse(submitted);
+    return {
+      records: await getRecords(
+        actor.user.id,
+        input.credentialId,
+        input.zoneId,
+      ),
+    };
+  }
+  if (action === "cloudflare.records.manage") {
+    const input = cloudflareRecordInput.parse(submitted);
+    return {
+      record: await mutateRecord(
+        actor.user.id,
+        input.credentialId,
+        input.zoneId,
+        {
+          action: input.action,
+          id: input.id,
+          record: input.record,
+        },
+      ),
+    };
+  }
+  if (action === "mcp.connections.list")
+    return {
+      endpoint: localMcpUrls().resource,
+      connections: await listMcpConnections(actor.user.id, actor.user.username),
+    };
+  if (action === "mcp.connections.create") {
+    const input = z
+      .object({
+        name: z.string().trim().min(1).max(80),
+        expiresInDays: z.union([z.literal(30), z.literal(90), z.literal(365)]),
+      })
+      .strict()
+      .parse(submitted);
+    return createMcpPersonalToken(
+      actor.user.id,
+      actor.user.username,
+      input,
+      localMcpUrls(),
+    );
+  }
+  if (action === "mcp.connections.revoke") {
+    const input = z.object({ id: z.string().uuid() }).strict().parse(submitted);
+    await revokeMcpConnection(actor.user.id, actor.user.username, input.id);
+    return listMcpConnections(actor.user.id, actor.user.username);
+  }
+  if (action === "panel.settings.get") {
+    const [update, notifications, monitoring, security] = await Promise.all([
+      getUpdateState(),
+      getPublicNotificationSettings(),
+      getMonitoringSettings(),
+      getSecuritySettings(),
+    ]);
+    return { update, notifications, monitoring, security };
+  }
+  if (action === "panel.update.manage") {
+    const input = z
+      .discriminatedUnion("action", [
+        z
+          .object({
+            action: z.literal("save-repository"),
+            repository: z.string(),
+          })
+          .strict(),
+        z.object({ action: z.literal("update") }).strict(),
+      ])
+      .parse(submitted);
+    if (input.action === "save-repository") {
+      await setUpdateRepository(validateUpdateRepository(input.repository));
+      return getUpdateState(true);
+    }
+    return queueUpdate();
+  }
+  if (action === "panel.notifications.manage") {
+    const input = z
+      .discriminatedUnion("action", [
+        z
+          .object({
+            action: z.literal("save"),
+            settings: notificationSettingsSchema,
+          })
+          .strict(),
+        z.object({ action: z.literal("test") }).strict(),
+      ])
+      .parse(submitted);
+    if (input.action === "save")
+      return saveNotificationSettings(input.settings);
+    const result = await sendNotification({
+      title: "Test notification",
+      message: "Panelavo notification delivery is configured.",
+      severity: "info",
+      event: "notifications.test",
+    });
+    if (
+      !result.configured ||
+      result.email === false ||
+      result.webhook === false
+    )
+      throw new AppError(
+        "SITE_UPDATE_FAILED",
+        "One or more configured notification channels rejected the test.",
+        502,
+      );
+    return result;
+  }
+  if (action === "panel.monitoring.save")
+    return saveMonitoringSettings(monitoringSettingsSchema.parse(submitted));
+  if (action === "panel.security.save")
+    return setSecuritySettings(
+      z
+        .object({
+          sessionLifetimeMinutes: z.number().int().min(15).max(10_080),
+          passwordMinLength: z.number().int().min(12).max(128),
+          requireUppercase: z.boolean(),
+          requireLowercase: z.boolean(),
+          requireNumber: z.boolean(),
+          requireSymbol: z.boolean(),
+        })
+        .strict()
+        .parse(submitted),
+    );
   if (action === "users.list")
     return {
       users: await client.listUsers(actor.cloudPanel),
@@ -339,20 +597,7 @@ export async function executeFleetAction(
     const input = objectInput.parse(submitted);
     const userAction = String(input.action ?? "");
     if (userAction === "invite")
-      throw new AppError(
-        "FORBIDDEN",
-        "Invitations can only be created from the Node itself.",
-        403,
-      );
-    if (
-      String(input.username ?? "").toLowerCase() ===
-      actor.user.username.toLowerCase()
-    )
-      throw new AppError(
-        "FORBIDDEN",
-        "The Fleet connection owner can only be changed from that Node.",
-        403,
-      );
+      return createUserInvitation(actor, input, localMcpUrls().origin);
     const username = String(input.username ?? "").toLowerCase();
     const roles: PanelRole[] = ["super-admin", "manager", "admin", "user"];
     let panelRole: PanelRole | undefined;
@@ -362,7 +607,7 @@ export async function executeFleetAction(
         throw new AppError("INVALID_REQUEST", "Unknown role.", 400);
       input.role = cloudRoleFor(panelRole);
     }
-    const target = ["reset-password", "delete"].includes(userAction)
+    const target = ["reset-password", "delete", "update"].includes(userAction)
       ? (await client.listUsers(actor.cloudPanel)).find(
           (user) => user.username.toLowerCase() === username,
         )
@@ -371,6 +616,7 @@ export async function executeFleetAction(
     if (panelRole) await setPanelAdmin(username, panelRole === "admin");
     if (userAction === "delete") await setPanelAdmin(username, false);
     if (target) await revokeAllMcpConnections(target.id, target.username);
+    if (target) await revokeFleetAuthorizations(target);
     return {};
   }
   if (action === "vpn.get") return client.getVpnState(actor.cloudPanel);

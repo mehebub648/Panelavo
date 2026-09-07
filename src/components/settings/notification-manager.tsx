@@ -12,7 +12,7 @@ export type PublicNotificationSettings = {
   webhook: { enabled: boolean; url: string };
 } | null;
 
-export function NotificationManager({ initialSettings }: { initialSettings: PublicNotificationSettings }) {
+export function NotificationManager({ initialSettings, apiBase = "" }: { initialSettings: PublicNotificationSettings; apiBase?: string }) {
   const [form, setForm] = useState({
     smtp: initialSettings?.smtp ?? { enabled: false, host: "", port: 587, secure: false, username: "", password: "", hasPassword: false, from: "", to: "" },
     webhook: initialSettings?.webhook ?? { enabled: false, url: "" },
@@ -20,7 +20,7 @@ export function NotificationManager({ initialSettings }: { initialSettings: Publ
   const [busy, setBusy] = useState<"save" | "test" | null>(null);
   const [configured, setConfigured] = useState(Boolean(initialSettings));
   async function request(method: "PUT" | "POST", body?: unknown) {
-    const response = await fetch("/api/notifications/settings", { method, headers: body ? { "content-type": "application/json" } : undefined, body: body ? JSON.stringify(body) : undefined });
+    const response = await fetch(`${apiBase}/api/notifications/settings`, { method, headers: body ? { "content-type": "application/json" } : undefined, body: body ? JSON.stringify(body) : undefined });
     const result = await response.json();
     if (!result.success) throw new Error(result.error?.message || "Notification operation failed.");
     return result.data;

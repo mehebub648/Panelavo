@@ -31,9 +31,13 @@ function randomProbe(serverIp: string, baseDomain: string) {
 
 const READY_TTL_MS = 10 * 60_000;
 const NOT_READY_TTL_MS = 30_000;
+let pending: Promise<SystemStatus> | undefined;
+let generation = 0;
 let cached: { status: SystemStatus; at: number } | null = null;
 
 export function invalidateSystemStatus() {
+  generation++;
+  pending = undefined;
   cached = null;
 }
 
@@ -45,17 +49,33 @@ export async function getSystemStatus(
     if (Date.now() - cached.at < ttl) return cached.status;
   }
 
+  if (pending) return pending;
+  const currentGeneration = generation;
+  const work = loadSystemStatus()
+    .then((status) => {
+      if (generation === currentGeneration) cached = { status, at: Date.now() };
+      return status;
+    })
+    .finally(() => {
+      if (pending === work) pending = undefined;
+    });
+  pending = work;
+  return work;
+}
+
+async function loadSystemStatus(): Promise<SystemStatus> {
   const settings = await getPanelSettings();
   const baseDomain = settings.baseDomain;
   const addressMode = settings.addressMode;
   const serverIp = await getServerPublicIp();
   const wildcardDomain =
     baseDomain && serverIp ? systemWildcardDomain(serverIp, baseDomain) : "";
-  const probeName = baseDomain && serverIp
-    ? addressMode === "sslip"
-      ? `panel.${serverIp}.sslip.io`
-      : randomProbe(serverIp, baseDomain)
-    : "";
+  const probeName =
+    baseDomain && serverIp
+      ? addressMode === "sslip"
+        ? `panel.${serverIp}.sslip.io`
+        : randomProbe(serverIp, baseDomain)
+      : "";
 
   let pointed = false;
   let resolvedIps: string[] = [];
@@ -87,6 +107,5 @@ export async function getSystemStatus(
     resolvedIps,
     reason,
   };
-  cached = { status, at: Date.now() };
   return status;
 }
