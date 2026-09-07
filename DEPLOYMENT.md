@@ -167,3 +167,7 @@ Website uptime and TLS checks run through four workers instead of a sequential q
 ### Connected-server information
 
 Panelavo v0.1.129 enriches the existing authenticated `system.info` Fleet action with the configured panel origin and public address families. No Fleet protocol or broker upgrade is required. Deploy connected nodes before the host for the complete response during rollout; the host UI falls back to the earlier response shape until each node is upgraded.
+
+### PHP website creation ports
+
+PHP creation checks the selected runtime's next CloudPanel pool port against reserved ports and live listeners. A conflict blocks only that PHP version and asks the user to choose another; unrelated legacy application ports no longer block all PHP creation. Panelavo creation requests are serialized. Deploy the updated root-owned bridge with v0.1.131; existing sites and Admin assignment boundaries remain unchanged.

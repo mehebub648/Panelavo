@@ -131,3 +131,7 @@ Website uptime and TLS checks run through four workers instead of a sequential q
 ### Server information
 
 Local and connected-server Information pages share one rendering component. The remote `system.info` action retains its live Super Admin authorization and returns the normal administrator-only server inventory plus the configured panel origin and non-local address families. Link-local and private IPv6 interfaces are excluded, and missing address families are represented explicitly in the UI.
+
+### PHP website creation ports
+
+PHP creation checks the selected runtime's next CloudPanel pool port against reserved ports and live listeners. A conflict blocks only that PHP version and asks the user to choose another; unrelated legacy application ports no longer block all PHP creation. Panelavo creation requests are serialized. Deploy the updated root-owned bridge with v0.1.131; existing sites and Admin assignment boundaries remain unchanged.

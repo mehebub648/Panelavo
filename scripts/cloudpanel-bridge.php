@@ -1500,6 +1500,16 @@ function hostReservedPorts($manager): array
     return $result;
 }
 
+function nextPhpCreationPort(array $poolPorts): ?int
+{
+    if ($poolPorts === []) return null;
+    foreach ($poolPorts as $port) {
+        if (!is_int($port) || $port < 1 || $port >= 65535) return null;
+    }
+    // CloudPanel allocates one above the highest pool for this PHP version.
+    return max($poolPorts) + 1;
+}
+
 function requestedSitePort(array $siteInput): ?int
 {
     if (isset($siteInput['appPort'])) return brokerPortValue($siteInput['appPort']);
@@ -7915,6 +7925,13 @@ if (($argv[1] ?? '') === '--self-test-rootless') runRootlessSelfTest();
 if (($argv[1] ?? '') === '--self-test-datastore') runDatastoreSelfTest();
 if (($argv[1] ?? '') === '--self-test-endpoints') runEndpointSelfTest();
 if (($argv[1] ?? '') === '--self-test-vpn') runVpnSelfTest();
+if (($argv[1] ?? '') === '--self-test-php-port') {
+    foreach ([[[19001, 19000], 19002], [[20000, 20001], 20002], [[], null], [[65535], null], [['20000'], null]] as [$ports, $expected]) {
+        if (nextPhpCreationPort($ports) !== $expected) throw new RuntimeException('PHP port allocation self-test failed.');
+    }
+    echo "PHP port allocation self-test passed.\n";
+    exit(0);
+}
 
 try {
     $encodedInput = stream_get_contents(STDIN, PANELAVO_BROKER_MAX_INPUT_BYTES + 1);
@@ -8153,6 +8170,10 @@ try {
             if (!in_array($user->getRole(), [User::ROLE_ADMIN, User::ROLE_SITE_MANAGER], true) && !$panelAdmin) {
                 respond(['ok' => false, 'code' => 'FORBIDDEN']);
             }
+            $creationLock = fopen('/var/lock/panelavo-site-create.lock', 'c');
+            if (!$creationLock || !flock($creationLock, LOCK_EX | LOCK_NB)) {
+                respond(['ok' => false, 'code' => 'OPERATION_BUSY']);
+            }
             $siteInput = $input['site'] ?? null;
             if (!is_array($siteInput)) invalidBrokerRequest();
             $type = $siteInput['type'] ?? null;
@@ -8180,16 +8201,11 @@ try {
                 ]);
             }
             if ($type === 'php') {
-                foreach ($manager->getRepository(Site::class)->findAll() as $existingSite) {
-                    if (!$existingSite instanceof Site || $existingSite->getType() === Site::TYPE_PHP) continue;
-                    $legacyPort = expectedSitePort($existingSite);
-                    if ($legacyPort !== null && $legacyPort >= 20000 && $legacyPort <= 29999) {
-                        respond([
-                            'ok' => false,
-                            'code' => 'INVALID_REQUEST',
-                            'message' => 'Migrate legacy application port ' . $legacyPort . ' outside the CloudPanel PHP-FPM allocation range before creating another PHP website.',
-                        ]);
-                    }
+                $phpVersion = brokerRuntimeValue($siteInput['phpVersion'] ?? null);
+                $poolReader = new \App\Site\PhpFpm\PoolReader('/etc/php/' . $phpVersion . '/fpm/pool.d/');
+                $phpPort = nextPhpCreationPort(array_map(static fn($pool) => $pool->getPort(), $poolReader->getPools()));
+                if ($phpPort === null || in_array($phpPort, hostReservedPorts($manager), true)) {
+                    respond(['ok' => false, 'code' => 'PHP_PORT_CONFLICT']);
                 }
             }
             $args = [

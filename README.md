@@ -359,3 +359,7 @@ Website uptime and TLS checks run through four workers instead of a sequential q
 ### Complete connected-server information
 
 The Information page uses the same detailed view for the local panel and connected servers. It shows copyable panel address, IPv4 and IPv6 addresses, hardware capacity, uptime, operating-system maintenance, and detected software versions. Connected servers running an older release remain readable during a rolling update.
+
+### PHP website creation ports
+
+PHP creation checks the selected runtime's next CloudPanel pool port against reserved ports and live listeners. A conflict blocks only that PHP version and asks the user to choose another; unrelated legacy application ports no longer block all PHP creation. Panelavo creation requests are serialized. Deploy the updated root-owned bridge with v0.1.131; existing sites and Admin assignment boundaries remain unchanged.

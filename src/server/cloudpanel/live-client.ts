@@ -510,6 +510,14 @@ export class LiveCloudPanelClient implements CloudPanelClient {
   }
 
   private privilegedError(result: BridgeResult, fallback: string) {
+    if (result.code === "PHP_PORT_CONFLICT")
+      return new AppError(
+        "INVALID_REQUEST",
+        "This PHP version's next website port is unavailable. Choose another installed PHP version. Existing websites have not been changed.",
+        409,
+      );
+    if (result.code === "OPERATION_BUSY")
+      return new AppError("OPERATION_BUSY", "Another website operation is running. Try again shortly.", 409);
     if (result.code === "REQUEST_TIMEOUT")
       return new AppError(
         "REQUEST_TIMEOUT",
