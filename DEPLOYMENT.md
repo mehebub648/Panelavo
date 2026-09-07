@@ -172,6 +172,4 @@ Panelavo v0.1.129 enriches the existing authenticated `system.info` Fleet action
 
 PHP creation checks the selected runtime's next CloudPanel pool port against reserved ports and live listeners. A conflict blocks only that PHP version and asks the user to choose another; unrelated legacy application ports no longer block all PHP creation. Panelavo creation requests are serialized. Deploy the updated root-owned bridge with v0.1.131; existing sites and Admin assignment boundaries remain unchanged.
 
-The self-updater resolves PM2 from the panel site user's PATH before staging and uses that executable to reload only Panelavo. Both shared /usr/local/bin and distribution /usr/bin installations are supported; missing PM2 blocks before deployment.
-
 Legacy MCP clients use credential- and live-actor-bound in-memory HTTP sessions so negotiated elicitation capabilities and confirmation replies survive across requests. Sessions expire after 30 minutes of inactivity, are capped globally and per credential, and are lost on a Panelavo restart; clients must initialize again. Every HTTP request still authenticates against live CloudPanel access. Modern per-request MCP handling and one-use confirmation checks remain unchanged.
