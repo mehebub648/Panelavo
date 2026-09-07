@@ -1,6 +1,6 @@
 {
   "name": "panelavo",
-  "version": "0.1.131",
+  "version": "0.1.132",
   "private": true,
   "engines": {
     "node": ">=20.9.0"
