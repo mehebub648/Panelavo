@@ -3,8 +3,34 @@ import {
   classifyUpdate,
   compareReleaseVersions,
   isUpdateCurrent,
+  isQueuedUpdateExpired,
   shouldCompleteUpdateHandoff,
 } from "./panel-updater";
+
+describe("abandoned update recovery", () => {
+  const startedAt = "2026-09-07T17:27:26.212Z";
+  const now = Date.parse(startedAt);
+  it("allows startup but expires an abandoned queue after two minutes", () => {
+    expect(
+      isQueuedUpdateExpired({ status: "queued", startedAt }, now + 120_000),
+    ).toBe(false);
+    expect(
+      isQueuedUpdateExpired({ status: "queued", startedAt }, now + 120_001),
+    ).toBe(true);
+  });
+  it("does not time out a build or reload", () => {
+    for (const status of ["updating", "reloading", "complete"] as const)
+      expect(
+        isQueuedUpdateExpired({ status, startedAt }, now + 3_600_000),
+      ).toBe(false);
+  });
+  it("recovers queues with missing or invalid timestamps", () => {
+    expect(isQueuedUpdateExpired({ status: "queued" }, now)).toBe(true);
+    expect(
+      isQueuedUpdateExpired({ status: "queued", startedAt: "invalid" }, now),
+    ).toBe(true);
+  });
+});
 
 describe("release comparison", () => {
   it("compares stable semantic versions numerically", () => {

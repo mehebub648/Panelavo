@@ -159,8 +159,31 @@ export function shouldCompleteUpdateHandoff(
   return state.status === "updating" && isUpdateCurrent(state);
 }
 
+export function isQueuedUpdateExpired(
+  state: Partial<UpdateState>,
+  now = Date.now(),
+) {
+  return (
+    state.status === "queued" &&
+    (!state.startedAt ||
+      !Number.isFinite(Date.parse(state.startedAt)) ||
+      now - Date.parse(state.startedAt) > 120_000)
+  );
+}
+
 async function effectiveState() {
   const state = await loadState();
+  if (isQueuedUpdateExpired(state)) {
+    const failed = {
+      ...state,
+      status: "failed" as const,
+      completedAt: new Date().toISOString(),
+      error:
+        "The update worker did not start within two minutes. Check the update log and retry.",
+    };
+    await saveStoredState(failed);
+    return failed;
+  }
   if (!shouldCompleteUpdateHandoff(state)) return state;
   const complete = {
     ...state,
@@ -517,6 +540,10 @@ export async function queueUpdate() {
       state.notice || "This release is not safe to install as an update.",
       409,
     );
+  // Read before locking the UI; normalize Windows checkouts before Bash parses it.
+  const script = (
+    await readFile(join(process.cwd(), "scripts", "self-update.sh"), "utf8")
+  ).replace(/\r\n/g, "\n");
   const queued: UpdateState = {
     ...state,
     status: "queued",
@@ -526,22 +553,49 @@ export async function queueUpdate() {
     previousPid: process.pid,
   };
   await saveState(queued);
-  const child = spawn(
-    "/usr/bin/bash",
-    [
-      join(process.cwd(), "scripts", "self-update.sh"),
-      state.repository,
-      UPDATE_BRANCH,
-      process.cwd(),
-    ],
-    {
-      cwd: process.cwd(),
-      detached: true,
-      stdio: "ignore",
-      shell: false,
-    },
-  );
-  child.on("error", () => undefined);
-  child.unref();
+  const recordFailure = async () => {
+    const current = await loadState();
+    if (
+      current.startedAt !== queued.startedAt ||
+      !["queued", "updating"].includes(current.status || "")
+    )
+      return;
+    await saveStoredState({
+      ...current,
+      status: "failed",
+      completedAt: new Date().toISOString(),
+      error:
+        "The update worker stopped before deployment completed. Check the update log and retry.",
+    });
+  };
+  try {
+    const child = spawn(
+      "/usr/bin/bash",
+      [
+        "-c",
+        script,
+        "self-update.sh",
+        state.repository,
+        UPDATE_BRANCH,
+        process.cwd(),
+      ],
+      {
+        cwd: process.cwd(),
+        detached: true,
+        stdio: "ignore",
+        shell: false,
+      },
+    );
+    child.on("error", () => {
+      void recordFailure().catch(() => undefined);
+    });
+    child.on("exit", () => {
+      void recordFailure().catch(() => undefined);
+    });
+    child.unref();
+  } catch (error) {
+    await recordFailure();
+    throw error;
+  }
   return queued;
 }
