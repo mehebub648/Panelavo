@@ -40,6 +40,10 @@ trap cleanup EXIT
 mkdir "${LOCK_DIR}" 2>/dev/null || abort "An update is already running."
 LOCK_ACQUIRED=true
 write_state updating
+PM2_BIN="$(command -v pm2)" \
+  || abort "PM2 is unavailable to the panel site user. Run 'sudo bash setup.sh' from a trusted checkout before updating."
+[ -x "${PM2_BIN}" ] \
+  || abort "PM2 is not executable by the panel site user. Run 'sudo bash setup.sh' from a trusted checkout before updating."
 UNWRITABLE_DIR="$(find "${APP_ROOT}" -path "${APP_ROOT}/.data" -prune -o -type d ! -writable -print -quit 2>/dev/null)" \
   || abort "Panelavo could not verify application directory permissions. Run 'sudo bash setup.sh' from a trusted checkout before updating."
 [ -z "${UNWRITABLE_DIR}" ] \
@@ -120,11 +124,11 @@ try { state.currentVersion = JSON.parse(fs.readFileSync(process.env.APP_ROOT + '
 fs.writeFileSync(process.env.STATE_FILE, JSON.stringify(state), { mode: 0o600 });
 NODE
 echo "[$(date -Is)] Reloading Panelavo"
-/usr/local/bin/pm2 save
+"${PM2_BIN}" save
 # PM2 terminates the old panel's process tree during reload, including this
 # worker. Clean staging first and let the new process complete the persisted
 # reloading handoff by comparing its PID with previousPid.
 cleanup
 TEMP_DIR=""
 LOCK_ACQUIRED=false
-/usr/local/bin/pm2 startOrReload "${APP_ROOT}/ecosystem.config.js"
+"${PM2_BIN}" startOrReload "${APP_ROOT}/ecosystem.config.js" --only panelavo
