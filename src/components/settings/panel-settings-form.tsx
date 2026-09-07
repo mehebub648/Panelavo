@@ -11,6 +11,8 @@ import { MonitoringManager } from "@/components/settings/monitoring-manager";
 import type { MonitoringSettings } from "@/server/monitoring/store";
 import { SecurityPolicyManager } from "@/components/settings/security-policy-manager";
 import type { SecuritySettings } from "@/server/settings/store";
+import { ConnectedServers } from "@/components/settings/connected-servers";
+import { PanelAddress } from "@/components/settings/panel-address";
 
 type Category = { id: string; label: string; start: number; end: number };
 
@@ -50,6 +52,8 @@ export function PanelSettingsForm({
         </p>
       </div>
 
+      <ConnectedServers />
+      <PanelAddress />
       <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-card">
         <div className="flex items-center justify-between gap-3 border-b border-slate-100 bg-slate-50/60 px-5 py-4 sm:px-6">
           <div className="flex items-center gap-3">
@@ -91,7 +95,7 @@ export function PanelSettingsForm({
 
           <dl className="grid gap-3 rounded-xl bg-slate-50 px-4 py-3 text-sm sm:grid-cols-2">
             <div>
-              <dt className="text-slate-500">Panel address</dt>
+              <dt className="text-slate-500">Default panel address</dt>
               <dd className="mt-0.5 break-all font-mono text-slate-700">
                 {panelAddress}
               </dd>

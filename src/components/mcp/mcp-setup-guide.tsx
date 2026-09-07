@@ -175,10 +175,12 @@ export function McpSetupGuide({
   user,
   endpoint,
   initialConnections,
+  apiBase = "/api/profile/mcp-connections",
 }: {
   user: CloudPanelUser;
   endpoint: string;
   initialConnections: PublicMcpConnection[];
+  apiBase?: string;
 }) {
   const [guide, setGuide] = useState<Guide>("windows");
   const [connections, setConnections] = useState(initialConnections);
@@ -204,7 +206,7 @@ export function McpSetupGuide({
   async function createToken() {
     setCreatingToken(true);
     try {
-      const response = await fetch("/api/profile/mcp-connections", {
+      const response = await fetch(apiBase, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -258,7 +260,7 @@ export function McpSetupGuide({
     if (!disconnecting) return;
     setBusy(true);
     try {
-      const response = await fetch("/api/profile/mcp-connections", {
+      const response = await fetch(apiBase, {
         method: "DELETE",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ id: disconnecting.id }),

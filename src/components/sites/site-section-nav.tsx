@@ -39,18 +39,23 @@ const sectionGroups: Record<string, readonly string[]> = {
 export function SiteSectionNav({
   domain,
   serviceSite = false,
+  routeBase = "/sites",
 }: {
   domain: string;
   serviceSite?: boolean;
+  routeBase?: string;
 }) {
   const pathname = usePathname();
-  const base = `/sites/${encodeURIComponent(domain)}`;
+  const base = `${routeBase}/${encodeURIComponent(domain)}`;
   const visible = serviceSite
     ? sections.filter(([path]) => SERVICE_SECTIONS.has(path))
     : sections;
   return (
-    <div className="-mx-4 overflow-x-auto px-4 sm:-mx-8 sm:px-8 pb-1">
-      <nav className="flex min-w-max gap-2 p-1 rounded-2xl bg-slate-100/50 backdrop-blur-sm border border-slate-200/60" aria-label={`${domain} tools`}>
+    <div className="-mx-4 overflow-x-auto px-4 pb-1 sm:-mx-8 sm:px-8">
+      <nav
+        className="flex min-w-max gap-2 rounded-2xl border border-slate-200/60 bg-slate-100/50 p-1 backdrop-blur-sm"
+        aria-label={`${domain} tools`}
+      >
         {visible.map(([path, label, Icon]) => {
           const href = `${base}/${path}`;
           const active = (sectionGroups[path] ?? [path]).some(
@@ -68,7 +73,12 @@ export function SiteSectionNav({
                   : "text-slate-500 hover:bg-slate-200/50 hover:text-slate-900",
               )}
             >
-              <Icon className={cn("h-4 w-4 transition-colors", active ? "text-panel-600" : "text-slate-400")} />
+              <Icon
+                className={cn(
+                  "h-4 w-4 transition-colors",
+                  active ? "text-panel-600" : "text-slate-400",
+                )}
+              />
               {label}
             </Link>
           );

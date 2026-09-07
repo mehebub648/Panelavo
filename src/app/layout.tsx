@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import type { Metadata } from "next";
 import { Toaster } from "sonner";
 import { NavigationLoading } from "@/components/layout/navigation-loading";
@@ -15,7 +16,9 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body>
-        <NavigationLoading />
+        <Suspense fallback={null}>
+          <NavigationLoading />
+        </Suspense>
         {children}
         <Toaster position="bottom-right" richColors closeButton />
       </body>

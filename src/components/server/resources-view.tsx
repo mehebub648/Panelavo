@@ -40,7 +40,13 @@ const EMPTY_RESOURCES: ServerResources = {
   cpu: { cores: 1, load1: 0, load5: 0, load15: 0, usedPercent: 0 },
   memory: { totalBytes: 0, usedBytes: 0, availableBytes: 0, usedPercent: 0 },
   swap: { totalBytes: 0, usedBytes: 0 },
-  disk: { totalBytes: 0, usedBytes: 0, availableBytes: 0, usedPercent: 0, mount: "/" },
+  disk: {
+    totalBytes: 0,
+    usedBytes: 0,
+    availableBytes: 0,
+    usedPercent: 0,
+    mount: "/",
+  },
   users: [],
   websites: [],
   shared: { cpuPercent: 0, memoryBytes: 0, processes: 0 },
@@ -51,7 +57,10 @@ const EMPTY_RESOURCES: ServerResources = {
 function formatBytes(bytes: number) {
   if (!bytes) return "0 B";
   const units = ["B", "KB", "MB", "GB", "TB"];
-  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const index = Math.min(
+    Math.floor(Math.log(bytes) / Math.log(1024)),
+    units.length - 1,
+  );
   return `${(bytes / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}`;
 }
 
@@ -59,18 +68,40 @@ function formatUptime(seconds: number) {
   const days = Math.floor(seconds / 86_400);
   const hours = Math.floor((seconds % 86_400) / 3_600);
   const minutes = Math.floor((seconds % 3_600) / 60);
-  return days > 0 ? `${days}d ${hours}h` : hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+  return days > 0
+    ? `${days}d ${hours}h`
+    : hours > 0
+      ? `${hours}h ${minutes}m`
+      : `${minutes}m`;
 }
 
 function gaugeColor(percent: number) {
-  return percent >= 90 ? "bg-red-500" : percent >= 70 ? "bg-amber-500" : "bg-panel-600";
+  return percent >= 90
+    ? "bg-red-500"
+    : percent >= 70
+      ? "bg-amber-500"
+      : "bg-panel-600";
 }
 
-function Gauge({ percent, className }: { percent: number; className?: string }) {
+function Gauge({
+  percent,
+  className,
+}: {
+  percent: number;
+  className?: string;
+}) {
   return (
-    <div className={cn("h-2 w-full overflow-hidden rounded-full bg-slate-100", className)}>
+    <div
+      className={cn(
+        "h-2 w-full overflow-hidden rounded-full bg-slate-100",
+        className,
+      )}
+    >
       <div
-        className={cn("h-full rounded-full transition-all duration-500", gaugeColor(percent))}
+        className={cn(
+          "h-full rounded-full transition-all duration-500",
+          gaugeColor(percent),
+        )}
         style={{ width: `${Math.max(0, Math.min(100, percent))}%` }}
       />
     </div>
@@ -98,10 +129,14 @@ function UsageCell({
       <Gauge percent={shareOfAvail} />
       <div className="flex items-center justify-between text-[10px] leading-none text-slate-400">
         <span>
-          <b className="font-semibold text-slate-600">{round1(shareOfUsed)}%</b> of used
+          <b className="font-semibold text-slate-600">{round1(shareOfUsed)}%</b>{" "}
+          of used
         </span>
         <span>
-          <b className="font-semibold text-slate-600">{round1(shareOfAvail)}%</b> of total
+          <b className="font-semibold text-slate-600">
+            {round1(shareOfAvail)}%
+          </b>{" "}
+          of total
         </span>
       </div>
     </div>
@@ -133,10 +168,15 @@ function HistoryChart({
     x: ((point.t - first) / span) * width,
     y: height - (Math.max(0, Math.min(100, accessor(point))) / 100) * height,
   }));
-  const line = coords.map((c, i) => `${i ? "L" : "M"}${c.x.toFixed(1)},${c.y.toFixed(1)}`).join(" ");
+  const line = coords
+    .map((c, i) => `${i ? "L" : "M"}${c.x.toFixed(1)},${c.y.toFixed(1)}`)
+    .join(" ");
   const area = `${line} L${width},${height} L0,${height} Z`;
   const label = (t: number) =>
-    new Date(t).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+    new Date(t).toLocaleTimeString(undefined, {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
   return (
     <div>
       <svg
@@ -159,7 +199,13 @@ function HistoryChart({
           />
         ))}
         <path d={area} fill="currentColor" className="text-panel-500/15" />
-        <path d={line} fill="none" stroke="currentColor" strokeWidth="2" className="text-panel-600" />
+        <path
+          d={line}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          className="text-panel-600"
+        />
       </svg>
       {showAxis && (
         <div className="mt-1 flex justify-between text-[10px] text-slate-400">
@@ -194,7 +240,8 @@ function StatCard({
       onClick={onClick}
       className={cn(
         "rounded-2xl border border-white/60 bg-white/70 p-5 text-left shadow-card backdrop-blur-md",
-        onClick && "transition hover:-translate-y-0.5 hover:border-panel-300 hover:shadow-card-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-panel-500",
+        onClick &&
+          "hover:border-panel-300 transition hover:-translate-y-0.5 hover:shadow-card-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-panel-500",
       )}
     >
       <div className="flex items-center justify-between gap-3">
@@ -202,19 +249,31 @@ function StatCard({
           <Icon className="h-5 w-5" />
         </span>
         {percent !== undefined && (
-          <span className={cn(
-            "rounded-full px-2.5 py-1 text-xs font-bold",
-            percent >= 90 ? "bg-red-50 text-red-600" : percent >= 70 ? "bg-amber-50 text-amber-700" : "bg-emerald-50 text-emerald-700",
-          )}>
+          <span
+            className={cn(
+              "rounded-full px-2.5 py-1 text-xs font-bold",
+              percent >= 90
+                ? "bg-red-50 text-red-600"
+                : percent >= 70
+                  ? "bg-amber-50 text-amber-700"
+                  : "bg-emerald-50 text-emerald-700",
+            )}
+          >
             {percent}%
           </span>
         )}
       </div>
-      <p className="mt-4 text-xs font-semibold uppercase tracking-wide text-slate-400">{label}</p>
+      <p className="mt-4 text-xs font-semibold uppercase tracking-wide text-slate-400">
+        {label}
+      </p>
       <p className="mt-1 text-lg font-bold text-ink sm:text-xl">{value}</p>
       <p className="mt-0.5 truncate text-xs text-slate-500">{detail}</p>
       {percent !== undefined && <Gauge percent={percent} className="mt-3" />}
-      {onClick && <p className="mt-2 text-[11px] font-semibold text-panel-600">View details →</p>}
+      {onClick && (
+        <p className="mt-2 text-[11px] font-semibold text-panel-600">
+          View details →
+        </p>
+      )}
     </Wrapper>
   );
 }
@@ -223,10 +282,12 @@ export function ResourcesView({
   initialData,
   initialHistory,
   canReclaimStorage = false,
+  apiBase = "",
 }: {
   initialData: ServerResources | null;
   initialHistory: ResourceHistoryPoint[];
   canReclaimStorage?: boolean;
+  apiBase?: string;
 }) {
   const [data, setData] = useState(initialData ?? EMPTY_RESOURCES);
   const [history, setHistory] = useState(initialHistory);
@@ -244,66 +305,95 @@ export function ResourcesView({
   const [storageError, setStorageError] = useState("");
   const [cleanupBusy, setCleanupBusy] = useState(false);
   const [cleanupConfirm, setCleanupConfirm] = useState(false);
-  const [lastCleanup, setLastCleanup] = useState<ServerStorageCleanupResult | null>(null);
+  const [lastCleanup, setLastCleanup] =
+    useState<ServerStorageCleanupResult | null>(null);
 
-  const refresh = useCallback(async (silent = false) => {
-    if (!silent) setBusy(true);
-    try {
-      const result = await fetch("/api/server/resources", { cache: "no-store" }).then((r) => r.json());
-      if (!result.success) throw new Error(result.error?.message || "Resources could not be loaded.");
-      setData(result.data.resources as ServerResources);
-      setHistory((result.data.history ?? []) as ResourceHistoryPoint[]);
-      setLoaded(true);
-      setLoadError("");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Resources could not be loaded.";
-      if (!loaded) setLoadError(message);
-      if (!silent) toast.error(message);
-    } finally {
-      if (!silent) setBusy(false);
-    }
-  }, [loaded]);
+  const refresh = useCallback(
+    async (silent = false) => {
+      if (!silent) setBusy(true);
+      try {
+        const result = await fetch(`${apiBase}/api/server/resources`, {
+          cache: "no-store",
+        }).then((r) => r.json());
+        if (!result.success)
+          throw new Error(
+            result.error?.message || "Resources could not be loaded.",
+          );
+        setData(result.data.resources as ServerResources);
+        setHistory((result.data.history ?? []) as ResourceHistoryPoint[]);
+        setLoaded(true);
+        setLoadError("");
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Resources could not be loaded.";
+        if (!loaded) setLoadError(message);
+        if (!silent) toast.error(message);
+      } finally {
+        if (!silent) setBusy(false);
+      }
+    },
+    [apiBase, loaded],
+  );
 
-  const loadStorage = useCallback(async (force = false) => {
-    setStorageBusy(true);
-    setStorageError("");
-    try {
-      const result = await fetch("/api/server/storage", {
-        method: force ? "POST" : "GET",
-        cache: "no-store",
-      }).then((response) => response.json());
-      if (!result.success)
-        throw new Error(result.error?.message || "Storage analysis could not be loaded.");
-      setStorage(result.data.storage as ServerStorageBreakdown);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Storage analysis could not be loaded.";
-      setStorageError(message);
-      if (force) toast.error(message);
-    } finally {
-      setStorageBusy(false);
-    }
-  }, []);
+  const loadStorage = useCallback(
+    async (force = false) => {
+      setStorageBusy(true);
+      setStorageError("");
+      try {
+        const result = await fetch(`${apiBase}/api/server/storage`, {
+          method: force ? "POST" : "GET",
+          cache: "no-store",
+        }).then((response) => response.json());
+        if (!result.success)
+          throw new Error(
+            result.error?.message || "Storage analysis could not be loaded.",
+          );
+        setStorage(result.data.storage as ServerStorageBreakdown);
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Storage analysis could not be loaded.";
+        setStorageError(message);
+        if (force) toast.error(message);
+      } finally {
+        setStorageBusy(false);
+      }
+    },
+    [apiBase],
+  );
 
   const reclaimStorage = useCallback(async () => {
     setCleanupBusy(true);
     try {
-      const result = await fetch("/api/server/storage/reclaim", {
+      const result = await fetch(`${apiBase}/api/server/storage/reclaim`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ confirmation: "RECLAIM BUILD CACHE" }),
       }).then((response) => response.json());
       if (!result.success)
-        throw new Error(result.error?.message || "Build-cache cleanup could not be completed.");
+        throw new Error(
+          result.error?.message ||
+            "Build-cache cleanup could not be completed.",
+        );
       const cleanup = result.data.cleanup as ServerStorageCleanupResult;
       setLastCleanup(cleanup);
-      toast.success(`Recovered ${formatBytes(cleanup.reclaimedBytes)} of server storage.`);
+      toast.success(
+        `Recovered ${formatBytes(cleanup.reclaimedBytes)} of server storage.`,
+      );
       await loadStorage(true);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Build-cache cleanup could not be completed.");
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Build-cache cleanup could not be completed.",
+      );
     } finally {
       setCleanupBusy(false);
     }
-  }, [loadStorage]);
+  }, [apiBase, loadStorage]);
 
   // Render the route immediately, then load the privileged process snapshot.
   // A short server cache collapses concurrent viewers and polling requests.
@@ -321,8 +411,14 @@ export function ResourcesView({
   }, [detail, loadStorage, storage, storageBusy, storageError]);
 
   const maxCpu = Math.max(1, ...data.websites.map((entry) => entry.cpuPercent));
-  const maxMemory = Math.max(1, ...data.websites.map((entry) => entry.memoryBytes));
-  const maxDisk = Math.max(1, ...data.websites.map((entry) => entry.diskBytes ?? 0));
+  const maxMemory = Math.max(
+    1,
+    ...data.websites.map((entry) => entry.memoryBytes),
+  );
+  const maxDisk = Math.max(
+    1,
+    ...data.websites.map((entry) => entry.diskBytes ?? 0),
+  );
 
   // Denominators for the two per-row shares. "Used" totals are the sum across
   // listed users (so a row's share is its slice of the attributed pie);
@@ -343,96 +439,143 @@ export function ResourcesView({
     const needle = query.trim().toLowerCase();
     return [...data.websites]
       .filter((entry) => typeFilter === "all" || entry.type === typeFilter)
-      .filter((entry) => !activeOnly || entry.processes > 0 || entry.cpuPercent > 0 || entry.memoryBytes > 0)
-      .filter((entry) => !needle || entry.domain.includes(needle) || entry.siteUser.toLowerCase().includes(needle))
+      .filter(
+        (entry) =>
+          !activeOnly ||
+          entry.processes > 0 ||
+          entry.cpuPercent > 0 ||
+          entry.memoryBytes > 0,
+      )
+      .filter(
+        (entry) =>
+          !needle ||
+          entry.domain.includes(needle) ||
+          entry.siteUser.toLowerCase().includes(needle),
+      )
       .sort((a, b) => {
         if (sort === "domain") return a.domain.localeCompare(b.domain);
-        if (sort === "cpu") return b.cpuPercent - a.cpuPercent || a.domain.localeCompare(b.domain);
-        if (sort === "disk") return (b.diskBytes ?? -1) - (a.diskBytes ?? -1) || a.domain.localeCompare(b.domain);
-        return b.memoryBytes - a.memoryBytes || a.domain.localeCompare(b.domain);
+        if (sort === "cpu")
+          return (
+            b.cpuPercent - a.cpuPercent || a.domain.localeCompare(b.domain)
+          );
+        if (sort === "disk")
+          return (
+            (b.diskBytes ?? -1) - (a.diskBytes ?? -1) ||
+            a.domain.localeCompare(b.domain)
+          );
+        return (
+          b.memoryBytes - a.memoryBytes || a.domain.localeCompare(b.domain)
+        );
       });
   }, [activeOnly, data.websites, query, sort, typeFilter]);
   const pageCount = Math.max(1, Math.ceil(filteredWebsites.length / PAGE_SIZE));
-  const visibleWebsites = filteredWebsites.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const visibleWebsites = filteredWebsites.slice(
+    (page - 1) * PAGE_SIZE,
+    page * PAGE_SIZE,
+  );
 
   useEffect(() => setPage(1), [activeOnly, query, sort, typeFilter]);
-  useEffect(() => setPage((current) => Math.min(current, pageCount)), [pageCount]);
+  useEffect(
+    () => setPage((current) => Math.min(current, pageCount)),
+    [pageCount],
+  );
 
-  const metricConfig: Record<Metric, {
-    title: string;
-    icon: React.ComponentType<{ className?: string }>;
-    percent: number;
-    accessor: (point: ResourceHistoryPoint) => number;
-    facts: { label: string; value: string }[];
-    consumers: { name: string; note: string; value: string; percent: number }[];
-  }> = useMemo(() => ({
-    cpu: {
-      title: "CPU usage",
-      icon: Cpu,
-      percent: data.cpu.usedPercent,
-      accessor: (point) => point.cpu,
-      facts: [
-        { label: "Cores", value: String(data.cpu.cores) },
-        { label: "Load 1m", value: String(data.cpu.load1) },
-        { label: "Load 5m", value: String(data.cpu.load5) },
-        { label: "Load 15m", value: String(data.cpu.load15) },
-      ],
-      consumers: [...data.websites]
-        .sort((a, b) => b.cpuPercent - a.cpuPercent)
-        .filter((entry) => entry.cpuPercent > 0)
-        .slice(0, 10)
-        .map((entry) => ({
-          name: entry.domain,
-          note: `${entry.type} · ${entry.processes} processes`,
-          value: `${entry.cpuPercent}%`,
-          percent: (entry.cpuPercent / maxCpu) * 100,
-        })),
-    },
-    memory: {
-      title: "Memory usage",
-      icon: MemoryStick,
-      percent: data.memory.usedPercent,
-      accessor: (point) => point.mem,
-      facts: [
-        { label: "Total", value: formatBytes(data.memory.totalBytes) },
-        { label: "Used", value: formatBytes(data.memory.usedBytes) },
-        { label: "Available", value: formatBytes(data.memory.availableBytes) },
-        { label: "Swap", value: data.swap.totalBytes ? `${formatBytes(data.swap.usedBytes)} / ${formatBytes(data.swap.totalBytes)}` : "none" },
-      ],
-      consumers: [...data.websites]
-        .sort((a, b) => b.memoryBytes - a.memoryBytes)
-        .filter((entry) => entry.memoryBytes > 0)
-        .slice(0, 10)
-        .map((entry) => ({
-          name: entry.domain,
-          note: `${entry.type} · ${entry.processes} processes`,
-          value: formatBytes(entry.memoryBytes),
-          percent: (entry.memoryBytes / maxMemory) * 100,
-        })),
-    },
-    disk: {
-      title: "Disk usage",
-      icon: HardDrive,
-      percent: data.disk.usedPercent,
-      accessor: (point) => point.disk,
-      facts: [
-        { label: "Mount", value: data.disk.mount },
-        { label: "Total", value: formatBytes(data.disk.totalBytes) },
-        { label: "Used", value: formatBytes(data.disk.usedBytes) },
-        { label: "Free", value: formatBytes(data.disk.availableBytes) },
-      ],
-      consumers: [...data.websites]
-        .filter((entry) => (entry.diskBytes ?? 0) > 0)
-        .sort((a, b) => (b.diskBytes ?? 0) - (a.diskBytes ?? 0))
-        .slice(0, 10)
-        .map((entry) => ({
-          name: entry.domain,
-          note: entry.diskShared ? "shared application root" : "application root",
-          value: formatBytes(entry.diskBytes ?? 0),
-          percent: ((entry.diskBytes ?? 0) / maxDisk) * 100,
-        })),
-    },
-  }), [data, maxCpu, maxMemory, maxDisk]);
+  const metricConfig: Record<
+    Metric,
+    {
+      title: string;
+      icon: React.ComponentType<{ className?: string }>;
+      percent: number;
+      accessor: (point: ResourceHistoryPoint) => number;
+      facts: { label: string; value: string }[];
+      consumers: {
+        name: string;
+        note: string;
+        value: string;
+        percent: number;
+      }[];
+    }
+  > = useMemo(
+    () => ({
+      cpu: {
+        title: "CPU usage",
+        icon: Cpu,
+        percent: data.cpu.usedPercent,
+        accessor: (point) => point.cpu,
+        facts: [
+          { label: "Cores", value: String(data.cpu.cores) },
+          { label: "Load 1m", value: String(data.cpu.load1) },
+          { label: "Load 5m", value: String(data.cpu.load5) },
+          { label: "Load 15m", value: String(data.cpu.load15) },
+        ],
+        consumers: [...data.websites]
+          .sort((a, b) => b.cpuPercent - a.cpuPercent)
+          .filter((entry) => entry.cpuPercent > 0)
+          .slice(0, 10)
+          .map((entry) => ({
+            name: entry.domain,
+            note: `${entry.type} · ${entry.processes} processes`,
+            value: `${entry.cpuPercent}%`,
+            percent: (entry.cpuPercent / maxCpu) * 100,
+          })),
+      },
+      memory: {
+        title: "Memory usage",
+        icon: MemoryStick,
+        percent: data.memory.usedPercent,
+        accessor: (point) => point.mem,
+        facts: [
+          { label: "Total", value: formatBytes(data.memory.totalBytes) },
+          { label: "Used", value: formatBytes(data.memory.usedBytes) },
+          {
+            label: "Available",
+            value: formatBytes(data.memory.availableBytes),
+          },
+          {
+            label: "Swap",
+            value: data.swap.totalBytes
+              ? `${formatBytes(data.swap.usedBytes)} / ${formatBytes(data.swap.totalBytes)}`
+              : "none",
+          },
+        ],
+        consumers: [...data.websites]
+          .sort((a, b) => b.memoryBytes - a.memoryBytes)
+          .filter((entry) => entry.memoryBytes > 0)
+          .slice(0, 10)
+          .map((entry) => ({
+            name: entry.domain,
+            note: `${entry.type} · ${entry.processes} processes`,
+            value: formatBytes(entry.memoryBytes),
+            percent: (entry.memoryBytes / maxMemory) * 100,
+          })),
+      },
+      disk: {
+        title: "Disk usage",
+        icon: HardDrive,
+        percent: data.disk.usedPercent,
+        accessor: (point) => point.disk,
+        facts: [
+          { label: "Mount", value: data.disk.mount },
+          { label: "Total", value: formatBytes(data.disk.totalBytes) },
+          { label: "Used", value: formatBytes(data.disk.usedBytes) },
+          { label: "Free", value: formatBytes(data.disk.availableBytes) },
+        ],
+        consumers: [...data.websites]
+          .filter((entry) => (entry.diskBytes ?? 0) > 0)
+          .sort((a, b) => (b.diskBytes ?? 0) - (a.diskBytes ?? 0))
+          .slice(0, 10)
+          .map((entry) => ({
+            name: entry.domain,
+            note: entry.diskShared
+              ? "shared application root"
+              : "application root",
+            value: formatBytes(entry.diskBytes ?? 0),
+            percent: ((entry.diskBytes ?? 0) / maxDisk) * 100,
+          })),
+      },
+    }),
+    [data, maxCpu, maxMemory, maxDisk],
+  );
 
   const active = detail ? metricConfig[detail] : null;
 
@@ -440,25 +583,44 @@ export function ResourcesView({
     return (
       <div className="w-full space-y-5">
         <div>
-          <h2 className="text-2xl font-bold tracking-tight text-ink">Resources</h2>
+          <h2 className="text-2xl font-bold tracking-tight text-ink">
+            Resources
+          </h2>
           <p className="mt-1 text-sm text-slate-500">
-            Website usage loads separately so this page stays available while the server is measured.
+            Website usage loads separately so this page stays available while
+            the server is measured.
           </p>
         </div>
         <section className="grid min-h-56 place-items-center rounded-2xl border border-white/60 bg-white/70 p-8 text-center shadow-card backdrop-blur-md">
           {loadError ? (
             <div className="max-w-md">
-              <p className="font-semibold text-slate-700">Resource data is temporarily unavailable.</p>
+              <p className="font-semibold text-slate-700">
+                Resource data is temporarily unavailable.
+              </p>
               <p className="mt-1 text-sm text-slate-500">{loadError}</p>
-              <Button className="mt-4" onClick={() => void refresh()} disabled={busy}>
-                {busy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />} Try again
+              <Button
+                className="mt-4"
+                onClick={() => void refresh()}
+                disabled={busy}
+              >
+                {busy ? (
+                  <LoaderCircle className="h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-4 w-4" />
+                )}{" "}
+                Try again
               </Button>
             </div>
           ) : (
             <div>
               <LoaderCircle className="mx-auto h-7 w-7 animate-spin text-panel-600" />
-              <p className="mt-3 font-semibold text-slate-700">Measuring website usage…</p>
-              <p className="mt-1 text-sm text-slate-500">The page is ready; the first accurate process sample can take a moment.</p>
+              <p className="mt-3 font-semibold text-slate-700">
+                Measuring website usage…
+              </p>
+              <p className="mt-1 text-sm text-slate-500">
+                The page is ready; the first accurate process sample can take a
+                moment.
+              </p>
             </div>
           )}
         </section>
@@ -470,9 +632,12 @@ export function ResourcesView({
     <div className="w-full space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-2xl font-bold tracking-tight text-ink">Resources</h2>
+          <h2 className="text-2xl font-bold tracking-tight text-ink">
+            Resources
+          </h2>
           <p className="mt-1 text-sm text-slate-500">
-            Live server totals with conservative, evidence-based usage for each website.
+            Live server totals with conservative, evidence-based usage for each
+            website.
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -483,8 +648,17 @@ export function ResourcesView({
             </span>
             Live
           </span>
-          <Button variant="outline" onClick={() => void refresh()} disabled={busy}>
-            {busy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />} Refresh
+          <Button
+            variant="outline"
+            onClick={() => void refresh()}
+            disabled={busy}
+          >
+            {busy ? (
+              <LoaderCircle className="h-4 w-4 animate-spin" />
+            ) : (
+              <RefreshCw className="h-4 w-4" />
+            )}{" "}
+            Refresh
           </Button>
         </div>
       </div>
@@ -537,12 +711,21 @@ export function ResourcesView({
               key={metric}
               type="button"
               onClick={() => setDetail(metric)}
-              className="rounded-xl border border-slate-200/70 bg-white/60 p-3 text-left transition hover:border-panel-300"
+              className="hover:border-panel-300 rounded-xl border border-slate-200/70 bg-white/60 p-3 text-left transition"
             >
               <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
-                {metric === "cpu" ? "CPU" : metric === "memory" ? "Memory" : "Disk"}
+                {metric === "cpu"
+                  ? "CPU"
+                  : metric === "memory"
+                    ? "Memory"
+                    : "Disk"}
               </p>
-              <HistoryChart points={history} accessor={metricConfig[metric].accessor} height={80} showAxis={false} />
+              <HistoryChart
+                points={history}
+                accessor={metricConfig[metric].accessor}
+                height={80}
+                showAxis={false}
+              />
             </button>
           ))}
         </div>
@@ -558,7 +741,8 @@ export function ResourcesView({
                 {data.attribution.memoryMethod === "pss"
                   ? "Shared memory is counted proportionally. "
                   : "The kernel did not expose proportional memory for every process, so memory uses RSS fallback. "}
-                Ambiguous processes stay in Shared or System instead of being guessed.
+                Ambiguous processes stay in Shared or System instead of being
+                guessed.
               </p>
             </div>
           </div>
@@ -580,7 +764,11 @@ export function ResourcesView({
               className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-700"
             >
               <option value="all">All website types</option>
-              {websiteTypes.map((type) => <option key={type} value={type}>{type.replace("-", " ")}</option>)}
+              {websiteTypes.map((type) => (
+                <option key={type} value={type}>
+                  {type.replace("-", " ")}
+                </option>
+              ))}
             </select>
             <select
               aria-label="Sort websites"
@@ -594,7 +782,11 @@ export function ResourcesView({
               <option value="domain">Website name</option>
             </select>
             <label className="flex h-10 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm font-medium text-slate-600">
-              <input type="checkbox" checked={activeOnly} onChange={(event) => setActiveOnly(event.target.checked)} />
+              <input
+                type="checkbox"
+                checked={activeOnly}
+                onChange={(event) => setActiveOnly(event.target.checked)}
+              />
               Active only
             </label>
           </div>
@@ -608,13 +800,19 @@ export function ResourcesView({
                 <th className="px-4 py-3 font-semibold">CPU</th>
                 <th className="px-4 py-3 font-semibold">Memory</th>
                 <th className="px-4 py-3 font-semibold">Disk</th>
-                <th className="px-4 py-3 text-right font-semibold">Processes</th>
+                <th className="px-4 py-3 text-right font-semibold">
+                  Processes
+                </th>
               </tr>
               <tr>
                 <th className="px-5 pb-2"></th>
                 <th className="px-4 pb-2"></th>
-                <th className="px-4 pb-2 font-normal normal-case tracking-normal text-[10px] text-slate-400" colSpan={3}>
-                  bar &amp; right = share of server capacity · left = share of current server usage
+                <th
+                  className="px-4 pb-2 text-[10px] font-normal normal-case tracking-normal text-slate-400"
+                  colSpan={3}
+                >
+                  bar &amp; right = share of server capacity · left = share of
+                  current server usage
                 </th>
                 <th className="px-4 pb-2"></th>
               </tr>
@@ -628,8 +826,12 @@ export function ResourcesView({
                         {entry.domain.slice(0, 2).toUpperCase()}
                       </span>
                       <div className="min-w-0">
-                        <p className="max-w-64 truncate font-semibold text-ink">{entry.domain}</p>
-                        <p className="truncate text-xs text-slate-400">{entry.siteUser}</p>
+                        <p className="max-w-64 truncate font-semibold text-ink">
+                          {entry.domain}
+                        </p>
+                        <p className="truncate text-xs text-slate-400">
+                          {entry.siteUser}
+                        </p>
                       </div>
                     </div>
                   </td>
@@ -660,29 +862,59 @@ export function ResourcesView({
                           shareOfUsed={(entry.diskBytes / diskUsedTotal) * 100}
                           shareOfAvail={(entry.diskBytes / diskCapacity) * 100}
                         />
-                        {entry.diskShared && <p className="mt-1 text-[10px] font-medium text-amber-600">shared application root</p>}
+                        {entry.diskShared && (
+                          <p className="mt-1 text-[10px] font-medium text-amber-600">
+                            shared application root
+                          </p>
+                        )}
                       </div>
                     ) : (
                       <span className="text-xs text-slate-400">Measuring…</span>
                     )}
                   </td>
-                  <td className="px-4 py-3 text-right font-medium text-slate-600">{entry.processes}</td>
+                  <td className="px-4 py-3 text-right font-medium text-slate-600">
+                    {entry.processes}
+                  </td>
                 </tr>
               ))}
               {!visibleWebsites.length && (
-                <tr><td colSpan={7} className="px-5 py-10 text-center text-sm text-slate-400">No websites match these filters.</td></tr>
+                <tr>
+                  <td
+                    colSpan={7}
+                    className="px-5 py-10 text-center text-sm text-slate-400"
+                  >
+                    No websites match these filters.
+                  </td>
+                </tr>
               )}
             </tbody>
           </table>
         </div>
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 px-5 py-3 text-sm text-slate-500">
-          <span>{filteredWebsites.length} website{filteredWebsites.length === 1 ? "" : "s"}</span>
+          <span>
+            {filteredWebsites.length} website
+            {filteredWebsites.length === 1 ? "" : "s"}
+          </span>
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="icon" aria-label="Previous page" disabled={page <= 1} onClick={() => setPage((current) => current - 1)}>
+            <Button
+              variant="outline"
+              size="icon"
+              aria-label="Previous page"
+              disabled={page <= 1}
+              onClick={() => setPage((current) => current - 1)}
+            >
               <ChevronLeft className="h-4 w-4" />
             </Button>
-            <span className="min-w-24 text-center">Page {page} of {pageCount}</span>
-            <Button variant="outline" size="icon" aria-label="Next page" disabled={page >= pageCount} onClick={() => setPage((current) => current + 1)}>
+            <span className="min-w-24 text-center">
+              Page {page} of {pageCount}
+            </span>
+            <Button
+              variant="outline"
+              size="icon"
+              aria-label="Next page"
+              disabled={page >= pageCount}
+              onClick={() => setPage((current) => current + 1)}
+            >
               <ChevronRight className="h-4 w-4" />
             </Button>
           </div>
@@ -691,238 +923,366 @@ export function ResourcesView({
 
       <section className="grid gap-4 sm:grid-cols-2">
         <div className="rounded-2xl border border-white/60 bg-white/70 p-5 shadow-card backdrop-blur-md">
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">System</p>
-          <p className="mt-2 text-sm font-semibold text-slate-700">
-            {data.system.cpuPercent}% CPU · {formatBytes(data.system.memoryBytes)} memory · {data.system.processes} processes
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+            System
           </p>
-          <p className="mt-1 text-xs text-slate-500">Host services and processes with no safe website match.</p>
+          <p className="mt-2 text-sm font-semibold text-slate-700">
+            {data.system.cpuPercent}% CPU ·{" "}
+            {formatBytes(data.system.memoryBytes)} memory ·{" "}
+            {data.system.processes} processes
+          </p>
+          <p className="mt-1 text-xs text-slate-500">
+            Host services and processes with no safe website match.
+          </p>
         </div>
         <div className="rounded-2xl border border-white/60 bg-white/70 p-5 shadow-card backdrop-blur-md">
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Shared website processes</p>
-          <p className="mt-2 text-sm font-semibold text-slate-700">
-            {data.shared.cpuPercent}% CPU · {formatBytes(data.shared.memoryBytes)} memory · {data.shared.processes} processes
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+            Shared website processes
           </p>
-          <p className="mt-1 text-xs text-slate-500">Owned by a site user shared by multiple websites, without enough evidence for an honest split.</p>
+          <p className="mt-2 text-sm font-semibold text-slate-700">
+            {data.shared.cpuPercent}% CPU ·{" "}
+            {formatBytes(data.shared.memoryBytes)} memory ·{" "}
+            {data.shared.processes} processes
+          </p>
+          <p className="mt-1 text-xs text-slate-500">
+            Owned by a site user shared by multiple websites, without enough
+            evidence for an honest split.
+          </p>
         </div>
-        <p className="text-xs leading-5 text-slate-400 sm:col-span-2">{data.attribution.note}</p>
+        <p className="text-xs leading-5 text-slate-400 sm:col-span-2">
+          {data.attribution.note}
+        </p>
       </section>
 
-      {active && detail && createPortal(
-        <div
-          className="fixed inset-0 z-[80] flex items-end justify-center bg-slate-950/40 backdrop-blur-sm sm:items-center sm:p-4"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setDetail(null);
-          }}
-        >
-          <div className="flex max-h-[92vh] w-full max-w-2xl flex-col overflow-hidden rounded-t-2xl bg-white shadow-2xl sm:rounded-2xl">
-            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4 sm:px-6">
-              <div className="flex items-center gap-3">
-                <span className="grid h-10 w-10 place-items-center rounded-xl bg-panel-50 text-panel-600">
-                  <active.icon className="h-5 w-5" />
-                </span>
-                <div>
-                  <h3 className="text-lg font-bold text-ink">{active.title}</h3>
-                  <p className="text-xs text-slate-500">Currently at {active.percent}%</p>
-                </div>
-              </div>
-              <Button variant="ghost" size="icon" onClick={() => setDetail(null)} aria-label="Close details">
-                <X className="h-5 w-5" />
-              </Button>
-            </div>
-            <div className="space-y-5 overflow-y-auto p-5 sm:p-6">
-              <Gauge percent={active.percent} />
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                {active.facts.map((fact) => (
-                  <div key={fact.label} className="rounded-xl border border-slate-200/70 bg-slate-50/60 p-3">
-                    <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">{fact.label}</p>
-                    <p className="mt-1 truncate text-sm font-bold text-ink">{fact.value}</p>
+      {active &&
+        detail &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[80] flex items-end justify-center bg-slate-950/40 backdrop-blur-sm sm:items-center sm:p-4"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) setDetail(null);
+            }}
+          >
+            <div className="flex max-h-[92vh] w-full max-w-2xl flex-col overflow-hidden rounded-t-2xl bg-white shadow-2xl sm:rounded-2xl">
+              <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4 sm:px-6">
+                <div className="flex items-center gap-3">
+                  <span className="grid h-10 w-10 place-items-center rounded-xl bg-panel-50 text-panel-600">
+                    <active.icon className="h-5 w-5" />
+                  </span>
+                  <div>
+                    <h3 className="text-lg font-bold text-ink">
+                      {active.title}
+                    </h3>
+                    <p className="text-xs text-slate-500">
+                      Currently at {active.percent}%
+                    </p>
                   </div>
-                ))}
+                </div>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => setDetail(null)}
+                  aria-label="Close details"
+                >
+                  <X className="h-5 w-5" />
+                </Button>
               </div>
-              <div>
-                <h4 className="mb-2 text-sm font-bold text-slate-700">History (24h)</h4>
-                <HistoryChart points={history} accessor={active.accessor} />
-              </div>
-              {detail === "disk" ? (
-                <div>
-                  <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
-                    <div>
-                      <h4 className="text-sm font-bold text-slate-700">Storage breakdown</h4>
-                      <p className="text-xs text-slate-400">Complete filesystem groups, not only website application roots.</p>
+              <div className="space-y-5 overflow-y-auto p-5 sm:p-6">
+                <Gauge percent={active.percent} />
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  {active.facts.map((fact) => (
+                    <div
+                      key={fact.label}
+                      className="rounded-xl border border-slate-200/70 bg-slate-50/60 p-3"
+                    >
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                        {fact.label}
+                      </p>
+                      <p className="mt-1 truncate text-sm font-bold text-ink">
+                        {fact.value}
+                      </p>
                     </div>
-                    <div className="flex flex-wrap gap-2">
-                      {canReclaimStorage && (
+                  ))}
+                </div>
+                <div>
+                  <h4 className="mb-2 text-sm font-bold text-slate-700">
+                    History (24h)
+                  </h4>
+                  <HistoryChart points={history} accessor={active.accessor} />
+                </div>
+                {detail === "disk" ? (
+                  <div>
+                    <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <h4 className="text-sm font-bold text-slate-700">
+                          Storage breakdown
+                        </h4>
+                        <p className="text-xs text-slate-400">
+                          Complete filesystem groups, not only website
+                          application roots.
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {canReclaimStorage && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={storageBusy || cleanupBusy}
+                            onClick={() => setCleanupConfirm(true)}
+                          >
+                            {cleanupBusy ? (
+                              <LoaderCircle className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <Sparkles className="h-4 w-4" />
+                            )}
+                            Reclaim build cache
+                          </Button>
+                        )}
                         <Button
                           variant="outline"
                           size="sm"
                           disabled={storageBusy || cleanupBusy}
-                          onClick={() => setCleanupConfirm(true)}
+                          onClick={() => void loadStorage(true)}
                         >
-                          {cleanupBusy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-                          Reclaim build cache
+                          {storageBusy ? (
+                            <LoaderCircle className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <RefreshCw className="h-4 w-4" />
+                          )}
+                          Analyze again
                         </Button>
-                      )}
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={storageBusy || cleanupBusy}
-                        onClick={() => void loadStorage(true)}
-                      >
-                        {storageBusy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-                        Analyze again
-                      </Button>
-                    </div>
-                  </div>
-                  {storageBusy && !storage ? (
-                    <div className="rounded-xl border border-dashed border-slate-200 px-4 py-8 text-center">
-                      <LoaderCircle className="mx-auto h-5 w-5 animate-spin text-panel-600" />
-                      <p className="mt-2 text-sm font-semibold text-slate-600">Analyzing allocated storage…</p>
-                      <p className="mt-1 text-xs text-slate-400">Large Docker stores can take a minute or two. Hosted sites continue running normally.</p>
-                    </div>
-                  ) : storage ? (
-                    <div className="space-y-3">
-                      {storage.hygiene && (
-                        <div
-                          className={`rounded-xl border p-3 text-xs ${
-                            storage.hygiene.blocked
-                              ? "border-red-200 bg-red-50/70 text-red-900"
-                              : "border-emerald-200 bg-emerald-50/70 text-emerald-900"
-                          }`}
-                        >
-                          <p className="font-bold">
-                            {storage.hygiene.blocked
-                              ? "Storage-growing actions are paused"
-                              : "Automatic storage protection is active"}
-                          </p>
-                          <p className="mt-1 leading-5">
-                            {storage.hygiene.reason ||
-                              "Panelavo checks disk pressure every 15 minutes and removes only disposable rootless Docker cache when usage reaches 75%."}
-                          </p>
-                          {storage.hygiene.lastCleanupAt ? (
-                            <p className="mt-1 opacity-75">
-                              Last automatic cleanup {new Date(storage.hygiene.lastCleanupAt).toLocaleString()}
-                              {typeof storage.hygiene.reclaimedBytes === "number"
-                                ? ` · recovered ${formatBytes(storage.hygiene.reclaimedBytes)}`
-                                : ""}
-                            </p>
-                          ) : null}
-                        </div>
-                      )}
-                      {lastCleanup && (
-                        <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-3 text-xs text-emerald-900">
-                          <p className="font-bold">Last cleanup recovered {formatBytes(lastCleanup.reclaimedBytes)}</p>
-                          <p className="mt-1 leading-5">{lastCleanup.note}</p>
-                          <details className="mt-2">
-                            <summary className="cursor-pointer font-semibold">Show per-site results</summary>
-                            <div className="mt-2 space-y-1">
-                              {lastCleanup.sites.map((site) => (
-                                <p key={site.user}>
-                                  <b>{site.user}</b>: {site.reclaimed} · {site.status}
-                                </p>
-                              ))}
-                            </div>
-                          </details>
-                        </div>
-                      )}
-                      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                        {[
-                          ["Allocated", formatBytes(storage.usedBytes)],
-                          ["Available", formatBytes(storage.availableBytes)],
-                          ["Reserved", formatBytes(storage.reservedBytes)],
-                          ["Identified", formatBytes(storage.accountedBytes)],
-                        ].map(([label, value]) => (
-                          <div key={label} className="rounded-lg bg-slate-50 p-2.5">
-                            <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">{label}</p>
-                            <p className="mt-0.5 text-xs font-bold text-slate-700">{value}</p>
-                          </div>
-                        ))}
                       </div>
-                      {storage.reservedBytes > 0 && (
-                        <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                          Reserved space is held by the filesystem and is not ordinary file data.
+                    </div>
+                    {storageBusy && !storage ? (
+                      <div className="rounded-xl border border-dashed border-slate-200 px-4 py-8 text-center">
+                        <LoaderCircle className="mx-auto h-5 w-5 animate-spin text-panel-600" />
+                        <p className="mt-2 text-sm font-semibold text-slate-600">
+                          Analyzing allocated storage…
                         </p>
-                      )}
-                      {storage.groups.map((group) => (
-                        <div key={group.id} className="rounded-xl border border-slate-200/70 p-3">
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <p className="text-sm font-semibold text-ink">{group.label}</p>
-                              <p className="mt-0.5 text-xs leading-5 text-slate-400">{group.description}</p>
-                            </div>
-                            <span className="shrink-0 text-sm font-bold text-slate-700">{formatBytes(group.bytes)}</span>
+                        <p className="mt-1 text-xs text-slate-400">
+                          Large Docker stores can take a minute or two. Hosted
+                          sites continue running normally.
+                        </p>
+                      </div>
+                    ) : storage ? (
+                      <div className="space-y-3">
+                        {storage.hygiene && (
+                          <div
+                            className={`rounded-xl border p-3 text-xs ${
+                              storage.hygiene.blocked
+                                ? "border-red-200 bg-red-50/70 text-red-900"
+                                : "border-emerald-200 bg-emerald-50/70 text-emerald-900"
+                            }`}
+                          >
+                            <p className="font-bold">
+                              {storage.hygiene.blocked
+                                ? "Storage-growing actions are paused"
+                                : "Automatic storage protection is active"}
+                            </p>
+                            <p className="mt-1 leading-5">
+                              {storage.hygiene.reason ||
+                                "Panelavo checks disk pressure every 15 minutes and removes only disposable rootless Docker cache when usage reaches 75%."}
+                            </p>
+                            {storage.hygiene.lastCleanupAt ? (
+                              <p className="mt-1 opacity-75">
+                                Last automatic cleanup{" "}
+                                {new Date(
+                                  storage.hygiene.lastCleanupAt,
+                                ).toLocaleString()}
+                                {typeof storage.hygiene.reclaimedBytes ===
+                                "number"
+                                  ? ` · recovered ${formatBytes(storage.hygiene.reclaimedBytes)}`
+                                  : ""}
+                              </p>
+                            ) : null}
                           </div>
-                          <Gauge percent={(group.bytes / Math.max(1, storage.usedBytes)) * 100} className="mt-2" />
-                          {group.details.length > 0 && (
-                            <details className="mt-2 border-t border-slate-100 pt-2">
-                              <summary className="cursor-pointer text-xs font-semibold text-panel-600">Show details</summary>
-                              <div className="mt-2 space-y-2">
-                                {group.details.map((entry) => (
-                                  <div key={`${group.id}-${entry.label}`} className="rounded-lg bg-slate-50/80 p-2.5">
-                                    <div className="flex items-start justify-between gap-3">
-                                      <div className="min-w-0">
-                                        <p className="break-all text-xs font-semibold text-slate-700">{entry.label}</p>
-                                        {entry.note && <p className="mt-0.5 text-[11px] leading-4 text-slate-400">{entry.note}</p>}
-                                      </div>
-                                      <span className="shrink-0 text-xs font-bold text-slate-600">{formatBytes(entry.bytes)}</span>
-                                    </div>
-                                    {entry.metrics && entry.metrics.length > 0 && (
-                                      <div className="mt-2 grid gap-1 sm:grid-cols-2">
-                                        {entry.metrics.map((metric) => (
-                                          <p key={metric.label} className="rounded bg-white px-2 py-1 text-[10px] text-slate-500">
-                                            <b className="text-slate-700">{metric.label}:</b> {metric.value}
-                                            {metric.reclaimable ? ` · reclaimable ${metric.reclaimable}` : ""}
-                                          </p>
-                                        ))}
-                                      </div>
-                                    )}
-                                  </div>
+                        )}
+                        {lastCleanup && (
+                          <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-3 text-xs text-emerald-900">
+                            <p className="font-bold">
+                              Last cleanup recovered{" "}
+                              {formatBytes(lastCleanup.reclaimedBytes)}
+                            </p>
+                            <p className="mt-1 leading-5">{lastCleanup.note}</p>
+                            <details className="mt-2">
+                              <summary className="cursor-pointer font-semibold">
+                                Show per-site results
+                              </summary>
+                              <div className="mt-2 space-y-1">
+                                {lastCleanup.sites.map((site) => (
+                                  <p key={site.user}>
+                                    <b>{site.user}</b>: {site.reclaimed} ·{" "}
+                                    {site.status}
+                                  </p>
                                 ))}
                               </div>
                             </details>
-                          )}
-                        </div>
-                      ))}
-                      <p className="text-[11px] leading-5 text-slate-400">
-                        Updated {new Date(storage.generatedAt).toLocaleString()}. {storage.note}
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="rounded-xl border border-dashed border-red-200 bg-red-50/50 px-4 py-5 text-center">
-                      <p className="text-sm font-semibold text-red-700">Storage analysis is unavailable.</p>
-                      <p className="mt-1 text-xs text-red-600">{storageError}</p>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div>
-                  <h4 className="mb-2 text-sm font-bold text-slate-700">Top consumers</h4>
-                  {active.consumers.length ? (
-                    <div className="space-y-2">
-                      {active.consumers.map((consumer) => (
-                        <div key={consumer.name} className="rounded-xl border border-slate-200/70 p-3">
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="min-w-0">
-                              <p className="truncate text-sm font-semibold text-ink">{consumer.name}</p>
-                              <p className="truncate text-xs text-slate-400">{consumer.note}</p>
-                            </div>
-                            <span className="shrink-0 text-sm font-bold text-slate-700">{consumer.value}</span>
                           </div>
-                          <Gauge percent={consumer.percent} className="mt-2" />
+                        )}
+                        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                          {[
+                            ["Allocated", formatBytes(storage.usedBytes)],
+                            ["Available", formatBytes(storage.availableBytes)],
+                            ["Reserved", formatBytes(storage.reservedBytes)],
+                            ["Identified", formatBytes(storage.accountedBytes)],
+                          ].map(([label, value]) => (
+                            <div
+                              key={label}
+                              className="rounded-lg bg-slate-50 p-2.5"
+                            >
+                              <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                                {label}
+                              </p>
+                              <p className="mt-0.5 text-xs font-bold text-slate-700">
+                                {value}
+                              </p>
+                            </div>
+                          ))}
                         </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="rounded-xl border border-dashed border-slate-200 py-6 text-center text-sm text-slate-400">
-                      No measurable usage right now.
-                    </p>
-                  )}
-                </div>
-              )}
+                        {storage.reservedBytes > 0 && (
+                          <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                            Reserved space is held by the filesystem and is not
+                            ordinary file data.
+                          </p>
+                        )}
+                        {storage.groups.map((group) => (
+                          <div
+                            key={group.id}
+                            className="rounded-xl border border-slate-200/70 p-3"
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <p className="text-sm font-semibold text-ink">
+                                  {group.label}
+                                </p>
+                                <p className="mt-0.5 text-xs leading-5 text-slate-400">
+                                  {group.description}
+                                </p>
+                              </div>
+                              <span className="shrink-0 text-sm font-bold text-slate-700">
+                                {formatBytes(group.bytes)}
+                              </span>
+                            </div>
+                            <Gauge
+                              percent={
+                                (group.bytes / Math.max(1, storage.usedBytes)) *
+                                100
+                              }
+                              className="mt-2"
+                            />
+                            {group.details.length > 0 && (
+                              <details className="mt-2 border-t border-slate-100 pt-2">
+                                <summary className="cursor-pointer text-xs font-semibold text-panel-600">
+                                  Show details
+                                </summary>
+                                <div className="mt-2 space-y-2">
+                                  {group.details.map((entry) => (
+                                    <div
+                                      key={`${group.id}-${entry.label}`}
+                                      className="rounded-lg bg-slate-50/80 p-2.5"
+                                    >
+                                      <div className="flex items-start justify-between gap-3">
+                                        <div className="min-w-0">
+                                          <p className="break-all text-xs font-semibold text-slate-700">
+                                            {entry.label}
+                                          </p>
+                                          {entry.note && (
+                                            <p className="mt-0.5 text-[11px] leading-4 text-slate-400">
+                                              {entry.note}
+                                            </p>
+                                          )}
+                                        </div>
+                                        <span className="shrink-0 text-xs font-bold text-slate-600">
+                                          {formatBytes(entry.bytes)}
+                                        </span>
+                                      </div>
+                                      {entry.metrics &&
+                                        entry.metrics.length > 0 && (
+                                          <div className="mt-2 grid gap-1 sm:grid-cols-2">
+                                            {entry.metrics.map((metric) => (
+                                              <p
+                                                key={metric.label}
+                                                className="rounded bg-white px-2 py-1 text-[10px] text-slate-500"
+                                              >
+                                                <b className="text-slate-700">
+                                                  {metric.label}:
+                                                </b>{" "}
+                                                {metric.value}
+                                                {metric.reclaimable
+                                                  ? ` · reclaimable ${metric.reclaimable}`
+                                                  : ""}
+                                              </p>
+                                            ))}
+                                          </div>
+                                        )}
+                                    </div>
+                                  ))}
+                                </div>
+                              </details>
+                            )}
+                          </div>
+                        ))}
+                        <p className="text-[11px] leading-5 text-slate-400">
+                          Updated{" "}
+                          {new Date(storage.generatedAt).toLocaleString()}.{" "}
+                          {storage.note}
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="rounded-xl border border-dashed border-red-200 bg-red-50/50 px-4 py-5 text-center">
+                        <p className="text-sm font-semibold text-red-700">
+                          Storage analysis is unavailable.
+                        </p>
+                        <p className="mt-1 text-xs text-red-600">
+                          {storageError}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div>
+                    <h4 className="mb-2 text-sm font-bold text-slate-700">
+                      Top consumers
+                    </h4>
+                    {active.consumers.length ? (
+                      <div className="space-y-2">
+                        {active.consumers.map((consumer) => (
+                          <div
+                            key={consumer.name}
+                            className="rounded-xl border border-slate-200/70 p-3"
+                          >
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="min-w-0">
+                                <p className="truncate text-sm font-semibold text-ink">
+                                  {consumer.name}
+                                </p>
+                                <p className="truncate text-xs text-slate-400">
+                                  {consumer.note}
+                                </p>
+                              </div>
+                              <span className="shrink-0 text-sm font-bold text-slate-700">
+                                {consumer.value}
+                              </span>
+                            </div>
+                            <Gauge
+                              percent={consumer.percent}
+                              className="mt-2"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="rounded-xl border border-dashed border-slate-200 py-6 text-center text-sm text-slate-400">
+                        No measurable usage right now.
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
-        </div>,
-        document.body,
-      )}
+          </div>,
+          document.body,
+        )}
       {cleanupConfirm && (
         <ConfirmDialog
           title="Reclaim unused build cache?"

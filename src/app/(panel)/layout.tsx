@@ -13,8 +13,15 @@ export default async function PanelLayout({
   children: React.ReactNode;
 }) {
   const session = await requireUserOrRedirect({ allowDuringUpdate: true });
-  const updateRunning = await isPanelUpdateRunning();
-  const status = await getSystemStatus();
+  const [updateRunning, status] = await Promise.all([
+    isPanelUpdateRunning(),
+    getSystemStatus(),
+  ]);
   if (!status.ready) redirect("/setup");
-  return <><UpdateMaintenanceGuard initialRunning={updateRunning} /><AppShell user={session.user}>{children}</AppShell></>;
+  return (
+    <>
+      <UpdateMaintenanceGuard initialRunning={updateRunning} />
+      <AppShell user={session.user}>{children}</AppShell>
+    </>
+  );
 }

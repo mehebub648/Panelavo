@@ -1,4 +1,7 @@
-import { getPanelSelfDomain } from "@/server/sites/panel-self";
+import {
+  getPanelKnownDomains,
+  getPanelPublicDomain,
+} from "@/server/sites/panel-self";
 
 export type McpPublicUrls = {
   origin: string;
@@ -48,19 +51,25 @@ export function getMcpPublicUrlsFromHeaders(headers: Headers): McpPublicUrls {
 
   let origin: string;
   if (production) {
-    const expectedHost = getPanelSelfDomain();
+    const expectedHost = getPanelPublicDomain();
+    const knownHosts = getPanelKnownDomains();
     const proxiedLoopback = isLoopback(host.hostname);
     if (
       !expectedHost ||
-      (host.hostname.toLowerCase() !== expectedHost && !proxiedLoopback)
+      (!knownHosts.includes(host.hostname.toLowerCase()) && !proxiedLoopback)
     ) {
       throw new Error("Panelavo received a request for an unexpected host.");
     }
     if (
       proxiedLoopback &&
-      normalizedHostname(
-        firstHeaderValue(headers.get("x-forwarded-host")).replace(/:\d+$/, ""),
-      ) !== expectedHost
+      !knownHosts.includes(
+        normalizedHostname(
+          firstHeaderValue(headers.get("x-forwarded-host")).replace(
+            /:\d+$/,
+            "",
+          ),
+        ),
+      )
     )
       throw new Error(
         "Panelavo received a request for an unexpected public host.",

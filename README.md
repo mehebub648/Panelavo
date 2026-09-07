@@ -69,6 +69,16 @@ panelavo exposes four roles on top of CloudPanel's three native ones:
 
 The "Admin" tier is stored as a CloudPanel `user` plus an entry in `.data/panel-roles.json`, so CloudPanel itself keeps restricting their site list. Sites an Admin creates are automatically assigned to them; other users' sites stay invisible to them. Role changes and deletes made from the Users page keep the overlay in sync.
 
+## Connected servers
+
+Super Admins manage connections in **Settings → Connected servers**. Choose **Generate token** to create a ten-minute, single-use token, then choose **I have a token** on the server you want to manage. Submitting it grants the generating server access to the submitting server, bound to the submitting Super Admin's live CloudPanel identity. There are no fixed Hub/Node roles: each server can manage multiple servers and allow multiple other servers to manage it. Reverse access requires its own token; trust is never transitive.
+
+The sidebar's bottom **Switch server** button opens a searchable page of server cards with nicknames and last-known status. Switching keeps the browser on the managing panel and renders the same native Super Admin navigation against the selected server. Websites and their complete workspaces, Domains, AI access, Resources, Information, VPN, About, Users, Audit, and panel update, notification, monitoring, and security settings use the selected server's existing services. The old Fleet dashboard redirects to Settings.
+
+**Settings → Panel address** changes the canonical panel domain without replacing connected-server identities or keys. First configure the new domain's DNS, its alias on this panel's CloudPanel site, and valid HTTPS; Panelavo verifies it reaches the same installation. Keep both addresses working while signed notifications update every connected peer. Offline or older peers leave a persisted, retryable change with the old address active. Address migration requires v0.1.118 or newer on all peers. This does not rename websites, move files, or provision DNS/certificates; personal OAuth clients may need reconnection to the new issuer.
+
+Connections retain separate encrypted Ed25519 keys, exact public HTTPS origins, replay protection, independent revocation, and a finite validated action registry. The managing panel signs each request; the selected server revalidates the connection owner's live CloudPanel identity and Super Admin role before invoking the same actor-aware service used locally. Responses are signed as well. Node passwords, browser cookies, private keys, and unrestricted URLs or commands are never forwarded. Native confirmations, one-time-secret handling, site-user restrictions, locks, and broker protections still apply. Removing a connection never changes websites or services.
+
 ## Stack
 
 Next.js App Router, strict TypeScript, Tailwind CSS, shadcn-style local UI components, Lucide, Zod, pnpm, ESLint, Prettier, and Vitest. Local development requires Node.js 20.9 or newer.
@@ -319,3 +329,37 @@ src/server/security     origin checks, limits, and redacted logs
 src/server/storage      private atomic JSON persistence
 src/types               CloudPanel adapter contracts
 ```
+
+Remote panel controls (v0.1.122): full-scope Super Admin connections expose panel address changes, server sharing and user invitations on the selected server. Both panels must run this release; older limited links require reauthorization. Address changes retain the existing same-panel HTTPS proof and peer acknowledgement flow. Remote pages request only their section; account/site reads are deduplicated only within a server render, and host software inventory is cached for 30 seconds after checking live authority. Deployment needs no broker or hosted-application restart.
+Navigation completion observes both pathname and query string so switching remote tabs does not leave the loading overlay blocking an already rendered page.
+
+### Concurrent session persistence
+
+Session startup shares one disk load, and atomic saves run in order. Refreshes cannot restore revoked sessions. Persistence failures remain best-effort and are retried on later requests; no session format or deployment migration is required.
+
+### Bounded Fleet health sweeps
+
+The minute-based Fleet scheduler skips ticks while its previous sweep is running, including across module reloads. Failed sweeps release the guard so monitoring resumes on the next tick. Existing per-sweep concurrency remains bounded; deployment requires no broker or data migration.
+
+### Adaptive update status polling
+
+Visible idle tabs check update status once per minute, switching to every two seconds when an update is detected. Hidden tabs pause checks and refresh when visible again. Requests never overlap and are cancelled on hiding or unmounting; the maintenance lock survives transient failures. This frontend change needs only the normal panel build and reload.
+
+### Lightweight remote health reports
+
+Background Fleet checks request a compact authenticated health report from the shared minute resource sampler, avoiding site lists, software inventory and detailed runtime scans. Samples older than two minutes are omitted. Full summaries remain available on demand, and older peers remain compatible by returning their existing summary. Deploying peers one at a time requires no protocol or broker upgrade.
+
+### Separate Fleet telemetry and replay persistence
+
+Fleet health and replay records now use separate encrypted files, so routine requests do not rewrite connection credentials. Replay identifiers are saved before requests are accepted; missing or corrupt replay state fails closed. Migration merges existing records before marking the split complete, and health cannot reactivate pending or suspended connections. Preserve all three fleet-*.enc.json files in backups. Before downgrading below v0.1.127, stop Panelavo for at least five minutes to expire all previously signed requests; never delete the replay file from a running installation.
+
+### Bounded concurrent website monitoring
+
+Website uptime and TLS checks run through four workers instead of a sequential queue. A slow or failing site no longer delays every later site, while the existing twelve-second network limits, failure thresholds and recovery alerts remain in place. HTTPS response bodies are cancelled after checking headers to release resources. Only the Panelavo process needs reloading; hosted applications are unchanged.
+### Complete connected-server information
+
+The Information page uses the same detailed view for the local panel and connected servers. It shows copyable panel address, IPv4 and IPv6 addresses, hardware capacity, uptime, operating-system maintenance, and detected software versions. Connected servers running an older release remain readable during a rolling update.
+
+### PHP website creation ports
+
+PHP creation checks the selected runtime's next CloudPanel pool port against reserved ports and live listeners. A conflict blocks only that PHP version and asks the user to choose another; unrelated legacy application ports no longer block all PHP creation. Panelavo creation requests are serialized. Deploy the updated root-owned bridge with v0.1.131; existing sites and Admin assignment boundaries remain unchanged.

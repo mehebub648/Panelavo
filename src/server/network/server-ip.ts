@@ -16,6 +16,7 @@ const ECHO_SERVICES = [
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const IPV4 = /^(?:\d{1,3}\.){3}\d{1,3}$/;
 
+let pending: Promise<string | null> | undefined;
 let cache: { ip: string; at: number } | null = null;
 
 function fromInterfaces(): string | null {
@@ -52,7 +53,12 @@ export async function getServerPublicIp(fallback?: string): Promise<string> {
 
   if (cache && Date.now() - cache.at < CACHE_TTL_MS) return cache.ip;
 
-  const detected = (await fromEcho()) ?? fromInterfaces();
+  pending ??= fromEcho()
+    .then((ip) => ip ?? fromInterfaces())
+    .finally(() => {
+      pending = undefined;
+    });
+  const detected = await pending;
   if (detected) {
     cache = { ip: detected, at: Date.now() };
     return detected;

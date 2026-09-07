@@ -5,7 +5,11 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { LoaderCircle, Save, Trash2, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
-import type { CloudPanelSite, CloudPanelUser, SiteCreationOptions } from "@/types/cloudpanel";
+import type {
+  CloudPanelSite,
+  CloudPanelUser,
+  SiteCreationOptions,
+} from "@/types/cloudpanel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -15,15 +19,18 @@ import { formatDate } from "@/lib/utils";
 import { UptimeSettings } from "@/components/sites/uptime-settings";
 import type { UptimeConfig, UptimeState } from "@/server/monitoring/store";
 
-
 export function SiteSettings({
   initialSite,
   user,
   uptime,
+  apiBase = "",
+  routeBase = "/sites",
 }: {
   initialSite: CloudPanelSite;
   user: CloudPanelUser;
   uptime: { config: UptimeConfig; state: UptimeState };
+  apiBase?: string;
+  routeBase?: string;
 }) {
   const router = useRouter();
   const [site, setSite] = useState(initialSite);
@@ -31,8 +38,11 @@ export function SiteSettings({
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
   const formRef = useRef<HTMLFormElement>(null);
-  const [confirmAction, setConfirmAction] = useState<{ title: string; message: string; onConfirm: () => void } | null>(null);
-
+  const [confirmAction, setConfirmAction] = useState<{
+    title: string;
+    message: string;
+    onConfirm: () => void;
+  } | null>(null);
 
   const [options, setOptions] = useState<SiteCreationOptions | null>(null);
 
@@ -56,13 +66,14 @@ export function SiteSettings({
 
   useEffect(() => {
     if (!hasRuntime || !user.canCreateSites) return;
-    fetch("/api/sites/options", { cache: "no-store" })
+    fetch(`${apiBase}/api/sites/options`, { cache: "no-store" })
       .then((response) => response.json())
       .then((result) => {
-        if (result.success) setOptions(result.data.options as SiteCreationOptions);
+        if (result.success)
+          setOptions(result.data.options as SiteCreationOptions);
       })
       .catch(() => undefined);
-  }, [hasRuntime, user.canCreateSites]);
+  }, [apiBase, hasRuntime, user.canCreateSites]);
 
   useEffect(() => {
     function shortcut(event: KeyboardEvent) {
@@ -83,7 +94,9 @@ export function SiteSettings({
     const data = new FormData(event.currentTarget);
     const body: Record<string, string | number> = {
       label: String(data.get("label") ?? ""),
-      applicationRootDirectory: String(data.get("applicationRootDirectory") ?? ""),
+      applicationRootDirectory: String(
+        data.get("applicationRootDirectory") ?? "",
+      ),
       servingDirectory: String(data.get("servingDirectory") ?? ""),
     };
     if (["php", "nodejs", "python"].includes(site.type ?? ""))
@@ -97,7 +110,7 @@ export function SiteSettings({
       body.reverseProxyUrl = String(data.get("reverseProxyUrl") ?? "");
     try {
       const response = await fetch(
-        `/api/sites/${encodeURIComponent(site.domain)}`,
+        `${apiBase}/api/sites/${encodeURIComponent(site.domain)}`,
         {
           method: "PATCH",
           headers: { "content-type": "application/json" },
@@ -131,31 +144,34 @@ export function SiteSettings({
         setError("");
         try {
           const response = await fetch(
-            `/api/sites/${encodeURIComponent(site.domain)}`,
+            `${apiBase}/api/sites/${encodeURIComponent(site.domain)}`,
             {
               method: "DELETE",
               headers: { "content-type": "application/json" },
-              body: "{}",
+              body: JSON.stringify({ confirmation: site.domain }),
             },
           );
           const result = await response.json();
           if (!result.success)
             throw new Error(result.error?.message || "Deletion failed.");
-          router.replace("/sites");
+          router.replace(routeBase);
           router.refresh();
         } catch (reason) {
-          setError(reason instanceof Error ? reason.message : "Deletion failed.");
+          setError(
+            reason instanceof Error ? reason.message : "Deletion failed.",
+          );
           setBusy(false);
         }
-      }
+      },
     });
   }
-
 
   return (
     <div className="w-full space-y-5">
       <div>
-        <h2 className="text-2xl font-bold tracking-tight text-ink drop-shadow-sm">Settings</h2>
+        <h2 className="text-2xl font-bold tracking-tight text-ink drop-shadow-sm">
+          Settings
+        </h2>
         <p className="mt-1 text-sm text-slate-500">
           {site.application || site.type} · Site user:{" "}
           {site.siteUser || "not available"}
@@ -168,22 +184,34 @@ export function SiteSettings({
           {[
             ["Runtime", site.runtimeVersion || "Not applicable"],
             ["Site user", site.siteUser || "Not available"],
-            ["Status", site.status ? site.status[0].toUpperCase() + site.status.slice(1) : "Unknown"],
+            [
+              "Status",
+              site.status
+                ? site.status[0].toUpperCase() + site.status.slice(1)
+                : "Unknown",
+            ],
             ["Created", formatDate(site.createdAt)],
           ].map(([term, value]) => (
             <div key={term} className="rounded-xl bg-slate-50 p-3">
-              <dt className="text-xs font-semibold uppercase tracking-wide text-slate-400">{term}</dt>
-              <dd className="mt-1 text-sm font-semibold text-slate-700">{value}</dd>
+              <dt className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                {term}
+              </dt>
+              <dd className="mt-1 text-sm font-semibold text-slate-700">
+                {value}
+              </dd>
             </div>
           ))}
         </dl>
       </section>
 
       {site.meta?.parent && (
-        <div className="rounded-xl border border-panel-200/60 bg-panel-50/40 p-4 text-sm text-slate-600">
+        <div className="border-panel-200/60 rounded-xl border bg-panel-50/40 p-4 text-sm text-slate-600">
           This website is a project endpoint
           {site.meta.serviceName ? (
-            <> (<span className="font-semibold">{site.meta.serviceName}</span>)</>
+            <>
+              {" "}
+              (<span className="font-semibold">{site.meta.serviceName}</span>)
+            </>
           ) : null}{" "}
           of{" "}
           <Link
@@ -198,8 +226,10 @@ export function SiteSettings({
       )}
 
       {error && (
-        <div className="rounded-xl border border-red-200/60 bg-red-50/40 p-4 text-sm text-red-600 animate-in fade-in zoom-in-95">
-          <div className="flex items-center gap-2 font-bold"><AlertTriangle className="h-4 w-4" /> Error</div>
+        <div className="animate-in fade-in zoom-in-95 rounded-xl border border-red-200/60 bg-red-50/40 p-4 text-sm text-red-600">
+          <div className="flex items-center gap-2 font-bold">
+            <AlertTriangle className="h-4 w-4" /> Error
+          </div>
           <div className="mt-1">{error}</div>
         </div>
       )}
@@ -207,7 +237,7 @@ export function SiteSettings({
       <form
         ref={formRef}
         onSubmit={save}
-        className="overflow-hidden rounded-2xl border border-white/40 bg-white/60 backdrop-blur-md shadow-card transition-all hover:shadow-card-hover animate-fade-in"
+        className="animate-fade-in overflow-hidden rounded-2xl border border-white/40 bg-white/60 shadow-card backdrop-blur-md transition-all hover:shadow-card-hover"
       >
         <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200/50 bg-slate-50/40 px-5 py-4 sm:px-6">
           <div>
@@ -217,14 +247,16 @@ export function SiteSettings({
             </p>
           </div>
           {user.canCreateSites && (
-            <kbd className="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-500 shadow-sm flex items-center gap-1">
+            <kbd className="flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-500 shadow-sm">
               <span className="opacity-70">Ctrl/⌘</span> <span>S</span>
             </kbd>
           )}
         </div>
         <div className="grid gap-5 p-5 sm:grid-cols-2 sm:p-6">
           <div className="sm:col-span-2">
-            <Label htmlFor="label" className="font-medium text-slate-700">Label</Label>
+            <Label htmlFor="label" className="font-medium text-slate-700">
+              Label
+            </Label>
             <Input
               id="label"
               name="label"
@@ -234,37 +266,56 @@ export function SiteSettings({
               placeholder="For example, Customer portal"
               className="mt-1.5 bg-white/70"
             />
-            <p className="mt-1.5 text-xs text-slate-400">Optional private identification shown in the website list.</p>
+            <p className="mt-1.5 text-xs text-slate-400">
+              Optional private identification shown in the website list.
+            </p>
           </div>
           <div>
-            <Label htmlFor="applicationRootDirectory" className="font-medium text-slate-700">Root directory</Label>
+            <Label
+              htmlFor="applicationRootDirectory"
+              className="font-medium text-slate-700"
+            >
+              Root directory
+            </Label>
             <Input
               id="applicationRootDirectory"
               name="applicationRootDirectory"
               defaultValue={site.applicationRootDirectory ?? site.rootDirectory}
               disabled={!user.canCreateSites}
-              className="mt-1.5 transition-all focus:ring-2 focus:ring-panel-500/50 bg-white/70"
+              className="mt-1.5 bg-white/70 transition-all focus:ring-2 focus:ring-panel-500/50"
             />
             <p className="mt-1.5 text-xs text-slate-400">
-              Project workspace used by Git, File Manager, Terminal, Operations, Environment, and backups.
+              Project workspace used by Git, File Manager, Terminal, Operations,
+              Environment, and backups.
             </p>
           </div>
           <div>
-            <Label htmlFor="servingDirectory" className="font-medium text-slate-700">Serving directory</Label>
+            <Label
+              htmlFor="servingDirectory"
+              className="font-medium text-slate-700"
+            >
+              Serving directory
+            </Label>
             <Input
               id="servingDirectory"
               name="servingDirectory"
               defaultValue={site.rootDirectory}
               disabled={!user.canCreateSites}
-              className="mt-1.5 transition-all focus:ring-2 focus:ring-panel-500/50 bg-white/70"
+              className="mt-1.5 bg-white/70 transition-all focus:ring-2 focus:ring-panel-500/50"
             />
             <p className="mt-1.5 text-xs text-slate-400">
-              Document root served by NGINX, commonly the project&apos;s public folder for PHP or static websites.
+              Document root served by NGINX, commonly the project&apos;s public
+              folder for PHP or static websites.
             </p>
           </div>
           {hasRuntime && (
             <div>
-              <Label htmlFor="runtimeVersion" className="font-medium text-slate-700">Runtime version</Label>
+              <Label
+                htmlFor="runtimeVersion"
+                className="font-medium text-slate-700"
+              >
+                Runtime version
+              </Label>
               {runtimeChoices ? (
                 <Select
                   id="runtimeVersion"
@@ -275,7 +326,12 @@ export function SiteSettings({
                 >
                   {runtimeChoices.map((version) => (
                     <option key={version} value={version}>
-                      {site.type === "php" ? "PHP" : site.type === "nodejs" ? "Node.js" : "Python"} {version}
+                      {site.type === "php"
+                        ? "PHP"
+                        : site.type === "nodejs"
+                          ? "Node.js"
+                          : "Python"}{" "}
+                      {version}
                     </option>
                   ))}
                 </Select>
@@ -285,14 +341,16 @@ export function SiteSettings({
                   name="runtimeVersion"
                   defaultValue={currentRuntime || site.runtimeVersion}
                   disabled={!user.canCreateSites}
-                  className="mt-1.5 transition-all focus:ring-2 focus:ring-panel-500/50 bg-white/70"
+                  className="mt-1.5 bg-white/70 transition-all focus:ring-2 focus:ring-panel-500/50"
                 />
               )}
             </div>
           )}
           {["nodejs", "python"].includes(site.type ?? "") && (
             <div>
-              <Label htmlFor="appPort" className="font-medium text-slate-700">Application port</Label>
+              <Label htmlFor="appPort" className="font-medium text-slate-700">
+                Application port
+              </Label>
               <Input
                 id="appPort"
                 name="appPort"
@@ -301,35 +359,42 @@ export function SiteSettings({
                 max={65535}
                 defaultValue={site.appPort}
                 disabled={!user.canCreateSites}
-                className="mt-1.5 transition-all focus:ring-2 focus:ring-panel-500/50 bg-white/70"
+                className="mt-1.5 bg-white/70 transition-all focus:ring-2 focus:ring-panel-500/50"
               />
               <p className="mt-1.5 text-xs text-slate-400">
                 This is the private loopback port CloudPanel sends traffic to.
-                Changing it never changes the website id, user, or system domain;
-                the server rejects ports already owned by another service.
+                Changing it never changes the website id, user, or system
+                domain; the server rejects ports already owned by another
+                service.
               </p>
             </div>
           )}
           {(site.type === "reverse-proxy" || site.type === "docker") &&
             !site.meta?.parent && (
-            <div>
-              <Label htmlFor="reverseProxyUrl" className="font-medium text-slate-700">
-                {site.type === "docker" ? "Container URL" : "Reverse proxy URL"}
-              </Label>
-              <Input
-                id="reverseProxyUrl"
-                name="reverseProxyUrl"
-                defaultValue={site.reverseProxyUrl}
-                disabled={!user.canCreateSites}
-                className="mt-1.5 transition-all focus:ring-2 focus:ring-panel-500/50 bg-white/70"
-              />
-              {site.type === "docker" && (
-                <p className="mt-1.5 text-xs text-slate-400">
-                  Traffic is proxied to this address — usually the published port of your container.
-                </p>
-              )}
-            </div>
-          )}
+              <div>
+                <Label
+                  htmlFor="reverseProxyUrl"
+                  className="font-medium text-slate-700"
+                >
+                  {site.type === "docker"
+                    ? "Container URL"
+                    : "Reverse proxy URL"}
+                </Label>
+                <Input
+                  id="reverseProxyUrl"
+                  name="reverseProxyUrl"
+                  defaultValue={site.reverseProxyUrl}
+                  disabled={!user.canCreateSites}
+                  className="mt-1.5 bg-white/70 transition-all focus:ring-2 focus:ring-panel-500/50"
+                />
+                {site.type === "docker" && (
+                  <p className="mt-1.5 text-xs text-slate-400">
+                    Traffic is proxied to this address — usually the published
+                    port of your container.
+                  </p>
+                )}
+              </div>
+            )}
           {saved && (
             <p
               role="status"
@@ -341,7 +406,11 @@ export function SiteSettings({
         </div>
         {user.canCreateSites && (
           <div className="flex justify-end border-t border-slate-200/50 bg-slate-50/40 px-5 py-4 sm:px-6">
-            <Button type="submit" disabled={busy} className="shadow-sm hover:shadow transition-all duration-200 hover:-translate-y-0.5">
+            <Button
+              type="submit"
+              disabled={busy}
+              className="shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow"
+            >
               {busy ? (
                 <LoaderCircle className="h-4 w-4 animate-spin" />
               ) : (
@@ -356,9 +425,10 @@ export function SiteSettings({
         domain={site.domain}
         initial={uptime}
         canWrite={user.canCreateSites}
+        apiBase={apiBase}
       />
       {user.canCreateSites && (
-        <section className="flex flex-col gap-4 rounded-2xl border border-red-200/60 bg-gradient-to-br from-red-50/50 to-white/50 backdrop-blur-sm p-5 sm:flex-row sm:items-center sm:justify-between sm:p-6 shadow-sm">
+        <section className="flex flex-col gap-4 rounded-2xl border border-red-200/60 bg-gradient-to-br from-red-50/50 to-white/50 p-5 shadow-sm backdrop-blur-sm sm:flex-row sm:items-center sm:justify-between sm:p-6">
           <div>
             <h3 className="font-bold text-red-700">
               {site.meta?.parent ? "Delete project endpoint" : "Delete website"}

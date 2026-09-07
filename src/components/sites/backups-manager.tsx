@@ -54,7 +54,10 @@ export type BackupsData = {
 function formatBytes(bytes: number) {
   if (!bytes) return "—";
   const units = ["B", "KB", "MB", "GB", "TB"];
-  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const index = Math.min(
+    Math.floor(Math.log(bytes) / Math.log(1024)),
+    units.length - 1,
+  );
   return `${(bytes / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}`;
 }
 
@@ -66,17 +69,21 @@ const dateFormatter = new Intl.DateTimeFormat("en-US", {
 
 function formatDate(value: string) {
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : `${dateFormatter.format(date)} UTC`;
+  return Number.isNaN(date.getTime())
+    ? value
+    : `${dateFormatter.format(date)} UTC`;
 }
 
 export function BackupsManager({
   domain,
   initialData,
   canWrite,
+  apiBase = "",
 }: {
   domain: string;
   initialData: BackupsData;
   canWrite: boolean;
+  apiBase?: string;
 }) {
   const [data, setData] = useState(initialData);
   const [busy, setBusy] = useState<string | false>(false);
@@ -89,9 +96,13 @@ export function BackupsManager({
       retention: initialData.retention ?? 10,
     },
   );
-  const [confirmAction, setConfirmAction] = useState<
-    { title: string; message: string; variant?: "danger" | "default"; confirmText?: string; onConfirm: () => void } | null
-  >(null);
+  const [confirmAction, setConfirmAction] = useState<{
+    title: string;
+    message: string;
+    variant?: "danger" | "default";
+    confirmText?: string;
+    onConfirm: () => void;
+  } | null>(null);
 
   const items = data.items ?? [];
   const databases = data.databases ?? [];
@@ -101,7 +112,7 @@ export function BackupsManager({
     setBusy("schedule");
     try {
       const response = await fetch(
-        `/api/sites/${encodeURIComponent(domain)}/backups/schedule`,
+        `${apiBase}/api/sites/${encodeURIComponent(domain)}/backups/schedule`,
         {
           method: "PUT",
           headers: { "content-type": "application/json" },
@@ -118,7 +129,9 @@ export function BackupsManager({
       );
       const result = await response.json();
       if (!result.success)
-        throw new Error(result.error?.message || "The schedule could not be saved.");
+        throw new Error(
+          result.error?.message || "The schedule could not be saved.",
+        );
       setSchedule(result.data);
       setData((current) => ({
         ...current,
@@ -128,28 +141,42 @@ export function BackupsManager({
       toast.success("Backup schedule saved");
     } catch (error) {
       toast.error(
-        error instanceof Error ? error.message : "The schedule could not be saved.",
+        error instanceof Error
+          ? error.message
+          : "The schedule could not be saved.",
       );
     } finally {
       setBusy(false);
     }
   }
 
-  async function request(body: Record<string, unknown>, key: string, success: string) {
+  async function request(
+    body: Record<string, unknown>,
+    key: string,
+    success: string,
+  ) {
     if (busy) return;
     setBusy(key);
     try {
-      const response = await fetch(`/api/sites/${encodeURIComponent(domain)}/sections/backups`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      const response = await fetch(
+        `${apiBase}/api/sites/${encodeURIComponent(domain)}/sections/backups`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        },
+      );
       const result = await response.json();
-      if (!result.success) throw new Error(result.error?.message || "The backup operation failed.");
+      if (!result.success)
+        throw new Error(
+          result.error?.message || "The backup operation failed.",
+        );
       if (result.data) setData(result.data as BackupsData);
       toast.success(success);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "The backup operation failed.");
+      toast.error(
+        error instanceof Error ? error.message : "The backup operation failed.",
+      );
     } finally {
       setBusy(false);
     }
@@ -169,7 +196,11 @@ export function BackupsManager({
       confirmText: "Restore backup",
       onConfirm: () => {
         setConfirmAction(null);
-        void request({ action: "restore", id: snapshot.id, scope: "all" }, `restore:${snapshot.id}`, "Backup restored");
+        void request(
+          { action: "restore", id: snapshot.id, scope: "all" },
+          `restore:${snapshot.id}`,
+          "Backup restored",
+        );
       },
     });
   }
@@ -182,7 +213,11 @@ export function BackupsManager({
       confirmText: "Delete backup",
       onConfirm: () => {
         setConfirmAction(null);
-        void request({ action: "delete", id: snapshot.id }, `delete:${snapshot.id}`, "Backup deleted");
+        void request(
+          { action: "delete", id: snapshot.id },
+          `delete:${snapshot.id}`,
+          "Backup deleted",
+        );
       },
     });
   }
@@ -200,7 +235,8 @@ export function BackupsManager({
           <div>
             <h3 className="font-bold">Schedule and retention</h3>
             <p className="mt-0.5 text-sm text-slate-500">
-              Run an automatic snapshot in UTC and keep only the newest configured number.
+              Run an automatic snapshot in UTC and keep only the newest
+              configured number.
             </p>
           </div>
         </div>
@@ -300,7 +336,10 @@ export function BackupsManager({
           </label>
           {canWrite ? (
             <div className="flex items-end">
-              <Button disabled={Boolean(busy)} onClick={() => void saveSchedule()}>
+              <Button
+                disabled={Boolean(busy)}
+                onClick={() => void saveSchedule()}
+              >
                 {busy === "schedule" ? (
                   <LoaderCircle className="h-4 w-4 animate-spin" />
                 ) : null}
@@ -323,6 +362,7 @@ export function BackupsManager({
         initialData={data.offsite ?? { destination: null, items: [] }}
         snapshots={items}
         canWrite={canWrite}
+        apiBase={apiBase}
       />
 
       <section className={card}>
@@ -334,13 +374,17 @@ export function BackupsManager({
             <div>
               <h3 className="font-bold">Backups</h3>
               <p className="mt-0.5 text-sm text-slate-500">
-                On-demand snapshots of this website&apos;s files and databases, stored on the
-                server. The most recent {data.retention ?? 10} are kept.
+                On-demand snapshots of this website&apos;s files and databases,
+                stored on the server. The most recent {data.retention ?? 10} are
+                kept.
               </p>
             </div>
           </div>
           {canWrite && (
-            <Button disabled={Boolean(busy)} onClick={() => setShowCreate(true)}>
+            <Button
+              disabled={Boolean(busy)}
+              onClick={() => setShowCreate(true)}
+            >
               {busy === "create" ? (
                 <LoaderCircle className="h-4 w-4 animate-spin" />
               ) : (
@@ -373,14 +417,21 @@ export function BackupsManager({
                       </span>
                     )}
                     {snapshot.databases.map((name) => (
-                      <span key={name} className="inline-flex items-center gap-1">
+                      <span
+                        key={name}
+                        className="inline-flex items-center gap-1"
+                      >
                         <Database className="h-3.5 w-3.5" /> {name}
                       </span>
                     ))}
-                    {!snapshot.hasFiles && !snapshot.databases.length && <span>Empty snapshot</span>}
+                    {!snapshot.hasFiles && !snapshot.databases.length && (
+                      <span>Empty snapshot</span>
+                    )}
                   </div>
                   {snapshot.note && (
-                    <p className="mt-1.5 text-xs italic text-slate-400">{snapshot.note}</p>
+                    <p className="mt-1.5 text-xs italic text-slate-400">
+                      {snapshot.note}
+                    </p>
                   )}
                 </div>
                 {canWrite && (
@@ -430,14 +481,16 @@ export function BackupsManager({
         </div>
       </section>
 
-      <div className="flex items-start gap-3 rounded-xl border border-panel-200/60 bg-panel-50/40 p-4 text-sm text-slate-600">
+      <div className="border-panel-200/60 flex items-start gap-3 rounded-xl border bg-panel-50/40 p-4 text-sm text-slate-600">
         <HardDriveDownload className="mt-0.5 h-4 w-4 shrink-0 text-panel-600" />
         <p>
-          Backups live in <code className="text-xs">{data.path}</code>. Download or copy them from
-          the <b>Files</b> tab (browse to <code className="text-xs">backups</code>), or over SSH/SFTP
-          from the <b>Terminal</b> tab for large archives. Automatic schedules use the same
-          per-site lock and skip a due run if another deployment or backup is already active. Keep
-          an independent off-site copy of anything critical.
+          Backups live in <code className="text-xs">{data.path}</code>. Download
+          or copy them from the <b>Files</b> tab (browse to{" "}
+          <code className="text-xs">backups</code>), or over SSH/SFTP from the{" "}
+          <b>Terminal</b> tab for large archives. Automatic schedules use the
+          same per-site lock and skip a due run if another deployment or backup
+          is already active. Keep an independent off-site copy of anything
+          critical.
         </p>
       </div>
 
@@ -448,7 +501,11 @@ export function BackupsManager({
             busy={busy === "create"}
             onClose={() => setShowCreate(false)}
             onCreate={async (body) => {
-              await request({ action: "create", ...body }, "create", "Backup created");
+              await request(
+                { action: "create", ...body },
+                "create",
+                "Backup created",
+              );
               setShowCreate(false);
             }}
           />,
@@ -478,7 +535,11 @@ function CreateBackupModal({
   databases: string[];
   busy: boolean;
   onClose: () => void;
-  onCreate: (body: { files: boolean; databases: string[]; note?: string }) => void;
+  onCreate: (body: {
+    files: boolean;
+    databases: string[];
+    note?: string;
+  }) => void;
 }) {
   const [files, setFiles] = useState(true);
   const [selected, setSelected] = useState<string[]>(databases);
@@ -542,7 +603,9 @@ function CreateBackupModal({
                 ))}
               </div>
             ) : (
-              <p className="mt-2 text-xs text-slate-400">This website has no databases.</p>
+              <p className="mt-2 text-xs text-slate-400">
+                This website has no databases.
+              </p>
             )}
           </div>
 
@@ -559,15 +622,30 @@ function CreateBackupModal({
           </div>
         </div>
         <div className="flex justify-end gap-2 border-t border-slate-100 px-6 py-4">
-          <Button type="button" variant="outline" onClick={onClose} disabled={busy}>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={onClose}
+            disabled={busy}
+          >
             Cancel
           </Button>
           <Button
             type="button"
             disabled={busy || nothingSelected}
-            onClick={() => onCreate({ files, databases: selected, note: note.trim() || undefined })}
+            onClick={() =>
+              onCreate({
+                files,
+                databases: selected,
+                note: note.trim() || undefined,
+              })
+            }
           >
-            {busy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Archive className="h-4 w-4" />}
+            {busy ? (
+              <LoaderCircle className="h-4 w-4 animate-spin" />
+            ) : (
+              <Archive className="h-4 w-4" />
+            )}
             Create backup
           </Button>
         </div>

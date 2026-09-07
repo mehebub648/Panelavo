@@ -1,7 +1,13 @@
 "use client";
 
 import { useState } from "react";
-import { CloudDownload, CloudUpload, LoaderCircle, Save, Trash2 } from "lucide-react";
+import {
+  CloudDownload,
+  CloudUpload,
+  LoaderCircle,
+  Save,
+  Trash2,
+} from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -31,11 +37,13 @@ export function OffsiteBackups({
   initialData,
   snapshots,
   canWrite,
+  apiBase = "",
 }: {
   domain: string;
   initialData: OffsiteBackupData;
   snapshots: BackupSnapshot[];
   canWrite: boolean;
+  apiBase?: string;
 }) {
   const initial = initialData.destination;
   const [form, setForm] = useState({
@@ -54,7 +62,7 @@ export function OffsiteBackups({
 
   async function request(method: string, body?: Record<string, unknown>) {
     const response = await fetch(
-      `/api/sites/${encodeURIComponent(domain)}/backups/offsite`,
+      `${apiBase}/api/sites/${encodeURIComponent(domain)}/backups/offsite`,
       {
         method,
         headers: body ? { "content-type": "application/json" } : undefined,
@@ -63,7 +71,9 @@ export function OffsiteBackups({
     );
     const result = await response.json();
     if (!result.success)
-      throw new Error(result.error?.message || "The off-site operation failed.");
+      throw new Error(
+        result.error?.message || "The off-site operation failed.",
+      );
     return result.data as OffsiteBackupData;
   }
 
@@ -76,7 +86,11 @@ export function OffsiteBackups({
       setForm((current) => ({ ...current, secretAccessKey: "" }));
       toast.success("Off-site destination verified and saved");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "The destination could not be saved.");
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "The destination could not be saved.",
+      );
     } finally {
       setBusy(null);
     }
@@ -104,15 +118,18 @@ export function OffsiteBackups({
             : "Off-site copy deleted",
       );
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "The off-site operation failed.");
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "The off-site operation failed.",
+      );
     } finally {
       setBusy(null);
     }
   }
 
   const input =
-    (key: keyof typeof form) =>
-    (event: React.ChangeEvent<HTMLInputElement>) =>
+    (key: keyof typeof form) => (event: React.ChangeEvent<HTMLInputElement>) =>
       setForm((current) => ({ ...current, [key]: event.target.value }));
 
   return (
@@ -124,7 +141,8 @@ export function OffsiteBackups({
         <div>
           <h3 className="font-bold">S3-compatible off-site copy</h3>
           <p className="mt-0.5 text-sm text-slate-500">
-            Stream complete snapshot bundles to S3, Backblaze B2, Cloudflare R2, or a compatible service.
+            Stream complete snapshot bundles to S3, Backblaze B2, Cloudflare R2,
+            or a compatible service.
           </p>
         </div>
       </div>
@@ -134,39 +152,158 @@ export function OffsiteBackups({
             type="checkbox"
             checked={form.enabled}
             disabled={!canWrite || Boolean(busy)}
-            onChange={(event) => setForm((current) => ({ ...current, enabled: event.target.checked }))}
+            onChange={(event) =>
+              setForm((current) => ({
+                ...current,
+                enabled: event.target.checked,
+              }))
+            }
           />
           Copy scheduled backups off-site
         </label>
-        <div><Label>HTTPS endpoint</Label><Input value={form.endpoint} onChange={input("endpoint")} disabled={!canWrite || Boolean(busy)} placeholder="https://s3.example.com" /></div>
-        <div><Label>Region</Label><Input value={form.region} onChange={input("region")} disabled={!canWrite || Boolean(busy)} /></div>
-        <div><Label>Bucket</Label><Input value={form.bucket} onChange={input("bucket")} disabled={!canWrite || Boolean(busy)} /></div>
-        <div><Label>Object prefix</Label><Input value={form.prefix} onChange={input("prefix")} disabled={!canWrite || Boolean(busy)} /></div>
-        <div><Label>Access key ID</Label><Input value={form.accessKeyId} onChange={input("accessKeyId")} disabled={!canWrite || Boolean(busy)} /></div>
-        <div><Label>Secret access key</Label><Input type="password" value={form.secretAccessKey} onChange={input("secretAccessKey")} disabled={!canWrite || Boolean(busy)} placeholder={configured ? "Leave blank to keep existing" : "Required"} /></div>
+        <div>
+          <Label>HTTPS endpoint</Label>
+          <Input
+            value={form.endpoint}
+            onChange={input("endpoint")}
+            disabled={!canWrite || Boolean(busy)}
+            placeholder="https://s3.example.com"
+          />
+        </div>
+        <div>
+          <Label>Region</Label>
+          <Input
+            value={form.region}
+            onChange={input("region")}
+            disabled={!canWrite || Boolean(busy)}
+          />
+        </div>
+        <div>
+          <Label>Bucket</Label>
+          <Input
+            value={form.bucket}
+            onChange={input("bucket")}
+            disabled={!canWrite || Boolean(busy)}
+          />
+        </div>
+        <div>
+          <Label>Object prefix</Label>
+          <Input
+            value={form.prefix}
+            onChange={input("prefix")}
+            disabled={!canWrite || Boolean(busy)}
+          />
+        </div>
+        <div>
+          <Label>Access key ID</Label>
+          <Input
+            value={form.accessKeyId}
+            onChange={input("accessKeyId")}
+            disabled={!canWrite || Boolean(busy)}
+          />
+        </div>
+        <div>
+          <Label>Secret access key</Label>
+          <Input
+            type="password"
+            value={form.secretAccessKey}
+            onChange={input("secretAccessKey")}
+            disabled={!canWrite || Boolean(busy)}
+            placeholder={
+              configured ? "Leave blank to keep existing" : "Required"
+            }
+          />
+        </div>
         <label className="flex items-center gap-2 text-sm font-semibold">
-          <input type="checkbox" checked={form.forcePathStyle} disabled={!canWrite || Boolean(busy)} onChange={(event) => setForm((current) => ({ ...current, forcePathStyle: event.target.checked }))} />
+          <input
+            type="checkbox"
+            checked={form.forcePathStyle}
+            disabled={!canWrite || Boolean(busy)}
+            onChange={(event) =>
+              setForm((current) => ({
+                ...current,
+                forcePathStyle: event.target.checked,
+              }))
+            }
+          />
           Force path-style URLs
         </label>
-        {canWrite ? <div className="flex items-end"><Button disabled={Boolean(busy)} onClick={() => void save()}>{busy === "save" ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}Verify and save</Button></div> : null}
+        {canWrite ? (
+          <div className="flex items-end">
+            <Button disabled={Boolean(busy)} onClick={() => void save()}>
+              {busy === "save" ? (
+                <LoaderCircle className="h-4 w-4 animate-spin" />
+              ) : (
+                <Save className="h-4 w-4" />
+              )}
+              Verify and save
+            </Button>
+          </div>
+        ) : null}
       </div>
       {configured ? (
         <div className="border-t border-slate-100 px-5 py-5 sm:px-6">
           <h4 className="text-sm font-bold">Remote copies</h4>
           <div className="mt-3 space-y-2">
             {items.map((item) => (
-              <div key={item.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-100 bg-white/60 px-4 py-3 text-sm">
-                <span><b>{item.id}</b> <span className="text-xs text-slate-400">{size(item.bytes)}</span></span>
-                {canWrite ? <div className="flex gap-2"><Button size="sm" variant="outline" disabled={Boolean(busy)} onClick={() => void act("restore", item.id)}>{busy === `restore:${item.id}` ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <CloudDownload className="h-4 w-4" />}Restore</Button><Button size="sm" variant="outline" disabled={Boolean(busy)} onClick={() => void act("delete", item.id)}><Trash2 className="h-4 w-4 text-red-500" /></Button></div> : null}
+              <div
+                key={item.id}
+                className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-100 bg-white/60 px-4 py-3 text-sm"
+              >
+                <span>
+                  <b>{item.id}</b>{" "}
+                  <span className="text-xs text-slate-400">
+                    {size(item.bytes)}
+                  </span>
+                </span>
+                {canWrite ? (
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={Boolean(busy)}
+                      onClick={() => void act("restore", item.id)}
+                    >
+                      {busy === `restore:${item.id}` ? (
+                        <LoaderCircle className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <CloudDownload className="h-4 w-4" />
+                      )}
+                      Restore
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={Boolean(busy)}
+                      onClick={() => void act("delete", item.id)}
+                    >
+                      <Trash2 className="h-4 w-4 text-red-500" />
+                    </Button>
+                  </div>
+                ) : null}
               </div>
             ))}
-            {!items.length ? <p className="text-sm text-slate-400">No remote copies found under this site prefix.</p> : null}
+            {!items.length ? (
+              <p className="text-sm text-slate-400">
+                No remote copies found under this site prefix.
+              </p>
+            ) : null}
           </div>
           {canWrite && snapshots.length ? (
             <div className="mt-4 flex flex-wrap gap-2">
               {snapshots.slice(0, 5).map((snapshot) => (
-                <Button key={snapshot.id} size="sm" variant="outline" disabled={Boolean(busy)} onClick={() => void act("upload", snapshot.id)}>
-                  {busy === `upload:${snapshot.id}` ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <CloudUpload className="h-4 w-4" />}
+                <Button
+                  key={snapshot.id}
+                  size="sm"
+                  variant="outline"
+                  disabled={Boolean(busy)}
+                  onClick={() => void act("upload", snapshot.id)}
+                >
+                  {busy === `upload:${snapshot.id}` ? (
+                    <LoaderCircle className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <CloudUpload className="h-4 w-4" />
+                  )}
                   Copy {snapshot.id}
                 </Button>
               ))}

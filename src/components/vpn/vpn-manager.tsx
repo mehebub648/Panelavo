@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -71,7 +71,13 @@ const checkStyles = {
   blocked: { icon: XCircle, className: "bg-red-50 text-red-700" },
 } as const;
 
-export function VpnManager({ initialState }: { initialState: VpnState }) {
+export function VpnManager({
+  initialState,
+  apiBase = "",
+}: {
+  initialState: VpnState;
+  apiBase?: string;
+}) {
   const [state, setState] = useState(initialState);
   const [busy, setBusy] = useState<string>();
   const [pending, setPending] = useState<PendingAction>();
@@ -102,9 +108,9 @@ export function VpnManager({ initialState }: { initialState: VpnState }) {
     [state.devices],
   );
 
-  async function refresh(silent = false) {
+  const refresh = useCallback(async (silent = false) => {
     try {
-      const response = await fetch("/api/vpn", { cache: "no-store" });
+      const response = await fetch(`${apiBase}/api/vpn`, { cache: "no-store" });
       const body = await response.json();
       if (!body.success)
         throw new Error(body.error?.message || "Could not refresh VPN status.");
@@ -117,12 +123,12 @@ export function VpnManager({ initialState }: { initialState: VpnState }) {
             : "Could not refresh VPN status.",
         );
     }
-  }
+  }, [apiBase]);
 
   async function execute(input: VpnManageInput) {
     setBusy(input.action);
     try {
-      const response = await fetch("/api/vpn", {
+      const response = await fetch(`${apiBase}/api/vpn`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(input),
@@ -160,7 +166,7 @@ export function VpnManager({ initialState }: { initialState: VpnState }) {
       if (document.visibilityState === "visible") void refresh(true);
     }, 30_000);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [refresh]);
 
   function requestInstall() {
     const port = Number(listenPort);

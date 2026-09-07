@@ -38,9 +38,11 @@ const statusStyle = {
 export function LinkedServices({
   parentDomain,
   canWrite,
+  apiBase = "",
 }: {
   parentDomain: string;
   canWrite: boolean;
+  apiBase?: string;
 }) {
   const [services, setServices] = useState<ProjectEndpoint[] | null>(null);
   const [ports, setPorts] = useState<ProjectPort[]>([]);
@@ -55,7 +57,7 @@ export function LinkedServices({
   const load = useCallback(async () => {
     try {
       const response = await fetch(
-        `/api/sites/${encodeURIComponent(parentDomain)}/services`,
+        `${apiBase}/api/sites/${encodeURIComponent(parentDomain)}/services`,
         { cache: "no-store" },
       );
       const result = await response.json();
@@ -66,14 +68,14 @@ export function LinkedServices({
     } catch {
       setServices([]);
     }
-  }, [parentDomain]);
+  }, [apiBase, parentDomain]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
   function endpointUrl(domain: string) {
-    return `/api/sites/${encodeURIComponent(parentDomain)}/services/${encodeURIComponent(domain)}`;
+    return `${apiBase}/api/sites/${encodeURIComponent(parentDomain)}/services/${encodeURIComponent(domain)}`;
   }
 
   async function create(event: React.FormEvent<HTMLFormElement>) {
@@ -84,7 +86,7 @@ export function LinkedServices({
     const alias = String(data.get("alias") ?? "").trim();
     try {
       const response = await fetch(
-        `/api/sites/${encodeURIComponent(parentDomain)}/services`,
+        `${apiBase}/api/sites/${encodeURIComponent(parentDomain)}/services`,
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -126,7 +128,7 @@ export function LinkedServices({
       const response = await fetch(endpointUrl(endpoint.domain), {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: "{}",
+        body: JSON.stringify({ confirmation: endpoint.domain }),
       });
       const result = await response.json();
       if (!result.success)

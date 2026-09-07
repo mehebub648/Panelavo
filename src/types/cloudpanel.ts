@@ -390,6 +390,12 @@ export interface ServerInfo {
   maintenance?: ServerMaintenanceState;
 }
 
+export interface ServerInformation extends ServerInfo {
+  panelAddress: string;
+  ipv4Addresses: string[];
+  ipv6Addresses: string[];
+}
+
 export interface ServerMaintenanceState {
   checkedAt: string;
   availableUpdates: number;

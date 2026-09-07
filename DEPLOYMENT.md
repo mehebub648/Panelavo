@@ -130,155 +130,44 @@ Broker protocol 23 adds the production database gateway, host maintenance invent
 
 Broker protocol 24 adds the Super Admin-only WireGuard host gateway and its non-mutating broker self-test. Existing installations must run trusted `sudo bash setup.sh` from this release before the in-panel updater can deploy the protocol-24 application. VPN installation itself remains explicit and on demand from `/vpn`; trusted setup installs only the updated root-owned broker and does not alter routes, forwarding, firewall state, or install WireGuard packages.
 
-An inactive UFW installation is never activated from SSH unless both `ENABLE_UFW=true` and `UFW_CONSOLE_RECOVERY_READY=true` are supplied after provider-console recovery has been tested. The second flag is intentionally a separate acknowledgement because a malformed or provider-incompatible firewall can otherwise remove the only administrative path to the server.
+Connected servers use application peer protocol 1 and broker protocol 24; this redesign requires no installer, broker, port, or firewall changes. Run Panelavo 0.1.121 or newer on both panels for native-interface switching through signed peer actions. Each panel requires a publicly resolvable hostname with a valid certificate on HTTPS port 443. Private-only addresses, custom ports, self-signed certificates, and redirects remain unsupported. Normal pages prohibit framing; connected-server switching does not require third-party cookies, cross-origin frames, or proxy-header changes.
 
-The single Panelavo process starts backup, monitoring, database-gateway reconciliation, and storage-hygiene schedulers at server boot rather than waiting for an administrator to open the UI. Automatic storage cleanup starts at 75%, uses a six-hour normal cooldown, tightens at 90% with a one-hour cooldown, and blocks storage-growing application actions at 92% or below the dynamic 2–10 GB reserve. It never prunes volumes, containers, databases, backups, or application files. `setup.sh` enables the operating system's daily unattended security updates without automatic reboot; the Information page reports pending packages and a required reboot.
+To change a panel address, first add the new domain's DNS and a CloudPanel alias on the existing panel site, then issue its certificate. Do not move the app directory or remove the old vhost. Use Settings → Panel address to verify the new endpoint and notify all direct peers. Preserve `.data/panel-address.json`, including pending migration progress, with the rest of runtime state. If any peer is unavailable or outdated, keep both domains routed to this installation and retry the pending change after recovery. The current canonical origin stays unchanged until all peers acknowledge. Personal OAuth clients can require reconnection after the issuer changes; unrelated websites and server trust keys are untouched.
 
-S3-compatible backup destinations require an HTTPS endpoint and `CREDENTIALS_ENCRYPTION_KEY` (or the existing 32-character-or-longer `SESSION_SECRET`). The configured bucket credentials need list, read, write, and delete access only under the chosen site prefix. No bucket credentials are installed into the root broker.
+Preserve all of `.data` and `.env.local` on deployment. Existing `.data/fleet-state.enc.json` identities and pinned connections migrate from a single incoming grant to multiple independent incoming grants without changing keys. Legacy wire identifiers and protocol 1 are retained for compatibility, but installations no longer have exclusive Hub/Node roles. Back up state before upgrading; an older binary does not understand multiple incoming grants, so rolling back this migration requires deliberate state recovery rather than silently dropping connections.
 
-SMTP and webhook notification settings use the same credential-encryption key. Permit outbound TCP to the configured SMTP host/port and outbound HTTPS to the webhook receiver; Panelavo does not require an inbound notification port.
+A token is created in one click by a signed-in Super Admin and submitted by a signed-in Super Admin on the server granting access. Tokens expire after ten minutes and are single-use. Generate a separate token for each direction and each server. Deployment never creates or expands grants, and disconnecting never changes hosted apps. No Node password, browser session, or private signing key is forwarded to the managing panel. Existing `.data/delegated-tickets.enc.json` files from v0.1.119-v0.1.120 are unused and may be retained harmlessly during upgrade; do not delete `.data` during deployment.
 
-Uptime and certificate monitoring also require outbound DNS and HTTPS/TLS access from the Panelavo process. Checks originate from the managed server, run in the single PM2 process, and persist their debounce/last-check state under `.data`; do not configure multiple Panelavo workers.
+Remote panel controls (v0.1.122): full-scope Super Admin connections expose panel address changes, server sharing and user invitations on the selected server. Both panels must run this release; older limited links require reauthorization. Address changes retain the existing same-panel HTTPS proof and peer acknowledgement flow. Remote pages request only their section; account/site reads are deduplicated only within a server render, and host software inventory is cached for 30 seconds after checking live authority. Deployment needs no broker or hosted-application restart.
+Navigation completion observes both pathname and query string so switching remote tabs does not leave the loading overlay blocking an already rendered page.
 
-The root contracts currently cover npm, pnpm, Yarn, and Bun projects; Composer, Laravel, and WordPress; uv, Poetry, Pipenv, pip virtual environments, and Django; direct static roots; reverse-proxy checks; PM2; and Docker Compose. A workspace needs usable root scripts or explicit root-level configuration. For a generated static site, configure CloudPanel to serve a verified build directory yourself: Panelavo does not infer `dist`, `build`, `out`, or another output and does not change the document root.
+### Concurrent session persistence
 
-Every Operations request sends a validated action, plan, or fix identifier to the server. The server chooses the executable and arguments, fixes the working directory, runs without a shell, bounds runtime and output, and holds a per-site lock. Recommended plans execute synchronously, stop after the first failed step, and expose each step's result. A missing executable, ambiguous dependency manager, invalid configuration, insufficient role, or failed safety rule remains a visible blocker; Operations never installs a missing tool silently or as a fallback.
+Session startup shares one disk load, and atomic saves run in order. Refreshes cannot restore revoked sessions. Persistence failures remain best-effort and are retried on later requests; no session format or deployment migration is required.
 
-Some blocked preflight checks additionally offer an explicit one-click fix. Host-software fixes are Super Admin-only, individually confirmed, and serialized host-wide. Docker initialization verifies or installs Engine/CLI, Compose v2, Buildx, `docker-ce-rootless-extras`, `uidmap`, `dbus-user-session`, and `slirp4netns`, then configures linger and the site's systemd user daemon; Docker packages come from the official APT repository. Composer comes from getcomposer.org with installer signature verification.
+### Bounded Fleet health sweeps
 
-Every Node.js, Python, reverse-proxy, or Compose application is checked against CloudPanel's configured upstream/app port. New Panelavo-managed applications derive ports in 30000–39999 from their stable 20000–29999 site ids; legacy custom ports remain supported. For a site whose configured port is `34001`, success means the site's own loopback process responds on `127.0.0.1:34001`; a foreign listener on `34001` blocks deployment, while a site process listening only on `3000` is reported as a mismatch. Node/Python PM2 starts receive the expected port and loopback host environment, and plans recheck listener ownership before probing the endpoint after startup.
+The minute-based Fleet scheduler skips ticks while its previous sweep is running, including across module reloads. Failed sweeps release the guard so monitoring resumes on the next tick. Existing per-sweep concurrency remains bounded; deployment requires no broker or data migration.
 
-For Compose, Panelavo determines the public entry service from an existing exact mapping, an explicit `io.panelavo.entrypoint=true` label, a unique candidate, the service dependency graph, or an unambiguous conventional gateway name. It determines the container port from an explicit `io.panelavo.container-port=<port>` label or consistent Compose port, environment, and health-check evidence. A safe mismatch such as frontend `127.0.0.1:3000:3000` for CloudPanel port `24001` is run as `127.0.0.1:24001:3000` through an ephemeral resolved Compose configuration. The source file is not modified. Other published service ports are forced to loopback and listed as additional endpoints; create connected reverse-proxy sites when those endpoints also need public domains. If entry service or container port is ambiguous, deployment blocks and shows the labels needed instead of guessing.
+### Adaptive update status polling
 
-The lifecycle actions intentionally distinguish **Start services** (`docker compose up -d --remove-orphans`) from **Build & start services** (`docker compose up -d --build --remove-orphans`). Use the build operation after changing a Dockerfile, build context, build arguments, or dependencies copied into an image. Both start paths verify the configured website entry port before reporting success.
+Visible idle tabs check update status once per minute, switching to every two seconds when an update is detected. Hidden tabs pause checks and refresh when visible again. Requests never overlap and are cancelled on hiding or unmounting; the maintenance lock survives transient failures. This frontend change needs only the normal panel build and reload.
 
-### Docker Compose prerequisite and policy
+### Lightweight remote health reports
 
-`setup.sh` provisions rootless Docker host support on every server — Docker Engine, CLI, Buildx, Compose v2, `docker-ce-rootless-extras`, and `fuse-overlayfs` from Docker's official repository, alongside `uidmap`/`dbus-user-session`/`slirp4netns` — so the shared prerequisites are present out of the box. Host provisioning stays a root/Super Admin boundary: the Super Admin rootless host fix still (re)installs any missing Docker packages, allocates subordinate ranges, and validates cgroup v2/systemd, at least 65,536 non-overlapping subordinate UIDs/GIDs, functional `newuidmap`/`newgidmap`, the Buildx plugin, native rootless overlay storage (`overlay2` or Docker 29's `overlayfs`, with `fuse-overlayfs` only when the native probe fails), the user manager and D-Bus, linger, and the private socket. Once the host is provisioned, a **site-write user can self-initialize their own per-user runtime** (enable their linger, start their private daemon) with no Super Admin step; that self-service action never installs packages or allocates ranges and refuses — without mutating anything — when the host is not provisioned. Ports below 1024 are unsupported.
+Background Fleet checks request a compact authenticated health report from the shared minute resource sampler, avoiding site lists, software inventory and detailed runtime scans. Samples older than two minutes are omitted. Full summaries remain available on demand, and older peers remain compatible by returning their existing summary. Deploying peers one at a time requires no protocol or broker upgrade.
 
-```bash
-docker context use rootless
-docker compose version
-docker info --format '{{json .SecurityOptions}}'
-```
+### Separate Fleet telemetry and replay persistence
 
-Do not add the Panelavo or website user to the `docker` group. Each site user owns a daemon at `/run/user/<uid>/docker.sock` and state under `/home/<site-user>/.local/share/docker`; no Docker API is exposed over TCP and Panelavo never falls back to `/var/run/docker.sock`. The setup-created rootless context is used for SSH, without exporting `DOCKER_HOST` in `.profile`. Ordinary Compose actions — and bringing up the site user's own rootless runtime — are permitted to site-write users because they grant nothing beyond that user's SSH access; host package provisioning and rootful migration remain Super Admin-only.
+Fleet health and replay records now use separate encrypted files, so routine requests do not rewrite connection credentials. Replay identifiers are saved before requests are accepted; missing or corrupt replay state fails closed. Migration merges existing records before marking the split complete, and health cannot reactivate pending or suspended connections. Preserve all three fleet-*.enc.json files in backups. Before downgrading below v0.1.127, stop Panelavo for at least five minutes to expire all previously signed requests; never delete the replay file from a running installation.
 
-For every Compose action, Panelavo supplies the selected Compose file (in the application root or a discovered subfolder), stable project name, and exact site-user socket. Preflight requires the private daemon, a valid configuration, an unambiguous entry-port contract, and the safety policy. Runtime port remapping uses a site-owned mode-0600 file in a mode-0700 `/run/user/<uid>` directory and always deletes it. Privileged features, added capabilities, devices, host/shared namespaces, unsafe security options, and out-of-root bind mounts/build contexts block. Userspace forwarding can change the peer IP visible inside containers; trust CloudPanel's configured forwarded headers rather than authorize by that immediate address.
+### Bounded concurrent website monitoring
 
-Legacy rootful projects use **Prepare** and **Cut over**. Prepare handles one service pull/build per request while traffic remains online; requests stop at 900 seconds, after which a longer build must be completed through the site's rootless SSH context and readiness refreshed. It rejects named/external volumes, unsupported features, out-of-root paths, conflicting bind users, and ambiguous numeric owners. Cutover revalidates the expiring manifest, stops but retains rootful containers, journals ownership, maps root to the site account and non-root container IDs into its subordinate range, reapplies site-user ACLs, starts with `--no-build`, and verifies state, health, ports, access, and HTTP. Failure restores ownership/ACLs and the rootful endpoint. Never delete an incomplete recovery journal manually.
+Website uptime and TLS checks run through four workers instead of a sequential queue. A slow or failing site no longer delays every later site, while the existing twelve-second network limits, failure thresholds and recovery alerts remain in place. HTTPS response bodies are cancelled after checking headers to release resources. Only the Panelavo process needs reloading; hosted applications are unchanged.
+### Connected-server information
 
-Rootless image layers are duplicated per user and readiness reports store size, reclaimable data, and free filesystem space. Rootless initialization merges a default `local` logging policy into `~/.config/docker/daemon.json`, retaining five 20 MB files unless the site already selected an external driver or a stricter compatible policy. Trusted setup likewise installs/configures `pm2-logrotate` for Panelavo. The backup archive is limited to the configured `htdocs` application root and does not include `~/.local/share/docker`. Site deletion must remove the user's rootless objects and migration state, stop/disable Docker, remove its data, disable linger, and verify the socket is gone before deleting the CloudPanel site/Unix user.
+Panelavo v0.1.129 enriches the existing authenticated `system.info` Fleet action with the configured panel origin and public address families. No Fleet protocol or broker upgrade is required. Deploy connected nodes before the host for the complete response during rollout; the host UI falls back to the earlier response shape until each node is upgraded.
 
-### Failure and rollback limits
+### PHP website creation ports
 
-Managed dependency installs and builds operate on the configured live application root. An after-pull plan can serialize the fast-forward pull and up to ten allow-listed Operations under one per-site lock, but it is still an in-place deployment. Operations currently has no release-directory staging, atomic symlink switch, automatic code rollback, or staging/clone environment. Those remain explicit roadmap items because CloudPanel's serving/document root is authoritative. Requests and child commands are synchronous and bounded; if a plan fails, earlier successful steps remain applied and later steps are skipped.
-
-Laravel and Django migrations are deliberately excluded from recommended deployment plans and remain separately confirmed destructive actions. Panelavo does not create a database backup or guarantee a down migration. Export the relevant database and verify its restore procedure before running a migration. Static output selection and reverse-proxy cutover also remain explicit operator responsibilities.
-
----
-
-## WireGuard gateway operations
-
-The `/vpn` page installs one Panelavo-owned `pnlwg0` gateway only after its preflight passes. The default host rule required outside the server is inbound UDP `51820` to the direct public endpoint; if a different port is selected, allow that exact UDP port instead. Do not expose TCP `10443`, raw database ports, SSH, or rootless Docker ports. Panelavo never enables inactive UFW and never flushes an existing nftables ruleset. An unmanaged default-drop firewall or conflicting interface, file, route, UDP listener, or nftables table blocks installation for manual review.
-
-Before enabling this on production, use a disposable supported VM and capture listeners, routes, forwarding sysctls, UFW/nftables state, rootless Docker state, and representative hosted-site health. Verify a real external handshake, VPN egress IP and DNS, conditional IPv6, isolation from SSH/databases/private listeners/Docker networks/other peers, rotation, revocation, service restart, reboot persistence, and unchanged public websites. Then uninstall and verify that only marker-owned `pnlwg0` resources disappeared and that hosted services remain healthy. This cannot be proven by the application build or broker self-test; keep provider-console recovery available for the live networking pass.
-
-Stopping the gateway disables its boot-start unit and interrupts clients without stopping Panelavo or hosted websites. Starting or restarting reuses the immutable installed endpoint, port, tunnel ranges, and DNS. To change those settings, uninstall and reinstall; all old client profiles are revoked. Uninstall removes the Panelavo service, sysctl file, tagged UFW rules, dedicated nftables tables, root-only state, and keys, while leaving distribution packages and every unrelated WireGuard/firewall resource installed.
-
----
-
-## Stop / Restart
-
-```bash
-pm2 stop panelavo       # stop but keep it in the list
-pm2 restart panelavo    # hard restart (brief downtime)
-pm2 reload panelavo     # graceful reload (zero-downtime where possible)
-pm2 delete panelavo     # remove from PM2 entirely
-```
-
-> After stopping, run `pm2 save` so the stopped/removed state is remembered
-> across reboots.
-
----
-
-## Deploy an update
-
-From the application directory:
-
-```bash
-git pull
-pnpm install --frozen-lockfile   # if dependencies changed
-pnpm build
-pm2 reload panelavo
-pm2 save
-```
-
-User sessions survive restarts and can be reviewed or revoked from Profile — they are persisted to
-`.data/sessions.json` (encrypted-at-rest material lives in `.data/`, which is
-git-ignored and created with `0700`/`0600` permissions).
-
----
-
-## Logs
-
-```bash
-pm2 logs panelavo                 # live tail (stdout + stderr)
-pm2 logs panelavo --lines 200     # last 200 lines
-pm2 logs panelavo --err           # errors only
-pm2 flush panelavo                # truncate the log files
-```
-
-Raw log file locations:
-
-```bash
-pm2 describe panelavo | grep -E "log path|out log|error log"
-# default: ~/.pm2/logs/panelavo-out.log and ~/.pm2/logs/panelavo-error.log
-```
-
-Application audit events (logins, mutations) are emitted as JSON on stdout, so
-they land in the PM2 out log. Sensitive fields (passwords, tokens, cookies) are
-redacted before logging. The same redacted events are retained in the bounded,
-hash-chained `.data/audit` ledger and are available to Super Admins from the
-Audit page. Its integrity badge verifies retained hashes, links, and the ledger
-head; a failed badge should be investigated before trusting the displayed trail.
-
-**Log rotation** (recommended so logs don't grow unbounded):
-
-```bash
-pm2 install pm2-logrotate
-pm2 set pm2-logrotate:max_size 10M
-pm2 set pm2-logrotate:retain 14
-pm2 set pm2-logrotate:compress true
-```
-
----
-
-## Health & monitoring
-
-```bash
-pm2 status              # process table (status, restarts, CPU, memory)
-pm2 describe panelavo   # full details incl. restart count & memory
-pm2 monit               # live dashboard (CPU / memory per process)
-```
-
-- `max_memory_restart` is set to **1G** in `ecosystem.config.js`: if the
-  process ever exceeds that RSS, PM2 restarts it automatically instead of
-  letting the host OOM. Tune it there for your box.
-- A climbing **restart count** (`↺` column in `pm2 status`) means the process
-  is crash-looping — check `pm2 logs panelavo --err`.
-
----
-
-## Quick reference
-
-| Action           | Command                         |
-| ---------------- | ------------------------------- |
-| Build            | `pnpm build`                    |
-| Start            | `pm2 start ecosystem.config.js` |
-| Stop             | `pm2 stop panelavo`             |
-| Restart          | `pm2 restart panelavo`          |
-| Graceful reload  | `pm2 reload panelavo`           |
-| Status           | `pm2 status`                    |
-| Live logs        | `pm2 logs panelavo`             |
-| Persist for boot | `pm2 save` + `pm2 startup`      |
+PHP creation checks the selected runtime's next CloudPanel pool port against reserved ports and live listeners. A conflict blocks only that PHP version and asks the user to choose another; unrelated legacy application ports no longer block all PHP creation. Panelavo creation requests are serialized. Deploy the updated root-owned bridge with v0.1.131; existing sites and Admin assignment boundaries remain unchanged.
