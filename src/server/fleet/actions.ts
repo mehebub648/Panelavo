@@ -1,3 +1,11 @@
+import {
+  getDeploymentSettings,
+  saveDeploymentSettings,
+  listDeployments,
+  getDeployment,
+  startDeployment,
+  manageDeploymentTokens,
+} from "@/server/deploy/deployments";
 import { getFleetHealthReport } from "@/server/fleet/health";
 import { createUserInvitation } from "@/server/auth/user-invitation";
 import { changePanelAddress } from "@/server/fleet/address";
@@ -343,6 +351,30 @@ export async function executeFleetAction(
   if (action === "site.uptime.save") {
     const input = domainInput.parse(submitted);
     return saveSiteUptimeForActor(actor, input.domain, input.data);
+  }
+  if (action.startsWith("site.deployment")) {
+    const input = domainInput.parse(submitted);
+    if (action === "site.deployment-settings.get")
+      return getDeploymentSettings(actor, input.domain);
+    if (action === "site.deployment-settings.save")
+      return saveDeploymentSettings(actor, input.domain, input.data);
+    if (action === "site.deployments.list")
+      return listDeployments(actor, input.domain);
+    if (action === "site.deployments.get")
+      return getDeployment(
+        actor,
+        input.domain,
+        z.string().uuid().parse(input.id),
+      );
+    if (action === "site.deployments.start")
+      return startDeployment(
+        actor,
+        input.domain,
+        input.data,
+        input.idempotencyKey,
+      );
+    if (action === "site.deployment-tokens.manage")
+      return manageDeploymentTokens(actor, input.domain, input.data);
   }
   if (action === "site.deploy-hooks.get")
     return getSiteDeployHooksForActor(

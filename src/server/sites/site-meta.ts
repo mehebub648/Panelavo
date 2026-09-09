@@ -37,6 +37,7 @@ export type SiteMeta = {
   aliases: string[];
   block: SubdomainBlockMode;
   redirectTo?: string;
+  wwwRedirects?: string[];
   // Linked-service sites: real CloudPanel reverse-proxy sites that the panel
   // groups under a parent site (e.g. api.app.com under app.com). `parent` is
   // the parent's lowercase system domain, `serviceName` the operator label.

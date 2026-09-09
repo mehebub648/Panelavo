@@ -879,10 +879,10 @@ export function createPanelavoMcpServer(actor: PanelActor) {
       },
       async ({ domain, path, name, content }) =>
         commonSectionCall("panelavo_write_file", domain, "file-manager", {
-          action: "save-file",
+          action: "upload",
           path,
           name,
-          content,
+          content: Buffer.from(content, "utf8").toString("base64"),
         }),
     );
 

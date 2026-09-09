@@ -179,3 +179,13 @@ Legacy MCP clients use credential- and live-actor-bound in-memory HTTP sessions 
 Direct MCP tools are available for common website work: `panelavo_list_files`, `panelavo_read_file`, `panelavo_write_file`, `panelavo_upload_file`, `panelavo_read_site_log`, and `panelavo_restart_site` (PM2 or rootless Compose). They reuse the validated File Manager, Logs and Operations services, including live website-write authorization, contained paths, size limits and restart preflight. Generic section and terminal tools remain available. Reconnect an existing MCP client if it caches the tool list.
 
 The update launcher normalizes shell line endings before execution and records worker startup or early-exit failures. Queued attempts that never enter the worker expire after two minutes on the next status check, releasing maintenance mode without interrupting an active build or reload. This applies equally to local and Fleet-initiated updates.
+
+Broker protocol 25 adds paired bare-domain to www redirects. Run trusted setup.sh from this release to install the root-owned broker before updating the application; the ordinary updater refuses an incompatible broker. Existing domain pairs default to serving both addresses.
+
+### Deployment workflow release (0.1.137)
+
+Protocol 26 is required for shared jobs, exact-commit updates, sequence validation, health checks and progress events. Install the trusted broker from the same release before activating the application; the updater must refuse incompatible brokers. Connected nodes need this release before using their new deployment actions. Saved after-pull recipes remain compatible; no database migration is required.
+
+Preserve `.data` and `.env.local`, build the staged release, and reload only the `panelavo` PM2 process. Setup now updates existing nested proxy read/send timeouts in the panel vhost to 1900 seconds, preserving comments and validating/restoring on failure. Applying that correction requires a validated Nginx reload. Check existing site HTTP and process continuity around the targeted rollout.
+
+Automation remains off until enabled for a configured branch. Use the selected server's HTTPS deployment URL and a website-specific token in CI secrets. Submit the tested full commit plus an idempotency key and poll the saved result. A panel restart marks unfinished jobs interrupted without replay.

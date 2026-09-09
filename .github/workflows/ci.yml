@@ -60,6 +60,7 @@ jobs:
       - name: Validate PHP bridge
         run: |
           php -l scripts/cloudpanel-bridge.php
+          php scripts/test-deployment.php
           php scripts/cloudpanel-bridge.php --self-test-ports
           php scripts/cloudpanel-bridge.php --self-test-env
           php scripts/cloudpanel-bridge.php --self-test-datastore

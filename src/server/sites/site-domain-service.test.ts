@@ -79,7 +79,125 @@ describe("actor-aware website domains", () => {
     mocks.resolveDnsStatus.mockResolvedValue([]);
     mocks.planSiteSsl.mockResolvedValue({ san: [], warnings: [] });
     mocks.issueSiteSsl.mockResolvedValue(undefined);
+    mocks.autoDeleteDns.mockResolvedValue(undefined);
   });
+
+  it.each([true, false])(
+    "sets www redirect enabled=%s after accepting the vhost",
+    async (enabled) => {
+      mocks.getSiteMeta.mockResolvedValue({
+        id: 20001,
+        category: "sites",
+        aliases: ["example.com", "www.example.com"],
+        block: "none",
+        wwwRedirects: ["example.com"],
+      });
+      await manageSiteDomainsForActor(
+        actor,
+        "site.example.test",
+        { action: "set-www-redirect", domain: "example.com", enabled },
+        "203.0.113.10",
+      );
+      expect(mocks.manageSiteSection).toHaveBeenCalledWith(
+        actor.cloudPanel,
+        "site.example.test",
+        "domains",
+        expect.objectContaining({
+          wwwRedirects: enabled ? ["example.com"] : [],
+        }),
+      );
+      expect(mocks.manageSiteSection.mock.invocationCallOrder[0]).toBeLessThan(
+        mocks.setSiteMeta.mock.invocationCallOrder[0],
+      );
+    },
+  );
+
+  it("rejects redirects without both aliases", async () => {
+    await expect(
+      manageSiteDomainsForActor(
+        actor,
+        "site.example.test",
+        { action: "set-www-redirect", domain: "example.com", enabled: true },
+        "203.0.113.10",
+      ),
+    ).rejects.toThrow("Add both");
+    expect(mocks.manageSiteSection).not.toHaveBeenCalled();
+  });
+
+  it("does not save redirect settings after a rejected vhost", async () => {
+    mocks.getSiteMeta.mockResolvedValue({
+      id: 20001,
+      category: "sites",
+      aliases: ["example.com", "www.example.com"],
+      block: "none",
+    });
+    mocks.manageSiteSection.mockRejectedValueOnce(new Error("nginx rejected"));
+    await expect(
+      manageSiteDomainsForActor(
+        actor,
+        "site.example.test",
+        { action: "set-www-redirect", domain: "example.com", enabled: true },
+        "203.0.113.10",
+      ),
+    ).rejects.toThrow("nginx rejected");
+    expect(mocks.setSiteMeta).not.toHaveBeenCalled();
+  });
+
+  it("removes redirect rules when a paired alias is removed", async () => {
+    mocks.getSiteMeta.mockResolvedValue({
+      id: 20001,
+      category: "sites",
+      aliases: ["example.com", "www.example.com"],
+      block: "none",
+      wwwRedirects: ["example.com"],
+    });
+    await manageSiteDomainsForActor(
+      actor,
+      "site.example.test",
+      { action: "remove-alias", domain: "www.example.com" },
+      "203.0.113.10",
+    );
+    expect(mocks.manageSiteSection).toHaveBeenCalledWith(
+      actor.cloudPanel,
+      "site.example.test",
+      "domains",
+      expect.objectContaining({ wwwRedirects: [] }),
+    );
+  });
+
+  it.each(["www.example.com", "example.com"])(
+    "issues only the selected alias %s without an implicit companion",
+    async (alias) => {
+      mocks.getSiteMeta.mockResolvedValue({
+        id: 20001,
+        category: "sites",
+        aliases: [alias, "other.example.com"],
+        block: "none",
+      });
+
+      await manageSiteDomainsForActor(
+        actor,
+        "site.example.test",
+        {
+          action: "issue-ssl",
+          domains: ["site.example.test", alias, alias, "foreign.example.com"],
+        },
+        "203.0.113.10",
+      );
+
+      expect(mocks.assertDomainsPointToServer).toHaveBeenCalledWith(
+        ["site.example.test", alias],
+        "203.0.113.10",
+        expect.any(Function),
+      );
+      expect(mocks.manageSiteSection).toHaveBeenCalledWith(
+        actor.cloudPanel,
+        "site.example.test",
+        "certificates",
+        { action: "lets-encrypt", subjectAlternativeName: alias },
+      );
+    },
+  );
 
   it("updates the accepted vhost before committing alias metadata", async () => {
     const result = await manageSiteDomainsForActor(

@@ -40,6 +40,7 @@ export interface CloudPanelSession {
 
 export type SiteSectionExecutionOptions = {
   signal?: AbortSignal;
+  onProgress?: (event: import("@/lib/deployment").DeploymentProgress) => Promise<void>;
 };
 
 export type SiteReleaseOperation =

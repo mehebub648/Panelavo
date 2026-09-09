@@ -1,6 +1,5 @@
 import { Resolver } from "node:dns/promises";
 import { z } from "zod";
-import { certAlternativeNames } from "@/lib/domains";
 import { domainValue } from "@/schemas/sites";
 import type { PanelActor } from "@/server/auth/site-access";
 import {
@@ -30,6 +29,13 @@ import {
 export const siteDomainActionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("add-alias"), domain: domainValue }).strict(),
   z.object({ action: z.literal("remove-alias"), domain: domainValue }).strict(),
+  z
+    .object({
+      action: z.literal("set-www-redirect"),
+      domain: domainValue,
+      enabled: z.boolean(),
+    })
+    .strict(),
   z
     .object({
       action: z.literal("set-block"),
@@ -66,6 +72,7 @@ async function syncVhost(actor: PanelActor, domain: string, meta: SiteMeta) {
       aliases: meta.aliases,
       block: meta.aliases.length ? meta.block : "none",
       redirectTo: meta.redirectTo,
+      wwwRedirects: meta.wwwRedirects ?? [],
     }),
   );
 }
@@ -135,6 +142,10 @@ export async function manageSiteDomainsForActor(
         400,
       );
     meta.aliases = meta.aliases.filter((alias) => alias !== input.domain);
+    meta.wwwRedirects = (meta.wwwRedirects ?? []).filter(
+      (name) =>
+        meta.aliases.includes(name) && meta.aliases.includes(`www.${name}`),
+    );
     if (meta.redirectTo === input.domain) {
       meta.redirectTo = meta.aliases[0];
       if (meta.block === "redirect" && !meta.redirectTo) meta.block = "none";
@@ -147,6 +158,23 @@ export async function manageSiteDomainsForActor(
         console.error("Auto DNS delete failed for removed alias:", error);
       },
     );
+  } else if (input.action === "set-www-redirect") {
+    if (
+      input.domain.startsWith("www.") ||
+      !meta.aliases.includes(input.domain) ||
+      !meta.aliases.includes(`www.${input.domain}`)
+    )
+      throw new AppError(
+        "INVALID_REQUEST",
+        "Add both the bare domain and its www domain before changing this setting.",
+        400,
+      );
+    const redirects = new Set(meta.wwwRedirects ?? []);
+    if (input.enabled) redirects.add(input.domain);
+    else redirects.delete(input.domain);
+    meta.wwwRedirects = Array.from(redirects);
+    await syncVhost(actor, domain, meta);
+    await setSiteMeta(domain, meta);
   } else if (input.action === "set-block") {
     if (input.block !== "none" && !meta.aliases.length)
       throw new AppError(
@@ -173,11 +201,7 @@ export async function manageSiteDomainsForActor(
         400,
       );
     const san = Array.from(
-      new Set(
-        requested
-          .filter((name) => name !== domain)
-          .flatMap((name) => [name, ...certAlternativeNames(name)]),
-      ),
+      new Set(requested.filter((name) => name !== domain)),
     );
     await assertDomainsPointToServer(
       Array.from(new Set([domain, ...san])),

@@ -25,7 +25,7 @@ const sections = [
   ["databases", "Databases", Database],
   ["security", "Security", ShieldCheck],
   ["file-manager", "Files", Files],
-  ["git", "Git", GitBranch],
+  ["git", "Git & Deploy", GitBranch],
   ["terminal", "Terminal", SquareTerminal],
   ["backups", "Backups", Archive],
 ] as const;

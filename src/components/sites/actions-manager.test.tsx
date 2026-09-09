@@ -97,7 +97,7 @@ describe("ActionsManager", () => {
     vi.stubGlobal("cancelAnimationFrame", (id: number) =>
       window.clearTimeout(id),
     );
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({ success: true, data: { jobs: [] } }) }));
   });
 
   afterEach(() => {
@@ -116,61 +116,30 @@ describe("ActionsManager", () => {
         "The Docker executable is not installed on this server.",
       ),
     ).not.toHaveLength(0);
-    expect(screen.getByRole("button", { name: "Deploy now" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Deploy current files" })).toBeDisabled();
+    screen.getByText("Advanced: Runtime & lifecycle").closest("details")!.open = true;
     expect(
       screen.getByRole("button", { name: /^Start services/i }),
     ).toBeDisabled();
     expect(
       screen.queryByText("No managed actions for this architecture"),
     ).not.toBeInTheDocument();
-    expect(fetch).not.toHaveBeenCalled();
+    expect(vi.mocked(fetch).mock.calls.some(([, request]) => request?.method === "POST")).toBe(false);
   });
 
-  it("reviews a ready deployment plan and submits only its allow-listed plan id", async () => {
-    const initialData = dockerData(true);
-    const completed = {
-      ...initialData,
-      run: {
-        command: "deploy",
-        plan: "compose",
-        display: "Compose deployment",
-        exitCode: 0,
-        output: "Services are running",
-        steps: [
-          {
-            command: "compose-validate",
-            label: "Validate configuration",
-            display: "docker compose config --quiet",
-            exitCode: 0,
-            output: "",
-          },
-        ],
-      },
-    } satisfies OperationsData;
-    vi.mocked(fetch).mockResolvedValue({
-      ok: true,
-      json: async () => ({ success: true, data: completed }),
-    } as Response);
-
-    render(<ActionsManager domain="example.test" initialData={initialData} />);
-    fireEvent.click(screen.getByRole("button", { name: "Deploy now" }));
-
-    const dialog = await screen.findByRole("dialog", {
-      name: "Deploy this rootless Compose project?",
-    });
-    expect(fetch).not.toHaveBeenCalled();
-    fireEvent.click(
-      within(dialog).getByRole("button", { name: "Deploy project" }),
-    );
-
-    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
-    const [, request] = vi.mocked(fetch).mock.calls[0];
-    expect(JSON.parse(String(request?.body))).toEqual({
-      action: "deploy",
-      plan: "compose",
-    });
-    expect(await screen.findByText("Services are running")).toBeInTheDocument();
-    expect(screen.getAllByText("Validate configuration")).not.toHaveLength(0);
+  it("submits a persistent deployment job after reviewing current-file deployment", async () => {
+    vi.mocked(fetch).mockImplementation(async (_url, request) => ({ ok: true, json: async () => request?.method === "POST" ? { success: true, data: { id: "job-1", kind: "Deploy current files", status: "queued", createdAt: new Date().toISOString(), logs: [] } } : { success: true, data: { jobs: [] } } }) as Response);
+    render(<ActionsManager domain="example.test" initialData={dockerData(true)} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Deploy current files" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Deploy current files" }));
+    const dialog = screen.getByRole("dialog", { name: "Deploy current files?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Deploy" }));
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([, request]) => request?.method === "POST")).toBe(true));
+    const [url, request] = vi.mocked(fetch).mock.calls.find(([, request]) => request?.method === "POST")!;
+    expect(url).toBe("/api/sites/example.test/deployments");
+    expect(JSON.parse(String(request?.body))).toEqual({ source: "current" });
+    expect((request?.headers as Record<string, string>)["idempotency-key"]).toBeTruthy();
+    expect(await screen.findByText(/Deploy current files: queued/)).toBeInTheDocument();
   });
 
   it("requires confirmation before a destructive Compose action", async () => {
@@ -178,11 +147,12 @@ describe("ActionsManager", () => {
       <ActionsManager domain="example.test" initialData={dockerData(true)} />,
     );
 
+    screen.getByText("Advanced: Runtime & lifecycle").closest("details")!.open = true;
     fireEvent.click(screen.getByRole("button", { name: /Stop project/i }));
     const dialog = await screen.findByRole("dialog", {
       name: "Stop the entire Compose project?",
     });
-    expect(fetch).not.toHaveBeenCalled();
+    expect(vi.mocked(fetch).mock.calls.some(([, request]) => request?.method === "POST")).toBe(false);
     expect(
       within(dialog).getByText(/Named volumes are preserved/i),
     ).toBeInTheDocument();
@@ -207,7 +177,7 @@ describe("ActionsManager", () => {
     const initialData = normalizeOperationsData(raw, { typeOverride: "docker" });
     vi.mocked(fetch).mockResolvedValue({
       ok: true,
-      json: async () => ({ success: true, data: {} }),
+      json: async () => ({ success: true, data: { jobs: [] } }),
     } as Response);
 
     render(<ActionsManager domain="example.test" initialData={initialData} />);
@@ -225,8 +195,8 @@ describe("ActionsManager", () => {
     });
     fireEvent.click(within(dialog).getByRole("button", { name: "Save and recheck" }));
 
-    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
-    const [, request] = vi.mocked(fetch).mock.calls[0];
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([, request]) => request?.method === "POST")).toBe(true));
+    const [, request] = vi.mocked(fetch).mock.calls.find(([, request]) => request?.method === "POST")!;
     expect(JSON.parse(String(request?.body))).toEqual({
       action: "upsert",
       entries: [{ key: "HOST_DATA_DIR", value: "/home/site/data" }],

@@ -1207,6 +1207,9 @@ if [ -f "${PANEL_VHOST}" ]; then
   sed -i '/^[[:space:]]*server[[:space:]]*{/a\    proxy_request_buffering off; # panelavo-artifact-streaming' "${PANEL_VHOST}"
   sed -i '/^[[:space:]]*server[[:space:]]*{/a\    proxy_send_timeout 1900s; # panelavo-long-request-timeout' "${PANEL_VHOST}"
   sed -i '/^[[:space:]]*server[[:space:]]*{/a\    proxy_read_timeout 1900s; # panelavo-long-request-timeout' "${PANEL_VHOST}"
+  # Nested locations override server-level defaults. Update only existing
+  # proxy read/send timeout directives in this panel's own vhost.
+  sed -i -E 's/^([[:space:]]*)proxy_(read|send)_timeout[[:space:]]+[^;]+;/\1proxy_\2_timeout 1900s;/' "${PANEL_VHOST}"
   # CloudPanel's broad well-known location serves files directly and otherwise
   # prevents Next.js from answering MCP OAuth discovery. Keep ACME challenges
   # local while allowing every non-ACME well-known path to reach location /.

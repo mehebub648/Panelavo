@@ -39,16 +39,31 @@ export const deployHookOperationSchema = z
 export const deployHooksSchema = z.array(deployHookOperationSchema).max(10);
 export type DeployHookOperation = z.infer<typeof deployHookOperationSchema>;
 type Store = { sites: Record<string, DeployHookOperation[]> };
-const store = jsonStore<Store>("deploy-hooks.json", () => ({ sites: {} }));
+const store = jsonStore<Store>(
+  "deploy-hooks.json",
+  () => ({ sites: {} }),
+  (value) => {
+    const parsed = z
+      .object({ sites: z.record(deployHooksSchema) })
+      .parse(value);
+    return parsed;
+  },
+  true,
+);
 
 export async function getDeployHooks(domain: string) {
   return (await store.load()).sites[domain.toLowerCase()] ?? [];
 }
+let mutationQueue: Promise<unknown> = Promise.resolve();
 export async function setDeployHooks(domain: string, hooks: unknown) {
   const parsed = deployHooksSchema.parse(hooks);
-  const value = await store.load();
-  if (parsed.length) value.sites[domain.toLowerCase()] = parsed;
-  else delete value.sites[domain.toLowerCase()];
-  await store.save(value);
-  return parsed;
+  const pending = mutationQueue.then(async () => {
+    const value = await store.load();
+    if (parsed.length) value.sites[domain.toLowerCase()] = parsed;
+    else delete value.sites[domain.toLowerCase()];
+    await store.save(value);
+    return parsed;
+  });
+  mutationQueue = pending.catch(() => undefined);
+  return pending;
 }

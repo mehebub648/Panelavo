@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -28,4 +28,10 @@ describe("deploy hooks", () => {
       setDeployHooks("example.com", [{ command: "compose-down" }]),
     ).rejects.toThrow();
   });
+  it("does not treat an unreadable or corrupt saved recipe as empty", async () => {
+    await writeFile(join(directory, "deploy-hooks.json"), "{invalid");
+    await expect(getDeployHooks("example.com")).rejects.toThrow();
+    await expect(setDeployHooks("example.com", [])).rejects.toThrow();
+  });
+
 });

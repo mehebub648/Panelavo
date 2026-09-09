@@ -2,6 +2,7 @@
 
 import React, { useState } from "react";
 import { Button } from "./button";
+import { useDialogFocus } from "./use-dialog-focus";
 
 export function ConfirmDialog({
   title,
@@ -23,12 +24,19 @@ export function ConfirmDialog({
   variant?: "danger" | "default";
 }) {
   const [confirmation, setConfirmation] = useState("");
+  const dialogRef = useDialogFocus(onCancel);
   const confirmed =
     confirmationPhrase === undefined || confirmation === confirmationPhrase;
 
   return (
     <div className="animate-in fade-in fixed inset-0 z-[100] grid place-items-center bg-slate-950/40 p-4 duration-200">
-      <div className="animate-in zoom-in-95 w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl duration-200">
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        className="animate-in zoom-in-95 max-h-[90vh] w-full max-w-md overflow-auto rounded-2xl bg-white p-6 shadow-2xl duration-200"
+      >
         <h3 className="text-lg font-bold text-slate-900">{title}</h3>
         <div className="mt-2 text-sm text-slate-500">{message}</div>
         {confirmationPhrase && (

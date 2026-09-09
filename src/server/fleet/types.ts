@@ -140,6 +140,12 @@ export type FleetActionName =
   | "site.dns.manage"
   | "site.uptime.get"
   | "site.uptime.save"
+  | "site.deployment-settings.get"
+  | "site.deployment-settings.save"
+  | "site.deployments.list"
+  | "site.deployments.get"
+  | "site.deployments.start"
+  | "site.deployment-tokens.manage"
   | "site.deploy-hooks.get"
   | "site.deploy-hooks.save"
   | "site.services.list"
@@ -201,6 +207,12 @@ export const FLEET_ACTION_NAMES = [
   "site.dns.manage",
   "site.uptime.get",
   "site.uptime.save",
+  "site.deployment-settings.get",
+  "site.deployment-settings.save",
+  "site.deployments.list",
+  "site.deployments.get",
+  "site.deployments.start",
+  "site.deployment-tokens.manage",
   "site.deploy-hooks.get",
   "site.deploy-hooks.save",
   "site.services.list",

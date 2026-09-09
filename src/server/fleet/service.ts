@@ -667,7 +667,8 @@ export function fleetCapabilityForAction(
   if (
     action === "site.get" ||
     action.endsWith(".get") ||
-    action === "site.services.list"
+    action === "site.services.list" ||
+    action === "site.deployments.list"
   )
     return "site-sections.read";
   if (
@@ -701,6 +702,15 @@ export async function callFleetNode(
   input: unknown,
   hubActor: { id: string; username: string },
 ) {
+  if (
+    action.startsWith("site.deployment") &&
+    connection.node.brokerProtocolVersion < 26
+  )
+    throw new AppError(
+      "INVALID_REQUEST",
+      "Update this connected server to use deployment jobs and automatic deployment.",
+      409,
+    );
   const capability = fleetCapabilityForAction(action);
   if (capability && !connection.node.capabilities.includes(capability))
     throw new AppError(

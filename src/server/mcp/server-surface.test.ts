@@ -311,6 +311,31 @@ describe("MCP role-aware tool surface", () => {
     );
   });
 
+  it("writes new and replacement text through the create-or-replace file operation", async () => {
+    const client = await connect(createPanelavoMcpServer(actor("admin")));
+    connected.push(client);
+    for (const content of ["", "First line\nCafé বাংলা", "Replacement\n"]) {
+      const result = await client.callTool("panelavo_write_file", {
+        domain: "site.example.test",
+        path: "htdocs/site",
+        name: "notes.txt",
+        content,
+      });
+      expect(result.isError).not.toBe(true);
+      expect(mocks.manageSiteSectionForActor).toHaveBeenLastCalledWith(
+        expect.anything(),
+        "site.example.test",
+        "file-manager",
+        {
+          action: "upload",
+          path: "htdocs/site",
+          name: "notes.txt",
+          content: Buffer.from(content, "utf8").toString("base64"),
+        },
+      );
+    }
+  });
+
   it("rechecks website access before direct tools execute", async () => {
     const client = await connect(createPanelavoMcpServer(actor("admin")));
     connected.push(client);

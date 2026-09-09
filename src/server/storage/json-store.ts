@@ -20,6 +20,7 @@ export function jsonStore<T>(
   filename: string,
   fallback: () => T,
   normalize: (value: unknown) => T = (value) => value as T,
+  strict = false,
 ): JsonStore<T> {
   const file = () => join(dataDirectory(), filename);
   let saveQueue: Promise<unknown> = Promise.resolve();
@@ -28,7 +29,8 @@ export function jsonStore<T>(
     async load() {
       try {
         return normalize(JSON.parse(await readFile(file(), "utf8")));
-      } catch {
+      } catch (error) {
+        if (strict && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         return fallback();
       }
     },

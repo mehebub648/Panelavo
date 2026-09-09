@@ -32,7 +32,7 @@ use App\Site\Updater\StaticSite as StaticSiteUpdater;
 use Symfony\Component\Dotenv\Dotenv;
 
 const CLOUDPANEL_ROOT = '/home/clp/htdocs/app/files';
-const PANELAVO_BROKER_PROTOCOL_VERSION = 24;
+const PANELAVO_BROKER_PROTOCOL_VERSION = 26;
 const PANELAVO_BROKER_MAX_INPUT_BYTES = 100663296;
 const PANELAVO_ROOTLESS_MIGRATION_ROOT = '/var/lib/panelavo/rootless-migrations';
 const PANELAVO_ROOTLESS_MIGRATION_TTL = 86400;
@@ -785,13 +785,13 @@ function pathIsContained(string $candidate, string $root): bool
 //   #panel:block:start ... #panel:block:end
 // ACME challenge requests stay reachable while blocking, so certificates for
 // the system domain keep renewing.
-function applyDomainConfig(string $template, array $aliases, string $block, string $systemDomain, string $redirectTo): string
+function applyDomainConfig(string $template, array $aliases, string $block, string $systemDomain, string $redirectTo, array $wwwRedirects = []): string
 {
     $stripped = [];
     $skipping = false;
     foreach (preg_split('/\R/', $template) as $line) {
-        if (str_contains($line, '#panel:block:start')) { $skipping = true; continue; }
-        if (str_contains($line, '#panel:block:end')) { $skipping = false; continue; }
+        if (str_contains($line, '#panel:block:start') || str_contains($line, '#panel:www:start')) { $skipping = true; continue; }
+        if (str_contains($line, '#panel:block:end') || str_contains($line, '#panel:www:end')) { $skipping = false; continue; }
         if ($skipping) continue;
         if (preg_match('/^(\s*)server_name\s+[^;]*;\s*#panel:orig=(.*)$/', $line, $m)) {
             $line = $m[1] . 'server_name ' . trim($m[2]) . ';';
@@ -809,6 +809,16 @@ function applyDomainConfig(string $template, array $aliases, string $block, stri
         $result[] = $aliases
             ? $indent . 'server_name ' . $orig . ' ' . implode(' ', $aliases) . '; #panel:orig=' . $orig
             : $line;
+        if ($wwwRedirects) {
+            $result[] = $indent . '#panel:www:start';
+            foreach ($wwwRedirects as $source) {
+                $result[] = $indent . 'set $panel_www_redirect "";';
+                $result[] = $indent . 'if ($host = "' . $source . '") { set $panel_www_redirect "1"; }';
+                $result[] = $indent . 'if ($request_uri ~ "^/\.well-known/acme-challenge/") { set $panel_www_redirect ""; }';
+                $result[] = $indent . 'if ($panel_www_redirect = "1") { return 301 https://www.' . $source . '$request_uri; }';
+            }
+            $result[] = $indent . '#panel:www:end';
+        }
         if ($block !== 'none') {
             $action = $block === 'redirect' && $redirectTo !== ''
                 ? 'return 301 https://' . $redirectTo . '$request_uri;'
@@ -2218,6 +2228,14 @@ function operationsState(Site $site, User $user): array
         $path = findSiteTool($home, $binary);
         $tools[$id] = ['id' => $id, 'label' => $label, 'available' => $path !== null];
     }
+    $pm2ProcessNames = [];
+    if ($ecosystem === null && $composeFile === null && !empty($package['scripts']['start']) && $tools['pm2']['available'] && is_dir($root)) {
+        $processResult = runSiteCommand($site, ['pm2', 'jlist'], 20);
+        preg_match('/(\[(?:\{.*\}|\s*)\])\s*$/s', $processResult['stdout'], $processMatch);
+        $processList = isset($processMatch[1]) ? json_decode($processMatch[1], true) : null;
+        if ($processResult['code'] !== 0 || !is_array($processList)) respond(['ok' => false, 'code' => 'ACTION_UNAVAILABLE', 'message' => 'The application process list could not be read. Check PM2 before deploying.']);
+        $pm2ProcessNames = array_values(array_filter(array_column($processList, 'name'), 'is_string'));
+    }
     $nodeBin = nodeBinPath($home);
     if ($nodeBin && preg_match('#/node/v?([0-9.]+)/bin$#', $nodeBin, $match)) $tools['node']['version'] = $match[1];
     $pythonManifest = is_file($root . '/requirements.txt') || is_file($root . '/pyproject.toml') || is_file($root . '/Pipfile');
@@ -2229,7 +2247,9 @@ function operationsState(Site $site, User $user): array
         'type' => $site->getType(),
         'path' => $root,
         'framework' => detectFramework($root, $package),
+        'domain' => $site->getDomainName(),
         'processName' => preg_replace('/[^a-zA-Z0-9._-]/', '-', $site->getDomainName()),
+        'pm2ProcessNames' => $pm2ProcessNames,
         'reverseProxyUrl' => $site->getReverseProxyUrl(),
         'expectedPort' => $port['expected'],
         'port' => $port,
@@ -2305,6 +2325,8 @@ function actionsSection(Site $site, User $user): array
         ? parseEnvContent((string) @file_get_contents($dotenvPath))
         : [];
     $runningEnvSets = [];
+    $configuredEnv = $dotenv;
+    if (empty($state['hasCompose']) && !empty($state['expectedPort']) && array_key_exists('PORT', $configuredEnv)) $configuredEnv['PORT'] = (string) $state['expectedPort'];
 
     $processes = [];
     if ($state['pm2Available'] && is_dir($state['path'])) {
@@ -2314,6 +2336,7 @@ function actionsSection(Site $site, User $user): array
         foreach (is_array($list) ? $list : [] as $proc) {
             if (!is_array($proc)) continue;
             $env = is_array($proc['pm2_env'] ?? null) ? $proc['pm2_env'] : [];
+            if (!pathIsContained((string) ($env['pm_cwd'] ?? ''), $state['path']) && (string) ($proc['name'] ?? '') !== $state['processName']) continue;
             $status = (string) ($env['status'] ?? 'unknown');
             $uptimeMs = is_numeric($env['pm_uptime'] ?? null) ? (int) $env['pm_uptime'] : 0;
             $processes[] = [
@@ -2343,6 +2366,11 @@ function actionsSection(Site $site, User $user): array
     // health, and published ports, plus the entry service's real environment.
     $containers = [];
     $compose = $state['compose'] ?? null;
+    if (is_array($compose)) {
+        $configuredEnv = (array) ($compose['_runtimeConfig']['services'][$compose['entryService'] ?? '']['environment'] ?? []);
+        $configuredEnv = array_filter($configuredEnv, static fn($value) => is_scalar($value));
+        $runningEnvSets = [];
+    }
     if (is_array($compose) && !empty($compose['daemonAvailable']) && !empty($compose['pluginAvailable']) && !empty($compose['file'])) {
         $ps = runRootlessDockerCommand($site, ['docker', 'compose', '-f', $compose['file'], '-p', $state['composeProject'], 'ps', '-a', '--format', 'json'], 20);
         if ($ps['code'] === 0) {
@@ -2375,7 +2403,7 @@ function actionsSection(Site $site, User $user): array
                     $entryContainerId = (string) ($row['ID'] ?? '');
                 }
             }
-            if ($dotenv && $entryContainerId !== null && preg_match('/^[0-9a-f]{12,64}$/i', $entryContainerId)) {
+            if ($configuredEnv && $entryContainerId !== null && preg_match('/^[0-9a-f]{12,64}$/i', $entryContainerId)) {
                 $inspect = runRootlessDockerCommand($site, ['docker', 'inspect', '--format', '{{json .Config.Env}}', $entryContainerId], 15);
                 $containerEnv = $inspect['code'] === 0 ? json_decode(trim($inspect['stdout']), true) : null;
                 if (is_array($containerEnv)) {
@@ -2393,7 +2421,7 @@ function actionsSection(Site $site, User $user): array
         'containers' => $containers,
         'listeners' => $state['listeners'],
         'envFile' => is_file($dotenvPath) ? '.env' : null,
-        'env' => $runningEnvSets ? envDriftForRunning($dotenv, $runningEnvSets) : [],
+        'env' => $runningEnvSets ? envDriftForRunning($configuredEnv, $runningEnvSets) : [],
         'checkedAt' => gmdate(DATE_ATOM),
     ];
     if (is_array($state['compose'] ?? null)) $state['migration'] = migrationStatus($site, $state['compose']);
@@ -2579,13 +2607,15 @@ function resolveOperationStep(array $state, string $command, array $operation): 
         case 'compose-validate':
             return $composeStep('Validate configuration', ['config', '--quiet'], 60, false, false);
         case 'compose-up':
-            return $composeStep('Start services', ['up', '-d', '--remove-orphans'], 900);
+            return $composeStep('Start services', ['up', '-d', '--wait', '--wait-timeout', '90', '--remove-orphans'], 900);
         case 'compose-deploy':
-            return $composeStep('Build and start services', ['up', '-d', '--build', '--remove-orphans'], 900);
+            return $composeStep('Build and start services', ['up', '-d', '--build', '--wait', '--wait-timeout', '90', '--remove-orphans'], 900);
         case 'compose-restart':
             return $composeStep('Restart services', ['restart'], 300);
         case 'compose-pull':
             return $composeStep('Pull service images', ['pull', '--ignore-buildable'], 900);
+        case 'compose-wait':
+            return $composeStep('Wait for healthy services', ['ps', '-a', '--format', 'json'], 10) + ['waitForServices' => $state['compose']['services'] ?? [], 'entryService' => $state['compose']['entryService'] ?? '', 'serviceConfiguration' => $state['compose']['_runtimeConfig']['services'] ?? []];
         case 'compose-ps':
             return $composeStep('Verify service state', ['ps'], 60);
         case 'compose-logs':
@@ -2599,7 +2629,7 @@ function resolveOperationStep(array $state, string $command, array $operation): 
             $require($available('curl'), 'TOOL_UNAVAILABLE');
             return $step(
                 'Verify configured upstream port',
-                ['curl', '--silent', '--show-error', '--output', '/dev/null', '--retry', '12', '--retry-delay', '5', '--retry-all-errors', '--connect-timeout', '3', '--max-time', '90', '--write-out', 'HTTP %{http_code} from 127.0.0.1:' . $expected . "\n", 'http://127.0.0.1:' . $expected . '/'],
+                ['curl', '--fail', '--silent', '--show-error', '--output', '/dev/null', '--retry', '12', '--retry-delay', '5', '--retry-all-errors', '--connect-timeout', '3', '--max-time', '10', '--retry-max-time', '90', ...(empty($state['domain']) ? [] : ['--header', 'Host: ' . $state['domain']]), '--write-out', 'HTTP %{http_code} from 127.0.0.1:' . $expected . "\n", 'http://127.0.0.1:' . $expected . ($state['healthPath'] ?? '/')],
                 120,
             ) + ['verifyOwnedPort' => $expected];
         case 'pm2-start':
@@ -2609,6 +2639,7 @@ function resolveOperationStep(array $state, string $command, array $operation): 
             }
             $require($state['hasStartScript'] && is_array($manager) && empty($manager['ambiguous']));
             $require($available($manager['id']), 'TOOL_UNAVAILABLE');
+            if (in_array($state['processName'], ($state['pm2ProcessNames'] ?? []), true)) return $withRuntimeEnv($step('Reload application', ['pm2', 'restart', $state['processName'], '--update-env'], 300));
             return $withRuntimeEnv($step('Start or reload application', ['pm2', 'start', $manager['id'], '--name', $state['processName'], '--', 'start'], 300));
         case 'pm2-restart':
             $require($available('pm2'), 'TOOL_UNAVAILABLE');
@@ -2641,7 +2672,7 @@ function resolveOperationStep(array $state, string $command, array $operation): 
             $url = (string) $state['reverseProxyUrl'];
             $require(preg_match('#^https?://\S+$#', $url) === 1);
             $require($available('curl'), 'TOOL_UNAVAILABLE');
-            return $step('Check upstream', ['curl', '-sS', '-o', '/dev/null', '--max-time', '10', '-w', 'HTTP %{http_code} in %{time_total}s\n', $url], 30);
+            return $step('Check upstream', ['curl', '--fail', '-sS', '-o', '/dev/null', '--max-time', '10', '-w', 'HTTP %{http_code} in %{time_total}s\n', $url], 30);
     }
     respond(['ok' => false, 'code' => 'INVALID_ACTION']);
 }
@@ -2666,7 +2697,7 @@ function resolveDeploymentPlan(Site $site, array $state, string $plan): array
             return $steps(array_merge([
                 ['compose-validate', 'Validate configuration', null],
                 ['compose-deploy', 'Build and start services', null],
-                ['compose-ps', 'Verify service state', null],
+                ['compose-wait', 'Wait for healthy services', null],
             ], !empty($state['expectedPort']) ? [
                 ['compose-port-verify', 'Verify website entry port', null],
             ] : []));
@@ -2726,7 +2757,8 @@ function resolveDeploymentPlan(Site $site, array $state, string $plan): array
 function executeOperationSteps(Site $site, array $steps): array
 {
     $results = [];
-    foreach ($steps as $stepDefinition) {
+    foreach ($steps as $stepIndex => $stepDefinition) {
+        deploymentEvent(['type' => 'step', 'index' => $stepIndex, 'label' => $stepDefinition['label'], 'status' => 'running']);
         $args = $stepDefinition['args'];
         $displayArgs = $args;
         $temporaryCompose = null;
@@ -2758,7 +2790,17 @@ function executeOperationSteps(Site $site, array $steps): array
             $displayArgs = array_map(static fn(string $arg): string => $arg === '@PANELAVO_COMPOSE_CONFIG@' ? '[ephemeral port-mapped config]' : $arg, $displayArgs);
         }
         try {
-            if (isset($stepDefinition['verifyOwnedPort'])) {
+            if (isset($stepDefinition['waitForServices'])) {
+                $deadline = microtime(true) + 90;
+                do {
+                    $result = runSiteCommand($site, $args, 10, false, (array) ($stepDefinition['env'] ?? []));
+                    if ($result['code'] !== 0) break;
+                    $ready = composeDeploymentReady($result['stdout'], (array) $stepDefinition['waitForServices'], (array) ($stepDefinition['serviceConfiguration'] ?? []), (string) ($stepDefinition['entryService'] ?? ''));
+                    if ($ready) break;
+                    usleep(2000000);
+                } while (microtime(true) < $deadline);
+                if (empty($ready)) { $result['code'] = 1; $result['stderr'] = 'Required services did not become running and healthy within 90 seconds. Review container logs and health checks.'; }
+            } elseif (isset($stepDefinition['verifyOwnedPort'])) {
                 $expectedPort = (int) $stepDefinition['verifyOwnedPort'];
                 $capability = null;
                 for ($attempt = 0; $attempt < 12; $attempt++) {
@@ -2782,12 +2824,14 @@ function executeOperationSteps(Site $site, array $steps): array
         } finally {
             if ($temporaryCompose !== null) @unlink($temporaryCompose);
         }
+        if ($result['code'] === 0 && in_array($stepDefinition['command'], ['health-check', 'runtime-port-verify', 'compose-port-verify', 'upstream-check'], true) && !deploymentHttpSucceeded($result['stdout'])) { $result['code'] = 1; $result['stderr'] = 'The health check did not return HTTP 200–399.'; }
         $results[] = [
             'command' => $stepDefinition['command'], 'label' => $stepDefinition['label'],
             'display' => implode(' ', $displayArgs), 'exitCode' => $result['code'],
             'timedOut' => $result['timedOut'],
-            'output' => trim($result['stdout'] . ($result['stderr'] !== '' ? "\n" . $result['stderr'] : '')),
+            'output' => redactDeploymentText(trim($result['stdout'] . ($result['stderr'] !== '' ? "\n" . $result['stderr'] : ''))),
         ];
+        deploymentEvent(['type' => 'step', 'index' => $stepIndex, 'label' => $stepDefinition['label'], 'status' => $result['code'] === 0 ? 'succeeded' : 'failed', 'exitCode' => $result['code'], 'output' => substr(redactDeploymentText((string) end($results)['output']), 0, 8000), 'truncated' => strlen((string) end($results)['output']) > 8000]);
         if ($result['code'] !== 0) break;
     }
     return $results;
@@ -2810,7 +2854,7 @@ function runFixStep(Site $site, array &$results, string $command, string $label,
         'display' => implode(' ', $args),
         'exitCode' => $result['code'],
         'timedOut' => $result['timedOut'],
-        'output' => trim($result['stdout'] . ($result['stderr'] !== '' ? "\n" . $result['stderr'] : '')),
+        'output' => redactDeploymentText(trim($result['stdout'] . ($result['stderr'] !== '' ? "\n" . $result['stderr'] : ''))),
     ];
     return $result['code'] === 0;
 }
@@ -5522,8 +5566,8 @@ function runGit(Site $site, array $args, bool $allowFailure = false): array
     $process = proc_open($command, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, $cwd);
     if (!is_resource($process)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
     fclose($pipes[0]); $stdout = stream_get_contents($pipes[1]); fclose($pipes[1]); $stderr = stream_get_contents($pipes[2]); fclose($pipes[2]); $code = proc_close($process);
-    if ($code !== 0 && !$allowFailure) respond(['ok' => false, 'code' => 'GIT_FAILED', 'message' => trim($stderr ?: $stdout)]);
-    return ['code' => $code, 'stdout' => substr($stdout ?: '', 0, 500000), 'stderr' => substr($stderr ?: '', 0, 50000)];
+    if ($code !== 0 && !$allowFailure) respond(['ok' => false, 'code' => 'GIT_FAILED', 'message' => redactDeploymentText(trim($stderr ?: $stdout))]);
+    return ['code' => $code, 'stdout' => substr($stdout ?: '', 0, 500000), 'stderr' => redactDeploymentText(substr($stderr ?: '', 0, 50000))];
 }
 
 function freshSiteScaffoldInventory(string $root, array $ignored = []): ?array
@@ -5607,7 +5651,7 @@ function loadFreshSiteScaffold(Site $site, string $root, array $ignored = []): ?
 
 function gitChanges(Site $site): array
 {
-    $raw = runGit($site, ['status', '--porcelain=v1', '-z', '--untracked-files=all'], true)['stdout'];
+    $raw = runGit($site, ['status', '--porcelain=v1', '-z', '--untracked-files=all'])['stdout'];
     if ($raw === '') return [];
     $records = explode("\0", $raw);
     $changes = [];
@@ -5828,17 +5872,174 @@ function gitFileDiff(Site $site, array $change): string
     return $cached . $working;
 }
 
+
+function deploymentHttpSucceeded(string $output): bool
+{
+    preg_match_all('/HTTP (\d{3})/', $output, $matches);
+    $status = (int) (end($matches[1]) ?: 0);
+    return $status >= 200 && $status < 400;
+}
+
+function composeDeploymentReady(string $output, array $services, array $configuration, string $entry): bool
+{
+    $rows = json_decode(trim($output), true);
+    if (!is_array($rows) || !array_is_list($rows)) {
+        $rows = [];
+        foreach (preg_split('/\R/', trim($output)) ?: [] as $line) {
+            $row = json_decode($line, true);
+            if (is_array($row)) $rows[] = $row;
+        }
+    }
+    $completed = [];
+    foreach ($configuration as $service) foreach ((array) ($service['depends_on'] ?? []) as $name => $dependency) {
+        if (is_array($dependency) && ($dependency['condition'] ?? '') === 'service_completed_successfully') $completed[] = $name;
+    }
+    foreach ($services as $service) {
+        if (!empty($configuration[$service]['profiles'])) continue;
+        $instances = array_values(array_filter($rows, static fn($row): bool => is_array($row) && ($row['Service'] ?? '') === $service));
+        if (!$instances) return false;
+        foreach ($instances as $row) {
+            if ($service !== $entry && in_array($service, $completed, true) && ($row['State'] ?? '') === 'exited' && ($row['ExitCode'] ?? -1) === 0) continue;
+            if (($row['State'] ?? '') !== 'running' || !in_array($row['Health'] ?? '', ['', 'healthy'], true)) return false;
+        }
+    }
+    return count($services) > 0;
+}
+
+function redactDeploymentText(string $value): string
+{
+    $value = preg_replace('#\b(Bearer\s+)[A-Za-z0-9._~+/-]+=*#i', '$1[redacted]', $value) ?? '';
+    $value = preg_replace('#(https?://)[^\s/]*@#i', '$1[redacted]@', $value) ?? '';
+    return preg_replace('/\b((?:password|passwd|token|secret|api[_-]?key|authorization)\s*[:=]\s*)([^\s,;]+)/i', '$1[redacted]', $value) ?? '';
+}
+
+function deploymentEvent(array $event): void
+{
+    if (empty($GLOBALS['panelavoDeploymentEvents'])) return;
+    fwrite(STDERR, 'PANELAVO_EVENT ' . json_encode($event, JSON_INVALID_UTF8_SUBSTITUTE | JSON_UNESCAPED_SLASHES) . "\n");
+    fflush(STDERR);
+}
+
+function deploymentSiteLock(Site $site)
+{
+    $lock = @fopen('/var/lock/panelavo-operations-' . $site->getUser() . '.lock', 'c');
+    if (!$lock || !flock($lock, LOCK_EX | LOCK_NB)) respond(['ok' => false, 'code' => 'OPERATION_BUSY']);
+    return $lock;
+}
+
+function validateDeploymentBranch(Site $site, string $branch): void
+{
+    if (!preg_match('#^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$#', $branch) || str_contains($branch, '..') || str_contains($branch, '//') || str_ends_with($branch, '/') || str_ends_with($branch, '.') || preg_match('#(?:^|/)\.|\.lock(?:/|$)#', $branch) || (is_dir(siteRootPath($site)) && runGit($site, ['check-ref-format', 'refs/heads/' . $branch], true)['code'] !== 0)) {
+        respond(['ok' => false, 'code' => 'INVALID_REQUEST', 'message' => 'Choose a valid branch name.']);
+    }
+}
+
+function updateDeploymentSource(Site $site, string $branch, ?string $expected): array
+{
+    if (gitChanges($site)) respond(['ok' => false, 'code' => 'GIT_CONFLICT', 'message' => 'Local changes or untracked files must be committed, moved, or explicitly discarded before updating. No files were stashed.']);
+    $current = trim(runGit($site, ['branch', '--show-current'])['stdout']);
+    if ($branch === '') $branch = $current;
+    validateDeploymentBranch($site, $branch);
+    if ($current !== $branch) respond(['ok' => false, 'code' => 'GIT_CONFLICT', 'message' => 'Check out the configured deployment branch before deploying. Detached checkouts cannot deploy latest changes.']);
+    deploymentEvent(['type' => 'source', 'label' => 'Update source files', 'status' => 'running']);
+    runGit($site, ['fetch', '--no-tags', 'origin', 'refs/heads/' . $branch]);
+    $commit = trim(runGit($site, ['rev-parse', '--verify', 'FETCH_HEAD^{commit}'])['stdout']);
+    if ($expected !== null && $commit !== $expected) respond(['ok' => false, 'code' => 'GIT_CONFLICT', 'message' => 'The tested commit is no longer the deployment branch tip. Run checks on the latest commit.']);
+    if (runGit($site, ['merge-base', '--is-ancestor', 'HEAD', $commit], true)['code'] !== 0) respond(['ok' => false, 'code' => 'GIT_CONFLICT', 'message' => 'The local branch has diverged. Resolve it in Advanced Git tools before deploying.']);
+    runGit($site, ['merge', '--ff-only', '--no-edit', $commit]);
+    deploymentEvent(['type' => 'source', 'label' => 'Source files updated', 'status' => 'succeeded', 'commit' => $commit]);
+    return ['status' => 'updated', 'commit' => $commit, 'branch' => $branch, 'localChanges' => false];
+}
+
+function resolveCustomDeployment(array $state, array $operations): array
+{
+    if (count($operations) > 10) invalidBrokerRequest();
+    $allowed = ['node-install','node-run','npm-install','npm-ci','npm-run','composer-install','composer-install-production','composer-validate','python-create-venv','python-install','pip-install','artisan-optimize','artisan-optimize-clear','artisan-migrate','artisan-storage-link','artisan-queue-restart','symfony-cache-clear','wp-cache-flush','wp-cron-run','django-check-deploy','django-migrate','django-collectstatic','compose-validate','compose-pull','compose-deploy','compose-up','compose-restart','compose-ps','pm2-start','pm2-restart','pm2-restart-one','pm2-save','upstream-check'];
+    $steps = [];
+    foreach ($operations as $operation) {
+        if (!is_array($operation) || array_diff(array_keys($operation), ['command','script','name']) || !in_array($operation['command'] ?? '', $allowed, true)) invalidBrokerRequest();
+        $command = $operation['command'];
+        $step = resolveOperationStep($state, $command, $operation);
+        if (!empty($step['asRoot'])) respond(['ok' => false, 'code' => 'FORBIDDEN']);
+        $steps[] = $step;
+        if ($command === 'python-create-venv') {
+            $state['hasPythonVenv'] = true;
+            $state['venvPython'] = $state['path'] . '/.venv/bin/python';
+        }
+    }
+    return $steps;
+}
+
+function deploymentHealthStep(Site $site, array $state, string $path): array
+{
+    if (!preg_match('#^/(?!/)[A-Za-z0-9/._~!$&\'()*+,;=:@%?-]*$#', $path) || strlen($path) > 512 || preg_match('/%(?:0[0-9a-f]|1[0-9a-f]|7f)/i', $path)) invalidBrokerRequest();
+    $state['healthPath'] = $path;
+    if (!empty($state['expectedPort'])) return resolveOperationStep($state, 'runtime-port-verify', []);
+    if (empty($state['tools']['curl']['available'])) respond(['ok' => false, 'code' => 'TOOL_UNAVAILABLE']);
+    return ['command' => 'health-check', 'label' => 'Check website response', 'args' => ['curl', '--fail', '--silent', '--show-error', '--output', '/dev/null', '--connect-timeout', '3', '--max-time', '10', '--retry', '12', '--retry-all-errors', '--retry-delay', '5', '--retry-max-time', '90', '--resolve', $site->getDomainName() . ':443:127.0.0.1', '--write-out', 'HTTP %{http_code}', 'https://' . $site->getDomainName() . $path], 'timeout' => 120, 'asRoot' => false];
+}
+
+function deploymentRun(Site $site, array $steps): array
+{
+    $started = gmdate(DATE_ATOM);
+    $results = executeOperationSteps($site, $steps);
+    $last = end($results) ?: ['exitCode' => 1, 'timedOut' => false];
+    return ['exitCode' => $last['exitCode'], 'timedOut' => $last['timedOut'], 'startedAt' => $started, 'finishedAt' => gmdate(DATE_ATOM), 'steps' => $results];
+}
+
+function manageDeployment(Site $site, User $user, array $operation): array
+{
+    $lock = deploymentSiteLock($site);
+    try {
+        $GLOBALS['panelavoDeploymentEvents'] = $operation['action'] === 'deployment';
+        $source = ['status' => 'current'];
+        if (($operation['action'] ?? '') === 'deployment' && ($operation['source'] ?? '') === 'latest') {
+            $expected = $operation['expectedCommit'] ?? null;
+            if ($expected !== null && (!is_string($expected) || !preg_match('/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/', $expected))) invalidBrokerRequest();
+            $source = updateDeploymentSource($site, (string) ($operation['branch'] ?? ''), $expected);
+        } elseif (is_dir(siteRootPath($site) . '/.git') || is_file(siteRootPath($site) . '/.git')) {
+            $source += ['commit' => trim(runGit($site, ['rev-parse', '--verify', 'HEAD'], true)['stdout']), 'localChanges' => gitChanges($site) !== []];
+        }
+        $state = operationsState($site, $user);
+        $health = deploymentHealthStep($site, $state, (string) ($operation['healthPath'] ?? '/'));
+        $state['healthPath'] = (string) ($operation['healthPath'] ?? '/');
+        $custom = $operation['deployOperations'] ?? [];
+        if (!is_array($custom)) invalidBrokerRequest();
+        if ($custom) $steps = resolveCustomDeployment($state, $custom);
+        else {
+            $plan = !empty($state['hasCompose']) ? 'compose' : match ($site->getType()) {
+                Site::TYPE_NODEJS => 'node', Site::TYPE_PYTHON => 'python',
+                Site::TYPE_STATIC => !empty($state['hasBuildScript']) ? 'static-build' : null,
+                Site::TYPE_PHP => (!empty($state['hasComposer']) || !empty($state['hasPackageJson'])) ? 'php' : null,
+                default => null,
+            };
+            $steps = $plan ? resolveDeploymentPlan($site, $state, $plan) : [];
+        }
+        if (!empty($state['hasCompose']) && !in_array('compose-wait', array_column($steps, 'command'), true)) $steps[] = resolveOperationStep($state, 'compose-wait', []);
+        // Always finish with the configured health path, including custom recipes.
+        $steps = array_values(array_filter($steps, static fn(array $step): bool => !in_array($step['command'], ['runtime-port-verify','compose-port-verify'], true)));
+        $steps[] = $health;
+        if ($operation['action'] === 'validate-deployment') return ['steps' => array_map(static fn(array $step): array => ['label' => $step['label'], 'command' => $step['command']], $steps)];
+        return ['source' => $source, 'deployment' => deploymentRun($site, $steps)];
+    } finally {
+        flock($lock, LOCK_UN); fclose($lock);
+        $GLOBALS['panelavoDeploymentEvents'] = false;
+    }
+}
+
 function gitSection(Site $site, ?array $selectedChange = null, ?string $notice = null): array
 {
     $root = siteRootPath($site);
-    $repo = is_dir($root . '/.git');
+    $repo = is_dir($root . '/.git') || is_file($root . '/.git');
     if (!$repo) return ['isRepository' => false, 'path' => $root];
     $branch = trim(runGit($site, ['branch', '--show-current'], true)['stdout']);
-    $head = trim(runGit($site, ['rev-parse', '--short', 'HEAD'], true)['stdout']);
-    $remotesRaw = trim(runGit($site, ['remote', '-v'], true)['stdout']);
+    $head = trim(runGit($site, ['rev-parse', '--verify', 'HEAD'], true)['stdout']);
+    $remotesRaw = redactDeploymentText(trim(runGit($site, ['remote', '-v'], true)['stdout']));
+    $upstream = trim(runGit($site, ['rev-parse', '--abbrev-ref', '@{upstream}'], true)['stdout']);
+    $counts = $upstream ? preg_split('/\s+/', trim(runGit($site, ['rev-list', '--left-right', '--count', 'HEAD...@{upstream}'], true)['stdout'])) : [];
     $branchesRaw = trim(runGit($site, ['branch', '--format=%(refname:short)'], true)['stdout']);
     $logRaw = trim(runGit($site, ['log', '-20', '--pretty=format:%h%x09%an%x09%ar%x09%s'], true)['stdout']);
-    $data = ['isRepository' => true, 'path' => $root, 'branch' => $branch, 'head' => $head,
+    $data = ['isRepository' => true, 'path' => $root, 'branch' => $branch, 'head' => $head, 'upstream' => $upstream, 'ahead' => (int) ($counts[0] ?? 0), 'behind' => (int) ($counts[1] ?? 0),
         'remotes' => array_values(array_filter(array_map(fn($line) => preg_split('/\s+/', $line), explode("\n", $remotesRaw)))),
         'branches' => $branchesRaw === '' ? [] : explode("\n", $branchesRaw),
         'changes' => gitChanges($site),
@@ -8514,7 +8715,8 @@ try {
 
             if ($section === 'git') {
                 $ref = (string) ($operation['branch'] ?? '');
-                if ($ref !== '' && !preg_match('/^[A-Za-z0-9._\/-]{1,200}$/', $ref)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
+                if ($ref !== '') validateDeploymentBranch($site, $ref);
+                if ($action !== 'diff') $gitLock = deploymentSiteLock($site);
                 if ($action === 'clone') {
                     $url = trim((string) ($operation['url'] ?? '')); if (!preg_match('#^(https://|git@)[^\s]+$#', $url)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
                     // Clone into Panelavo's configured application root,
@@ -8546,7 +8748,7 @@ try {
                     ])), true);
                     if ($clone['code'] !== 0) {
                         if (is_dir($temporaryPath)) deleteTree($temporaryPath);
-                        respond(['ok' => false, 'code' => 'GIT_FAILED', 'message' => trim($clone['stderr'] ?: $clone['stdout'])]);
+                        respond(['ok' => false, 'code' => 'GIT_FAILED', 'message' => redactDeploymentText(trim($clone['stderr'] ?: $clone['stdout']))]);
                     }
 
                     $clonedEntries = array_values(array_diff(scandir($temporaryPath) ?: [], ['.', '..']));
@@ -8641,66 +8843,15 @@ try {
                     runGit($site, ['remote', 'remove', 'origin'], true); runGit($site, ['remote', 'add', 'origin', $url]);
                 } elseif ($action === 'fetch') runGit($site, ['fetch', '--prune', 'origin']);
                 elseif ($action === 'pull') {
-                    $hookOperations = $operation['deployOperations'] ?? [];
-                    if (!is_array($hookOperations) || count($hookOperations) > 10) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
-                    $allowedHooks = [
-                        'node-install', 'node-run', 'npm-install', 'npm-ci', 'npm-run',
-                        'composer-install', 'composer-install-production', 'composer-validate',
-                        'python-create-venv', 'python-install', 'pip-install',
-                        'artisan-optimize', 'artisan-optimize-clear', 'artisan-migrate', 'artisan-storage-link', 'artisan-queue-restart',
-                        'symfony-cache-clear', 'wp-cache-flush', 'wp-cron-run', 'django-check-deploy', 'django-migrate', 'django-collectstatic',
-                        'compose-validate', 'compose-pull', 'compose-deploy', 'compose-up', 'compose-restart', 'compose-ps',
-                        'pm2-start', 'pm2-restart', 'pm2-restart-one', 'pm2-save', 'upstream-check',
-                    ];
-                    $normalizedHooks = [];
-                    foreach ($hookOperations as $hookOperation) {
-                        if (!is_array($hookOperation) || array_diff(array_keys($hookOperation), ['command', 'script', 'name'])) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
-                        $command = (string) ($hookOperation['command'] ?? '');
-                        if (!in_array($command, $allowedHooks, true)) respond(['ok' => false, 'code' => 'INVALID_ACTION']);
-                        $normalizedHooks[] = $hookOperation;
-                    }
-                    $lock = @fopen('/var/lock/panelavo-operations-' . $site->getUser() . '.lock', 'c');
-                    if (!$lock || !flock($lock, LOCK_EX | LOCK_NB)) respond(['ok' => false, 'code' => 'OPERATION_BUSY']);
-                    $dirty = gitChanges($site) !== [];
-                    if ($dirty) runGit($site, ['stash', 'push', '--include-untracked', '-m', 'panelavo-auto-stash-before-pull']);
-                    $pull = runGit($site, $ref ? ['pull', '--ff-only', 'origin', $ref] : ['pull', '--ff-only'], true);
-                    if ($pull['code'] !== 0) {
-                        if ($dirty) runGit($site, ['stash', 'pop'], true);
-                        respond(['ok' => false, 'code' => 'GIT_FAILED', 'message' => trim($pull['stderr'] ?: $pull['stdout'])]);
-                    }
-                    if ($dirty) {
-                        $restore = runGit($site, ['stash', 'pop'], true);
-                        $notice = $restore['code'] === 0
-                            ? 'Pulled remote changes and restored your local changes.'
-                            : 'Pulled remote changes, but some local changes conflicted. Resolve the marked files; the safety stash was kept.';
-                    }
-                    if ($normalizedHooks && (!$dirty || $restore['code'] === 0)) {
-                        // Pull may change manifests, scripts, or Compose files.
-                        // Resolve the saved identifiers from the newly pulled
-                        // tree while the same site lock is still held.
-                        $hookSteps = [];
+                    $source = updateDeploymentSource($site, $ref, null);
+                    if (!empty($operation['deployOperations'])) {
                         $state = operationsState($site, $user);
-                        foreach ($normalizedHooks as $hookOperation) {
-                            $command = (string) $hookOperation['command'];
-                            $hookSteps[] = resolveOperationStep($state, $command, $hookOperation);
-                            if (!empty($state['expectedPort']) && in_array($command, ['compose-up', 'compose-deploy', 'compose-restart'], true)) {
-                                $hookSteps[] = resolveOperationStep($state, 'compose-port-verify', []);
-                            } elseif (!empty($state['expectedPort']) && in_array($command, ['pm2-start', 'pm2-restart', 'pm2-restart-one'], true)) {
-                                $hookSteps[] = resolveOperationStep($state, 'runtime-port-verify', []);
-                            }
-                        }
-                        foreach ($hookSteps as $stepDefinition) if (!empty($stepDefinition['asRoot'])) respond(['ok' => false, 'code' => 'FORBIDDEN']);
-                        $startedAt = gmdate(DATE_ATOM);
-                        $hookResults = executeOperationSteps($site, $hookSteps);
-                        $lastHook = end($hookResults);
-                        $deployment = [
-                            'exitCode' => $lastHook['exitCode'], 'timedOut' => $lastHook['timedOut'],
-                            'startedAt' => $startedAt, 'finishedAt' => gmdate(DATE_ATOM),
-                            'steps' => $hookResults,
-                        ];
-                        if ($lastHook['exitCode'] !== 0) $notice = 'Remote changes were pulled, but the post-pull deployment stopped on a failed operation.';
+                        $hookSteps = resolveCustomDeployment($state, $operation['deployOperations']);
+                        if (!empty($state['hasCompose'])) $hookSteps[] = resolveOperationStep($state, 'compose-wait', []);
+                        $hookSteps[] = deploymentHealthStep($site, $state, '/');
+                        $deployment = deploymentRun($site, $hookSteps);
+                        if ($deployment['exitCode'] !== 0) $notice = 'Files were updated, but deployment failed. Review the failed step before retrying.';
                     }
-                    flock($lock, LOCK_UN); fclose($lock);
                 }
                 elseif ($action === 'push') runGit($site, $ref ? ['push', '-u', 'origin', $ref] : ['push']);
                 elseif ($action === 'checkout') runGit($site, ['checkout', $ref]);
@@ -8726,6 +8877,7 @@ try {
                 }
                 else respond(['ok' => false, 'code' => 'INVALID_ACTION']);
                 $gitData = gitSection($site, null, $notice ?? null);
+                if (isset($source)) $gitData['source'] = $source;
                 if (isset($deployment)) $gitData['deployment'] = $deployment;
                 respond(['ok' => true, 'data' => $gitData]);
             } elseif ($section === 'users' && $action === 'generate-keypair') {
@@ -8761,7 +8913,12 @@ try {
                 if (!in_array($block, ['none', 'error', 'redirect'], true)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
                 $redirectTo = strtolower((string) ($operation['redirectTo'] ?? ''));
                 if ($block === 'redirect' && (!preg_match($domainPattern, $redirectTo) || $redirectTo === $site->getDomainName())) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
-                $content = applyDomainConfig((string) $site->getVhostTemplate(), $aliases, $block, $site->getDomainName(), $redirectTo);
+                $wwwRedirects = $operation['wwwRedirects'] ?? [];
+                if (!is_array($wwwRedirects) || count($wwwRedirects) > 5) invalidBrokerRequest();
+                foreach ($wwwRedirects as $source) {
+                    if (!is_string($source) || !preg_match($domainPattern, $source) || str_starts_with($source, 'www.') || !in_array($source, $aliases, true) || !in_array('www.' . $source, $aliases, true)) invalidBrokerRequest();
+                }
+                $content = applyDomainConfig((string) $site->getVhostTemplate(), $aliases, $block, $site->getDomainName(), $redirectTo, array_values(array_unique($wwwRedirects)));
                 $site->setVhostTemplate($content);
                 $model->setVhostTemplate($content);
                 $updater->updateNginxVhostWithRollback();
@@ -8855,6 +9012,7 @@ try {
                 }
                 exec('systemctl reload nginx 2>&1');
             } elseif ($section === 'actions') {
+                if (in_array($action, ['deployment', 'validate-deployment'], true)) respond(['ok' => true, 'data' => manageDeployment($site, $user, $operation)]);
                 if ($action === 'fix') {
                     $fix = (string) ($operation['fix'] ?? '');
                     $results = [];
@@ -8919,12 +9077,14 @@ try {
                     ];
                     respond(['ok' => true, 'data' => ['run' => $run] + actionsSection($site, $user)]);
                 }
+                $lock = deploymentSiteLock($site);
                 $state = operationsState($site, $user);
                 $plan = null;
                 if ($action === 'run') {
                     $command = (string) ($operation['command'] ?? '');
                     $steps = [resolveOperationStep($state, $command, $operation)];
                     if (!empty($state['expectedPort']) && in_array($command, ['compose-up', 'compose-deploy', 'compose-restart'], true)) {
+                        $steps[] = resolveOperationStep($state, 'compose-wait', []);
                         $steps[] = resolveOperationStep($state, 'compose-port-verify', []);
                     } elseif (!empty($state['expectedPort']) && in_array($command, ['pm2-start', 'pm2-restart', 'pm2-restart-one'], true)) {
                         $steps[] = resolveOperationStep($state, 'runtime-port-verify', []);
@@ -8932,6 +9092,7 @@ try {
                 } else {
                     $plan = (string) ($operation['plan'] ?? '');
                     $steps = resolveDeploymentPlan($site, $state, $plan);
+                    if (!array_intersect(['runtime-port-verify', 'compose-port-verify'], array_column($steps, 'command'))) $steps[] = deploymentHealthStep($site, $state, '/');
                 }
                 // Ordinary Compose now runs through the same unprivileged site
                 // user boundary as SSH and Terminal. Only explicit host fixes
@@ -8943,8 +9104,6 @@ try {
                 }
                 // One operation per site at a time. The lock is released when
                 // this process exits, so a crashed run can never wedge a site.
-                $lock = @fopen('/var/lock/panelavo-operations-' . $site->getUser() . '.lock', 'c');
-                if (!$lock || !flock($lock, LOCK_EX | LOCK_NB)) respond(['ok' => false, 'code' => 'OPERATION_BUSY']);
                 $startedAt = gmdate(DATE_ATOM);
                 $results = executeOperationSteps($site, $steps);
                 flock($lock, LOCK_UN);

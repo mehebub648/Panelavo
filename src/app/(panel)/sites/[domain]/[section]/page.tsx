@@ -1,3 +1,4 @@
+import { LazySiteSection } from "@/components/sites/lazy-site-section";
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
 import { getCloudPanelClient } from "@/server/cloudpanel";
@@ -32,7 +33,7 @@ const titles: Record<string, string> = {
   security: "Security",
   users: "SSH/FTP",
   "file-manager": "File Manager",
-  git: "Git",
+  git: "Git & Deploy",
   terminal: "Terminal",
   backups: "Backups",
   "cron-jobs": "Cron Jobs",
@@ -186,10 +187,8 @@ export default async function SiteSectionPage({
     );
   }
   if (section === "actions") {
-    const [actionsResult, cronJobsResult, logsResult] = await Promise.allSettled([
+    const [actionsResult] = await Promise.allSettled([
       cloudPanel.getSiteSection(session.record.cloudPanel, domain, "actions"),
-      cloudPanel.getSiteSection(session.record.cloudPanel, domain, "cron-jobs"),
-      cloudPanel.getSiteSection(session.record.cloudPanel, domain, "logs"),
     ]);
     return (
       <div className="w-full space-y-7">
@@ -207,28 +206,8 @@ export default async function SiteSectionPage({
         ) : (
           <SectionUnavailable name="deployment checks and actions" />
         )}
-        <SectionBlock title="Cron jobs" description={descriptions["cron-jobs"]}>
-          {cronJobsResult.status === "fulfilled" ? (
-            <SiteSectionManager
-              domain={domain}
-              section="cron-jobs"
-              initialData={(cronJobsResult.value ?? {}) as Record<string, unknown>}
-            />
-          ) : (
-            <SectionUnavailable name="scheduled jobs" />
-          )}
-        </SectionBlock>
-        <SectionBlock title="Logs" description={descriptions.logs}>
-          {logsResult.status === "fulfilled" ? (
-            <SiteSectionManager
-              domain={domain}
-              section="logs"
-              initialData={(logsResult.value ?? {}) as Record<string, unknown>}
-            />
-          ) : (
-            <SectionUnavailable name="website logs" />
-          )}
-        </SectionBlock>
+        <LazySiteSection domain={domain} section="cron-jobs" title="Scheduled jobs" canWrite={canWrite} />
+        <LazySiteSection domain={domain} section="logs" title="Application logs" canWrite={canWrite} />
       </div>
     );
   }
@@ -269,7 +248,7 @@ export default async function SiteSectionPage({
   // subdomain) replaces links into CloudPanel's self-signed port-8443 portal.
   const databaseManagerUrl =
     section === "databases" ? await getDatabaseManagerUrl() : null;
-  if (section === "git") return <div className="w-full space-y-5"><div><h2 className="text-2xl font-bold tracking-tight text-ink">Git</h2><p className="mt-1 text-sm text-slate-500">{descriptions.git}</p></div><GitManager domain={domain} initialData={data as Parameters<typeof GitManager>[0]["initialData"]} /></div>;
+  if (section === "git") return <div className="w-full space-y-5"><div><h2 className="text-2xl font-bold tracking-tight text-ink">Git &amp; Deploy</h2><p className="mt-1 text-sm text-slate-500">{descriptions.git}</p></div><GitManager domain={domain} canWrite={canWrite} initialData={data as Parameters<typeof GitManager>[0]["initialData"]} /></div>;
   return (
     <div className="w-full space-y-5">
       <div>

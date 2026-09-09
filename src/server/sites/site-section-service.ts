@@ -93,8 +93,8 @@ type InFlightOperation = {
 
 const inFlightOperations = new Map<string, InFlightOperation>();
 
-function operationKey(actor: PanelActor, domain: string, section: string) {
-  return `${actor.user.id}:${domain.toLowerCase()}:${section}`;
+function operationKey(domain: string) {
+  return domain.toLowerCase();
 }
 
 function acquireOperation(
@@ -104,7 +104,7 @@ function acquireOperation(
   action: string,
 ) {
   if (!LONG_RUNNING_SECTIONS.has(section)) return () => undefined;
-  const key = operationKey(actor, domain, section);
+  const key = operationKey(domain);
   const current = inFlightOperations.get(key);
   if (current && current.expiresAt > Date.now())
     throw new AppError(
@@ -263,7 +263,7 @@ export async function manageSiteSectionForActor(
   }
   const operation =
     section === "git" && input.action === "pull"
-      ? { ...input, deployOperations: await getDeployHooks(domain) }
+      ? { ...input, deployOperations: "filesOnly" in input && input.filesOnly ? [] : await getDeployHooks(domain) }
       : securedInput;
   const release = acquireOperation(
     actor,

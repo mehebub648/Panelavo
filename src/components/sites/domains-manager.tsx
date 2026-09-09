@@ -26,6 +26,7 @@ type Meta = {
   aliases: string[];
   block: "none" | "error" | "redirect";
   redirectTo?: string;
+  wwwRedirects?: string[];
 };
 type DnsEntry = { name: string; ip: string | null; pointed: boolean };
 type Data = {
@@ -422,6 +423,48 @@ export function DomainsManager({
       </section>
 
       {/* SSL */}
+      {meta.aliases
+        .filter(
+          (name) =>
+            !name.startsWith("www.") && meta.aliases.includes(`www.${name}`),
+        )
+        .map((name) => (
+          <section
+            key={name}
+            className="rounded-2xl border border-slate-200 bg-white p-5 shadow-card sm:p-6"
+          >
+            <label className="flex items-center justify-between gap-4">
+              <span>
+                <span className="block font-bold">
+                  Redirect {name} to www.{name}
+                </span>
+                <span className="mt-1 block text-sm text-slate-500">
+                  Off: both addresses serve this website without a redirect. On:
+                  visitors use www, keeping the page path and query. Both
+                  addresses need valid SSL for HTTPS.
+                </span>
+              </span>
+              <input
+                type="checkbox"
+                role="switch"
+                className="h-5 w-5 shrink-0 accent-panel-600"
+                checked={(meta.wwwRedirects ?? []).includes(name)}
+                disabled={!canWrite || busy !== ""}
+                onChange={(event) =>
+                  void act(
+                    {
+                      action: "set-www-redirect",
+                      domain: name,
+                      enabled: event.target.checked,
+                    },
+                    `www-${name}`,
+                    "Domain redirect updated",
+                  )
+                }
+              />
+            </label>
+          </section>
+        ))}
       <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-card">
         <div className="flex items-center gap-3 border-b border-slate-100 bg-slate-50/60 px-5 py-4 sm:px-6">
           <span className="grid h-10 w-10 place-items-center rounded-xl bg-violet-50 text-violet-600">

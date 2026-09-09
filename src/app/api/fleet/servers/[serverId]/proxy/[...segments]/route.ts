@@ -20,6 +20,7 @@ function mapped(
   segments: string[],
   submitted: unknown,
   searchParams: URLSearchParams,
+  idempotencyKey: string | null,
 ): { action: FleetActionName; input?: unknown; status?: number } {
   if (segments[0] === "api") segments = segments.slice(1);
   const [root, first, second, third] = segments.map(decodeURIComponent);
@@ -96,6 +97,44 @@ function mapped(
         input: { domain: first, data: submitted },
       };
   }
+  if (root === "sites" && first && second === "deployment-settings") {
+    if (method === "GET")
+      return {
+        action: "site.deployment-settings.get",
+        input: { domain: first },
+      };
+    if (method === "PUT")
+      return {
+        action: "site.deployment-settings.save",
+        input: { domain: first, data: submitted },
+      };
+  }
+  if (root === "sites" && first && second === "deployments") {
+    if (method === "GET")
+      return {
+        action: third ? "site.deployments.get" : "site.deployments.list",
+        input: { domain: first, id: third },
+      };
+    if (method === "POST" && !third)
+      return {
+        action: "site.deployments.start",
+        input: { domain: first, data: submitted, idempotencyKey },
+        status: 202,
+      };
+  }
+  if (
+    root === "sites" &&
+    first &&
+    second === "deployment-tokens" &&
+    ["GET", "POST"].includes(method)
+  )
+    return {
+      action: "site.deployment-tokens.manage",
+      input: {
+        domain: first,
+        data: method === "GET" ? { action: "list" } : submitted,
+      },
+    };
   if (root === "sites" && first && second === "deploy-hooks") {
     if (method === "GET")
       return { action: "site.deploy-hooks.get", input: { domain: first } };
@@ -274,6 +313,7 @@ async function handle(request: NextRequest, context: Context) {
       params.segments,
       await body(request),
       request.nextUrl.searchParams,
+      request.headers.get("idempotency-key"),
     );
     const result = await dispatchFleetAction(
       params.serverId,

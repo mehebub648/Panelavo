@@ -1,4 +1,5 @@
 import { cache } from "react";
+import { StringDecoder } from "node:string_decoder";
 import { spawn } from "node:child_process";
 import { readdir } from "node:fs/promises";
 import type {
@@ -32,7 +33,7 @@ import {
 import { getSiteTypeOverrides } from "@/server/sites/site-type-overlay";
 import { AppError } from "./errors";
 
-export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 24;
+export const CLOUDPANEL_BROKER_PROTOCOL_VERSION = 26;
 export const CLOUDPANEL_BROKER_PATH =
   "/usr/local/libexec/panelavo/panelavo-broker";
 
@@ -131,11 +132,28 @@ function invokeBroker(
     execution.signal?.addEventListener("abort", abort, { once: true });
     let stdout = "";
     let stderr = "";
+    let eventBuffer = "";
+    const stdoutDecoder = new StringDecoder("utf8");
+    const stderrDecoder = new StringDecoder("utf8");
+    let progressQueue: Promise<unknown> = Promise.resolve();
     child.stdout.on("data", (chunk: Buffer) => {
-      if (stdout.length < 5_000_000) stdout += chunk.toString("utf8");
+      if (stdout.length < 5_000_000) stdout += stdoutDecoder.write(chunk);
     });
     child.stderr.on("data", (chunk: Buffer) => {
-      if (stderr.length < 500_000) stderr += chunk.toString("utf8");
+      const text = stderrDecoder.write(chunk);
+      if (stderr.length < 500_000) stderr += text;
+      if (!execution.onProgress) return;
+      eventBuffer += text;
+      const lines = eventBuffer.split("\n");
+      eventBuffer = (lines.pop() ?? "").slice(-32_000);
+      for (const line of lines) {
+        if (!line.startsWith("PANELAVO_EVENT ") || line.length > 32_000) continue;
+        try {
+          const event = JSON.parse(line.slice(15));
+          if (!["source", "step"].includes(event.type) || !["running", "succeeded", "failed"].includes(event.status) || typeof event.label !== "string") continue;
+          progressQueue = progressQueue.then(() => execution.onProgress?.(event)).catch(() => undefined);
+        } catch { /* Non-event stderr remains available to error handling. */ }
+      }
     });
     child.stdin.end(
       JSON.stringify({
@@ -155,7 +173,8 @@ function invokeBroker(
         ),
       );
     });
-    child.on("close", (code, signal) => {
+    child.on("close", async (code, signal) => {
+      await progressQueue;
       clearTimeout(timer);
       execution.signal?.removeEventListener("abort", abort);
       if (stoppedBy === "cancel") {
@@ -376,6 +395,7 @@ export function siteSectionBridgeError(result: BridgeResult) {
       "The website root is not empty. Initialize Git there or remove the existing files before cloning.",
       409,
     );
+  if (result.code === "GIT_CONFLICT") return new AppError("INVALID_REQUEST", result.message || "Resolve the repository conflict before deploying.", 409);
   if (result.code === "GIT_FAILED") {
     const detail = result.message ?? "";
     const message =

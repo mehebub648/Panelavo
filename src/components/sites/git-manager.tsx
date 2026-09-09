@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import React, { useCallback, useState } from "react";
 import {
   ArrowDownToLine,
   ArrowUpFromLine,
@@ -17,13 +17,19 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { useDialogFocus } from "@/components/ui/use-dialog-focus";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { DeployHookManager } from "@/components/sites/deploy-hook-manager";
+import {
+  DeploymentManager,
+  DeploymentOutput,
+} from "@/components/sites/deployment-manager";
+import { DeploymentKey } from "@/components/sites/deployment-key";
+import type { DeploymentResult } from "@/lib/deployment";
 
 type GitChange = { status: string; path: string; originalPath?: string };
-type GitData = {
+type GitData = DeploymentResult & {
   isRepository: boolean;
   path: string;
   branch?: string;
@@ -34,6 +40,9 @@ type GitData = {
   commits?: { hash: string; author: string; date: string; subject: string }[];
   selectedDiff?: { path: string; diff: string };
   notice?: string;
+  upstream?: string;
+  ahead?: number;
+  behind?: number;
 };
 type ConfirmState =
   { kind: "file"; change: GitChange } | { kind: "all" } | null;
@@ -42,18 +51,31 @@ export function GitManager({
   domain,
   initialData,
   apiBase = "",
+  canWrite = false,
 }: {
   domain: string;
   initialData: GitData;
   apiBase?: string;
+  canWrite?: boolean;
 }) {
   const [data, setData] = useState(initialData);
   const [busy, setBusy] = useState(false);
   const [remoteOpen, setRemoteOpen] = useState(false);
   const [commitOpen, setCommitOpen] = useState(false);
+  const [updateFiles, setUpdateFiles] = useState(false);
+  const refreshGit = useCallback(() => {
+    void fetch(
+      `${apiBase}/api/sites/${encodeURIComponent(domain)}/sections/git`,
+    )
+      .then((response) => response.json())
+      .then((result) => {
+        if (result.success) setData(result.data);
+      });
+  }, [apiBase, domain]);
   const [confirm, setConfirm] = useState<ConfirmState>(null);
 
   async function action(input: Record<string, unknown>, message?: string) {
+    if (!canWrite) return false;
     setBusy(true);
     try {
       const result = await fetch(
@@ -80,70 +102,105 @@ export function GitManager({
     }
   }
 
+  if (!canWrite)
+    return (
+      <div className="space-y-4">
+        <section className="rounded-2xl border bg-white p-5">
+          <h3 className="font-bold">
+            {data.isRepository
+              ? data.branch || "Detached checkout"
+              : "No Git repository connected"}
+          </h3>
+          <code className="block break-all text-xs">{data.head}</code>
+          <p className="mt-2 text-sm text-slate-500">
+            Read-only access · {data.changes?.length ?? 0} local changes
+          </p>
+        </section>
+        <DeploymentManager domain={domain} apiBase={apiBase} canWrite={false} />
+      </div>
+    );
+
   if (!data.isRepository)
     return (
-      <section className="rounded-2xl border border-slate-200 bg-white p-8 shadow-card">
-        <div className="mx-auto max-w-2xl text-center">
-          <GitFork className="mx-auto h-12 w-12 text-panel-500" />
-          <h3 className="mt-4 text-xl font-bold">Connect a Git repository</h3>
-          <p className="mt-2 text-sm text-slate-500">
-            Clone into an empty site directory, or initialize Git around files
-            already here.
-          </p>
-        </div>
-        <form
-          className="mx-auto mt-7 max-w-2xl space-y-4 rounded-xl bg-slate-50 p-5"
-          onSubmit={(event) => {
-            event.preventDefault();
-            const form = new FormData(event.currentTarget);
-            void action(
-              {
-                action: "clone",
-                url: form.get("url"),
-                branch: form.get("branch"),
-              },
-              "Repository cloned",
-            );
-          }}
-        >
-          <div>
-            <Label>Repository URL</Label>
-            <Input
-              name="url"
-              placeholder="git@github.com:owner/repository.git"
-              required
-            />
+      <div className="space-y-5">
+        <DeploymentManager
+          domain={domain}
+          apiBase={apiBase}
+          canWrite={canWrite}
+          source="current"
+        />
+        <section className="rounded-2xl border border-slate-200 bg-white p-8 shadow-card">
+          <div className="mx-auto max-w-2xl text-center">
+            <GitFork className="mx-auto h-12 w-12 text-panel-500" />
+            <h3 className="mt-4 text-xl font-bold">Connect a Git repository</h3>
+            <p className="mt-2 text-sm text-slate-500">
+              Clone into an empty site directory, or initialize Git around files
+              already here.
+            </p>
           </div>
-          <div>
-            <Label>Branch (optional)</Label>
-            <Input name="branch" placeholder="main" />
-          </div>
-          <Button disabled={busy}>
-            {busy && <LoaderCircle className="h-4 w-4 animate-spin" />} Clone
-            repository
-          </Button>
-          <p className="text-xs text-slate-500">
-            SSH URLs use this site user&apos;s deployment key. The directory
-            must be empty.
-          </p>
-        </form>
-        <div className="mx-auto mt-5 flex max-w-2xl items-center gap-3">
-          <span className="h-px flex-1 bg-slate-200" />
-          <span className="text-xs text-slate-400">or keep existing files</span>
-          <span className="h-px flex-1 bg-slate-200" />
-        </div>
-        <div className="mt-5 text-center">
-          <Button
-            variant="outline"
-            disabled={busy}
-            onClick={() =>
-              void action({ action: "init" }, "Repository initialized")
-            }
+          <form
+            className="mx-auto mt-7 max-w-2xl space-y-4 rounded-xl bg-slate-50 p-5"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const form = new FormData(event.currentTarget);
+              void action(
+                {
+                  action: "clone",
+                  url: form.get("url"),
+                  branch: form.get("branch"),
+                },
+                "Repository cloned",
+              );
+            }}
           >
-            Initialize existing directory
-          </Button>
-        </div>
-      </section>
+            <div>
+              <Label htmlFor="git-clone-url">Repository URL</Label>
+              <Input
+                id="git-clone-url"
+                name="url"
+                placeholder="git@github.com:owner/repository.git"
+                required
+              />
+            </div>
+            <div>
+              <Label htmlFor="git-clone-branch">Branch (optional)</Label>
+              <Input id="git-clone-branch" name="branch" placeholder="main" />
+            </div>
+            <Button disabled={busy}>
+              {busy && <LoaderCircle className="h-4 w-4 animate-spin" />} Clone
+              repository
+            </Button>
+            <p className="text-xs text-slate-500">
+              SSH URLs use this site user&apos;s deployment key. The directory
+              must be empty.
+            </p>
+          </form>
+          <DeploymentKey domain={domain} apiBase={apiBase} />
+          <details className="mt-4">
+            <summary className="cursor-pointer text-sm font-medium">
+              Advanced Git tools
+            </summary>
+            <div className="mx-auto mt-5 flex max-w-2xl items-center gap-3">
+              <span className="h-px flex-1 bg-slate-200" />
+              <span className="text-xs text-slate-400">
+                or keep existing files
+              </span>
+              <span className="h-px flex-1 bg-slate-200" />
+            </div>
+            <div className="mt-5 text-center">
+              <Button
+                variant="outline"
+                disabled={busy}
+                onClick={() =>
+                  void action({ action: "init" }, "Repository initialized")
+                }
+              >
+                Initialize existing directory
+              </Button>
+            </div>
+          </details>
+        </section>
+      </div>
     );
 
   const origin = data.remotes?.find(
@@ -152,181 +209,232 @@ export function GitManager({
   const changes = data.changes ?? [];
   return (
     <div className="space-y-5">
-      <section className="rounded-2xl border bg-white p-5 shadow-card">
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-3">
-              <GitBranch className="h-5 w-5 text-panel-600" />
-              <h3 className="font-bold">{data.branch || "Detached HEAD"}</h3>
-              <code className="rounded bg-slate-100 px-2 py-1 text-xs">
-                {data.head || "No commits"}
-              </code>
-            </div>
-            <p className="mt-2 text-xs text-slate-500">
-              {origin || "No origin remote configured"}
-            </p>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setRemoteOpen(true)}
-            >
-              Remote
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={busy || !origin}
-              onClick={() => void action({ action: "fetch" }, "Remote fetched")}
-            >
-              <RefreshCw className="h-4 w-4" /> Fetch
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={busy || !origin}
-              onClick={() =>
-                void action(
-                  { action: "pull", branch: data.branch },
-                  "Pulled latest changes",
-                )
-              }
-            >
-              <ArrowDownToLine className="h-4 w-4" /> Pull
-            </Button>
-            <Button
-              size="sm"
-              disabled={busy || !origin}
-              onClick={() =>
-                void action(
-                  { action: "push", branch: data.branch },
-                  "Changes pushed",
-                )
-              }
-            >
-              <ArrowUpFromLine className="h-4 w-4" /> Push
-            </Button>
-          </div>
-        </div>
+      <section className="space-y-2 rounded-2xl border bg-white p-5 shadow-card">
+        <h3 className="flex items-center gap-2 font-bold">
+          <GitBranch className="h-5 w-5 text-panel-600" />
+          {data.branch || "Detached checkout"}
+        </h3>
+        <p className="break-all text-sm text-slate-600">
+          {origin || "No origin remote configured"}
+        </p>
+        <code className="block break-all text-xs text-slate-500">
+          {data.head || "No commits"}
+        </code>
+        <p className="text-xs text-slate-500">
+          {changes.length
+            ? `${changes.length} local changes`
+            : "Working tree is clean"}
+          {data.upstream
+            ? ` · ${data.ahead ?? 0} ahead, ${data.behind ?? 0} behind ${data.upstream} (last fetched state)`
+            : " · No upstream tracking branch"}
+        </p>
       </section>
-      <DeployHookManager domain={domain} apiBase={apiBase} />
-      <div className="grid gap-5 lg:grid-cols-[1fr_420px]">
-        <section className="rounded-2xl border bg-white shadow-card">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b px-5 py-4">
-            <div>
-              <h3 className="font-bold">Working tree</h3>
-              <p className="text-xs text-slate-500">
-                {changes.length} changed files · select a file to view its diff
-              </p>
-            </div>
-            <div className="flex gap-2">
-              {changes.length > 0 && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={busy}
-                  onClick={() => setConfirm({ kind: "all" })}
-                >
-                  <Trash2 className="h-4 w-4" /> Discard all
-                </Button>
-              )}
-              <Button
-                size="sm"
-                disabled={!changes.length || busy}
-                onClick={() => setCommitOpen(true)}
-              >
-                <GitCommit className="h-4 w-4" /> Commit
-              </Button>
-            </div>
-          </div>
-          {changes.length ? (
-            <div className="divide-y">
-              {changes.map((change) => (
-                <div
-                  key={`${change.status}:${change.path}`}
-                  className="group flex items-center gap-2 px-3 py-1.5"
-                >
-                  <button
-                    disabled={busy}
-                    onClick={() =>
-                      void action({ action: "diff", path: change.path })
-                    }
-                    className="flex min-w-0 flex-1 items-center gap-3 rounded-lg px-2 py-2 text-left text-sm hover:bg-slate-50 disabled:opacity-60"
-                  >
-                    <FileDiff className="h-4 w-4 shrink-0 text-slate-400" />
-                    <code className="w-7 shrink-0 text-amber-600">
-                      {change.status}
-                    </code>
-                    <span className="truncate">
-                      {change.originalPath
-                        ? `${change.originalPath} → ${change.path}`
-                        : change.path}
-                    </span>
-                  </button>
+      <DeploymentManager
+        domain={domain}
+        apiBase={apiBase}
+        canWrite={canWrite}
+        branch={data.branch}
+        onFinished={refreshGit}
+        blockedReason={
+          !origin
+            ? "Connect an origin remote in Advanced Git tools."
+            : !data.branch
+              ? "Check out a branch in Advanced Git tools before deploying."
+              : changes.length
+                ? "Commit, move, or explicitly discard local changes before deploying latest changes."
+                : data.ahead
+                  ? "The local branch is ahead or diverged. Resolve it before deploying."
+                  : undefined
+        }
+      />
+      {data.deployment && <DeploymentOutput result={data} />}
+      <div className="rounded-xl border p-4">
+        <Button
+          variant="outline"
+          disabled={busy || !origin || !data.branch || changes.length > 0}
+          onClick={() => setUpdateFiles(true)}
+        >
+          <ArrowDownToLine className="h-4 w-4" />
+          Update files only
+        </Button>
+        <p className="mt-2 text-xs text-slate-500">
+          Skips deployment steps. Updated files can immediately affect PHP and
+          static websites.
+        </p>
+      </div>
+      <details className="space-y-4 rounded-2xl border bg-slate-50 p-4">
+        <summary className="cursor-pointer font-semibold">
+          Advanced Git tools
+        </summary>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setRemoteOpen(true)}
+          >
+            Edit remote
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={busy || !origin}
+            onClick={() =>
+              void action({ action: "fetch" }, "Remote status updated")
+            }
+          >
+            <RefreshCw className="h-4 w-4" />
+            Fetch remote status
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={busy || !origin}
+            onClick={() =>
+              void action(
+                { action: "push", branch: data.branch },
+                "Changes pushed",
+              )
+            }
+          >
+            <ArrowUpFromLine className="h-4 w-4" />
+            Push commits
+          </Button>
+        </div>
+        <DeploymentKey domain={domain} apiBase={apiBase} />
+        <div className="grid gap-5 lg:grid-cols-[1fr_420px]">
+          <section className="rounded-2xl border bg-white shadow-card">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b px-5 py-4">
+              <div>
+                <h3 className="font-bold">Working tree</h3>
+                <p className="text-xs text-slate-500">
+                  {changes.length} changed files · select a file to view its
+                  diff
+                </p>
+              </div>
+              <div className="flex gap-2">
+                {changes.length > 0 && (
                   <Button
-                    title={`Discard changes in ${change.path}`}
-                    aria-label={`Discard changes in ${change.path}`}
-                    variant="ghost"
-                    size="icon"
+                    variant="outline"
+                    size="sm"
                     disabled={busy}
-                    onClick={() => setConfirm({ kind: "file", change })}
+                    onClick={() => setConfirm({ kind: "all" })}
                   >
-                    <RotateCcw className="h-4 w-4" />
+                    <Trash2 className="h-4 w-4" /> Discard all
                   </Button>
-                </div>
+                )}
+                <Button
+                  size="sm"
+                  disabled={!changes.length || busy}
+                  onClick={() => setCommitOpen(true)}
+                >
+                  <GitCommit className="h-4 w-4" /> Commit
+                </Button>
+              </div>
+            </div>
+            {changes.length ? (
+              <div className="divide-y">
+                {changes.map((change) => (
+                  <div
+                    key={`${change.status}:${change.path}`}
+                    className="group flex items-center gap-2 px-3 py-1.5"
+                  >
+                    <button
+                      disabled={busy}
+                      onClick={() =>
+                        void action({ action: "diff", path: change.path })
+                      }
+                      className="flex min-w-0 flex-1 items-center gap-3 rounded-lg px-2 py-2 text-left text-sm hover:bg-slate-50 disabled:opacity-60"
+                    >
+                      <FileDiff className="h-4 w-4 shrink-0 text-slate-400" />
+                      <code className="w-7 shrink-0 text-amber-600">
+                        {change.status}
+                      </code>
+                      <span className="truncate">
+                        {change.originalPath
+                          ? `${change.originalPath} → ${change.path}`
+                          : change.path}
+                      </span>
+                    </button>
+                    <Button
+                      title={`Discard changes in ${change.path}`}
+                      aria-label={`Discard changes in ${change.path}`}
+                      variant="ghost"
+                      size="icon"
+                      disabled={busy}
+                      onClick={() => setConfirm({ kind: "file", change })}
+                    >
+                      <RotateCcw className="h-4 w-4" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="p-10 text-center text-sm text-slate-400">
+                <Check className="mx-auto mb-2 h-6 w-6 text-emerald-500" />
+                Working tree is clean
+              </div>
+            )}
+          </section>
+          <section className="rounded-2xl border bg-white shadow-card">
+            <div className="border-b px-5 py-4">
+              <h3 className="font-bold">Branches</h3>
+            </div>
+            <div className="p-3">
+              {data.branches?.map((branch) => (
+                <button
+                  key={branch}
+                  disabled={branch === data.branch || busy}
+                  onClick={() =>
+                    void action(
+                      { action: "checkout", branch },
+                      `Switched to ${branch}`,
+                    )
+                  }
+                  className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm ${branch === data.branch ? "bg-panel-50 font-semibold text-panel-700" : "hover:bg-slate-50"}`}
+                >
+                  <GitBranch className="h-4 w-4" />
+                  {branch}
+                </button>
               ))}
             </div>
-          ) : (
-            <div className="p-10 text-center text-sm text-slate-400">
-              <Check className="mx-auto mb-2 h-6 w-6 text-emerald-500" />
-              Working tree is clean
-            </div>
-          )}
-        </section>
+          </section>
+        </div>
         <section className="rounded-2xl border bg-white shadow-card">
           <div className="border-b px-5 py-4">
-            <h3 className="font-bold">Branches</h3>
+            <h3 className="font-bold">Recent commits</h3>
           </div>
-          <div className="p-3">
-            {data.branches?.map((branch) => (
-              <button
-                key={branch}
-                disabled={branch === data.branch || busy}
-                onClick={() =>
-                  void action(
-                    { action: "checkout", branch },
-                    `Switched to ${branch}`,
-                  )
-                }
-                className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm ${branch === data.branch ? "bg-panel-50 font-semibold text-panel-700" : "hover:bg-slate-50"}`}
+          <div className="divide-y">
+            {data.commits?.map((commit) => (
+              <div
+                key={commit.hash}
+                className="grid gap-1 px-5 py-3 sm:grid-cols-[90px_1fr_220px]"
               >
-                <GitBranch className="h-4 w-4" />
-                {branch}
-              </button>
+                <code className="text-panel-600">{commit.hash}</code>
+                <span className="text-sm font-medium">{commit.subject}</span>
+                <span className="text-xs text-slate-400">
+                  {commit.author} · {commit.date}
+                </span>
+              </div>
             ))}
           </div>
         </section>
-      </div>
-      <section className="rounded-2xl border bg-white shadow-card">
-        <div className="border-b px-5 py-4">
-          <h3 className="font-bold">Recent commits</h3>
-        </div>
-        <div className="divide-y">
-          {data.commits?.map((commit) => (
-            <div
-              key={commit.hash}
-              className="grid gap-1 px-5 py-3 sm:grid-cols-[90px_1fr_220px]"
-            >
-              <code className="text-panel-600">{commit.hash}</code>
-              <span className="text-sm font-medium">{commit.subject}</span>
-              <span className="text-xs text-slate-400">
-                {commit.author} · {commit.date}
-              </span>
-            </div>
-          ))}
-        </div>
-      </section>
+      </details>
+      {updateFiles && (
+        <ConfirmDialog
+          title="Update files only?"
+          message="This updates source files without building or restarting the application. PHP and static websites may change immediately."
+          confirmText="Update files"
+          variant="default"
+          onCancel={() => setUpdateFiles(false)}
+          onConfirm={() => {
+            setUpdateFiles(false);
+            void action(
+              { action: "pull", branch: data.branch, filesOnly: true },
+              "Source files updated; deployment steps were skipped",
+            );
+          }}
+        />
+      )}
       {data.selectedDiff && (
         <DiffModal
           value={data.selectedDiff}
@@ -347,8 +455,9 @@ export function GitManager({
             }}
           >
             <div>
-              <Label>Git URL</Label>
+              <Label htmlFor="git-remote-url">Git URL</Label>
               <Input
+                id="git-remote-url"
                 name="url"
                 defaultValue={origin}
                 placeholder="git@github.com:owner/repository.git"
@@ -356,7 +465,8 @@ export function GitManager({
               />
             </div>
             <p className="text-xs text-slate-500">
-              SSH remotes use the deployment key shown under SSH/FTP.
+              SSH remotes use the deployment public key shown in Advanced Git
+              tools.
             </p>
             <Button disabled={busy}>Save remote</Button>
           </form>
@@ -378,8 +488,13 @@ export function GitManager({
             }}
           >
             <div>
-              <Label>Commit message</Label>
-              <Input name="message" autoFocus required />
+              <Label htmlFor="git-commit-message">Commit message</Label>
+              <Input
+                id="git-commit-message"
+                name="message"
+                autoFocus
+                required
+              />
             </div>
             <Button disabled={busy}>Commit all changes</Button>
           </form>
@@ -488,9 +603,16 @@ function DiffModal({
   close: () => void;
 }) {
   const rows = parseDiff(value.diff);
+  const dialogRef = useDialogFocus(close);
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/50 p-3">
-      <div className="flex h-[90vh] w-full max-w-[96rem] flex-col overflow-hidden rounded-xl bg-white shadow-2xl">
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Changes in ${value.path}`}
+        className="flex h-[90vh] w-full max-w-[96rem] flex-col overflow-hidden rounded-xl bg-white shadow-2xl"
+      >
         <div className="flex items-center justify-between border-b px-4 py-3">
           <div className="min-w-0">
             <h3 className="truncate font-semibold">{value.path}</h3>
@@ -567,12 +689,21 @@ function Modal({
   close: () => void;
   children: React.ReactNode;
 }) {
+  const dialogRef = useDialogFocus(close);
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/40 p-4">
-      <div className="w-full max-w-2xl rounded-2xl bg-white p-6 shadow-2xl">
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        className="max-h-[90vh] w-full max-w-2xl overflow-auto rounded-2xl bg-white p-6 shadow-2xl"
+      >
         <div className="mb-5 flex justify-between">
           <h3 className="text-lg font-bold">{title}</h3>
-          <button onClick={close}>×</button>
+          <button aria-label="Close dialog" onClick={close}>
+            ×
+          </button>
         </div>
         {children}
       </div>

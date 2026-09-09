@@ -171,18 +171,19 @@ function withPanelRoles(inner: CloudPanelClient): CloudPanelClient {
       const panelAdmin = session.usernameHint
         ? await isPanelAdmin(session.usernameHint)
         : false;
-      return withSiteSectionType(
+      const result = await inner.manageSiteSection(
+        session,
         domain,
         section,
-        await inner.manageSiteSection(
-          session,
-          domain,
-          section,
-          input,
-          execution,
-        ),
-        panelAdmin,
+        input,
+        execution,
       );
+      if (
+        section === "actions" &&
+        ["deployment", "validate-deployment"].includes(String(input.action))
+      )
+        return result;
+      return withSiteSectionType(domain, section, result, panelAdmin);
     },
     manageSiteRelease: async (session, domain, operation, execution) => {
       assertNotPanelSelf(domain);

@@ -1,11 +1,12 @@
 "use client";
+import { DeploymentManager } from "@/components/sites/deployment-manager";
 
 import React, {
+  useCallback,
   useEffect,
   useRef,
   useState,
   useTransition,
-  type MouseEvent as ReactMouseEvent,
 } from "react";
 import { useRouter } from "next/navigation";
 import {
@@ -39,11 +40,11 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { useDialogFocus } from "@/components/ui/use-dialog-focus";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import type {
-  DeploymentPlan,
   OperationAction,
   OperationFix,
   OperationRun,
@@ -200,6 +201,7 @@ export function ActionsManager({
 }) {
   const router = useRouter();
   const [data, setData] = useState(initialData);
+  const [showPassedChecks, setShowPassedChecks] = useState(false);
   const [latestRun, setLatestRun] = useState<OperationRun | null>(
     initialData.run ?? null,
   );
@@ -213,10 +215,12 @@ export function ActionsManager({
   > | null>(null);
   const [showEnvFixValues, setShowEnvFixValues] = useState(false);
   const [savingEnvFix, setSavingEnvFix] = useState(false);
+  const envFixRef = useDialogFocus(() => {
+    if (!savingEnvFix) setEnvFixValues(null);
+  }, Boolean(envFixValues));
   const [isRefreshing, startRefresh] = useTransition();
   const operationInFlightRef = useRef(false);
   const outputRef = useRef<HTMLElement>(null);
-  const dialogRef = useRef<HTMLDivElement>(null);
   const confirmationTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
@@ -224,13 +228,7 @@ export function ActionsManager({
     if (initialData.run) setLatestRun(initialData.run);
   }, [initialData]);
 
-  useEffect(() => {
-    if (!confirmation) return;
-    const frame = window.requestAnimationFrame(() => {
-      dialogRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [confirmation]);
+  const refreshAfterDeployment = useCallback(() => router.refresh(), [router]);
 
   const busy = Boolean(running) || isRefreshing;
   const blockingChecks = data.preflight.checks.filter((check) => check.blocker);
@@ -367,28 +365,6 @@ export function ActionsManager({
     });
   }
 
-  function deploy(plan: DeploymentPlan) {
-    void postOperation(
-      { action: "deploy", plan: plan.id },
-      `deploy:${plan.id}`,
-      `${plan.label} completed`,
-    );
-  }
-
-  function requestDeploy(plan: DeploymentPlan, trigger: HTMLButtonElement) {
-    if (busy || plan.status !== "ready") return;
-    confirmationTriggerRef.current = trigger;
-    if (!plan.confirmation) {
-      deploy(plan);
-      return;
-    }
-    setConfirmation({
-      ...plan.confirmation,
-      variant: plan.risk === "destructive" ? "danger" : "default",
-      run: () => deploy(plan),
-    });
-  }
-
   function requestFix(fix: OperationFix, trigger: HTMLButtonElement) {
     if (busy || fix.status !== "ready") return;
     confirmationTriggerRef.current = trigger;
@@ -457,6 +433,12 @@ export function ActionsManager({
     runtime?.listeners?.length ||
     data.compose?.rootless,
   );
+  const restartAction = data.groups
+    .flatMap((group) => group.actions)
+    .find(
+      (action) =>
+        action.id === (data.hasCompose ? "compose-restart" : "pm2-start"),
+    );
   const envDrift = (runtime?.env ?? []).filter(
     (item) => item.status === "differs" || item.status === "missing",
   );
@@ -468,108 +450,211 @@ export function ActionsManager({
       aria-live={isRefreshing ? "polite" : "off"}
     >
       <section
-        className={cn(
-          "overflow-hidden rounded-2xl border bg-white/75 shadow-card backdrop-blur-md",
-          readiness.panel,
-        )}
-        aria-labelledby="operations-readiness-title"
+        className="rounded-2xl border bg-white p-5 shadow-card"
+        aria-label="Application status"
       >
-        <div className="grid gap-5 p-5 sm:p-6 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,0.72fr)]">
-          <div className="min-w-0">
-            <div className="flex items-start gap-3">
-              <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-white text-panel-600 shadow-sm ring-1 ring-slate-200/80">
-                <Workflow className="h-5 w-5" aria-hidden="true" />
-              </span>
-              <div className="min-w-0">
-                <p className="text-xs font-bold uppercase tracking-wider text-slate-500">
-                  Detected architecture
-                </p>
-                <h3
-                  id="operations-readiness-title"
-                  className="mt-0.5 text-lg font-bold text-ink"
-                >
-                  {architecture.label}
-                </h3>
-                <p className="mt-1 text-sm text-slate-600">
-                  {architecture.evidence.length
-                    ? `Detected from ${architecture.evidence.join(", ")}.`
-                    : "Detected from the website configuration."}
-                </p>
-              </div>
-            </div>
-
-            <div className="mt-4 flex flex-wrap items-center gap-2">
-              <span className="rounded-full bg-white/80 px-2.5 py-1 text-xs font-semibold text-slate-600 ring-1 ring-inset ring-slate-300/80">
-                {humanize(data.type)}
-              </span>
-              <span className="rounded-full bg-white/80 px-2.5 py-1 text-xs font-semibold capitalize text-slate-600 ring-1 ring-inset ring-slate-300/80">
-                {architecture.confidence} confidence
-              </span>
-              {architecture.framework && (
-                <span className="inline-flex items-center gap-1 rounded-full bg-panel-50 px-2.5 py-1 text-xs font-semibold text-panel-700 ring-1 ring-inset ring-panel-600/20">
-                  <Zap className="h-3 w-3" aria-hidden="true" />
-                  {architecture.framework}
-                </span>
-              )}
-            </div>
-            <code className="mt-3 block truncate rounded-lg bg-white/70 px-3 py-2 text-xs text-slate-600 ring-1 ring-inset ring-slate-200">
-              {data.path}
-            </code>
-            {data.architecture.alternatives.length > 0 && (
-              <p className="mt-3 text-xs text-slate-500">
-                Also detected:{" "}
-                {data.architecture.alternatives
-                  .map((item) => item.label)
-                  .join(", ")}
-              </p>
-            )}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 className="font-bold">Application status</h3>
+            <p className="mt-1 text-sm text-slate-600">
+              {data.runtime?.containers?.some(
+                (item) =>
+                  item.state === "running" && item.health !== "unhealthy",
+              ) || data.pm2?.some((item) => item.status === "online")
+                ? "Application is running"
+                : data.port?.listening
+                  ? "Application port is responding"
+                  : ["php", "static"].includes(data.type)
+                    ? "Served by the website server"
+                    : "Runtime status is unavailable or stopped"}
+            </p>
           </div>
-
-          <div className="rounded-xl bg-white/75 p-4 ring-1 ring-inset ring-white/80">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-xs font-bold uppercase tracking-wider text-slate-500">
-                  Deployment readiness
-                </p>
-                <div className="mt-2 flex items-center gap-2">
-                  <ReadinessIcon
-                    className={cn(
-                      "h-5 w-5",
-                      data.preflight.status === "ready"
-                        ? "text-emerald-600"
-                        : data.preflight.status === "warning"
-                          ? "text-amber-600"
-                          : "text-red-600",
-                    )}
-                    aria-hidden="true"
-                  />
-                  <span className="font-bold text-ink">{readiness.label}</span>
-                </div>
-              </div>
-              <StatusBadge status={data.preflight.status} />
-            </div>
-            <p className="mt-3 text-sm text-slate-600">
-              {blockingChecks.length
-                ? `${blockingChecks.length} blocking check${blockingChecks.length === 1 ? "" : "s"} must be resolved before the recommended deployment can run.`
-                : data.preflight.status === "warning"
-                  ? "Review and resolve the warnings, then refresh before deploying."
-                  : "The detected deployment path passed its required checks."}
-            </p>
-            <p className="mt-3 text-xs text-slate-500">
-              Checked{" "}
-              <time dateTime={data.preflight.checkedAt}>
-                {formatCheckedAt(data.preflight.checkedAt)} UTC
-              </time>
-            </p>
+          <div className="flex flex-wrap gap-2">
+            {data.permissions?.manage && restartAction && (
+              <Button
+                variant="outline"
+                disabled={busy || !isActionReady(restartAction.status)}
+                onClick={(event) => {
+                  if (!data.hasCompose && data.pm2?.length === 1)
+                    requestPm2Action(
+                      "pm2-restart-one",
+                      data.pm2[0].name,
+                      event.currentTarget,
+                    );
+                  else requestAction(restartAction, event.currentTarget);
+                }}
+              >
+                <RotateCcw className="h-4 w-4" />
+                Restart application
+              </Button>
+            )}
+            {data.permissions?.manage && (
+              <Button
+                variant="outline"
+                onClick={() => {
+                  const logs = document.getElementById(
+                    "application-logs",
+                  ) as HTMLDetailsElement | null;
+                  if (logs) {
+                    logs.open = true;
+                    logs.scrollIntoView({ behavior: "smooth", block: "start" });
+                    logs.querySelector("summary")?.focus();
+                  }
+                }}
+              >
+                <ScrollText className="h-4 w-4" />
+                View logs
+              </Button>
+            )}
+            <a
+              className="inline-flex items-center rounded-lg bg-panel-600 px-4 py-2 text-sm font-semibold text-white"
+              href={`${apiBase ? apiBase.replace(/^\/api\/fleet\/servers\//, "/servers/").replace(/\/proxy$/, "") : ""}/sites/${encodeURIComponent(domain)}/git`}
+            >
+              Git &amp; Deploy
+            </a>
           </div>
         </div>
       </section>
+      <DeploymentManager
+        domain={domain}
+        apiBase={apiBase}
+        canWrite={Boolean(data.permissions?.manage)}
+        source="current"
+        compact
+        onFinished={refreshAfterDeployment}
+        blockedReason={
+          blockingChecks.length
+            ? blockingChecks.map((check) => check.label).join(", ") +
+              " must be resolved below."
+            : undefined
+        }
+      />
+      {envDrift.length > 0 && (
+        <p className="rounded-xl bg-amber-50 p-4 text-sm text-amber-800">
+          Application environment changed.{" "}
+          {data.hasCompose
+            ? "Deploy current files to apply the container configuration."
+            : "Restart the application to apply the changes."}
+        </p>
+      )}
+      <details className="rounded-2xl border bg-white p-4">
+        <summary className="cursor-pointer text-sm font-medium">
+          Detected application details
+        </summary>{" "}
+        <section
+          className={cn(
+            "overflow-hidden rounded-2xl border bg-white/75 shadow-card backdrop-blur-md",
+            readiness.panel,
+          )}
+          aria-labelledby="operations-readiness-title"
+        >
+          <div className="grid gap-5 p-5 sm:p-6 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,0.72fr)]">
+            <div className="min-w-0">
+              <div className="flex items-start gap-3">
+                <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-white text-panel-600 shadow-sm ring-1 ring-slate-200/80">
+                  <Workflow className="h-5 w-5" aria-hidden="true" />
+                </span>
+                <div className="min-w-0">
+                  <p className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                    Detected architecture
+                  </p>
+                  <h3
+                    id="operations-readiness-title"
+                    className="mt-0.5 text-lg font-bold text-ink"
+                  >
+                    {architecture.label}
+                  </h3>
+                  <p className="mt-1 text-sm text-slate-600">
+                    {architecture.evidence.length
+                      ? `Detected from ${architecture.evidence.join(", ")}.`
+                      : "Detected from the website configuration."}
+                  </p>
+                </div>
+              </div>
 
-      <section
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                <span className="rounded-full bg-white/80 px-2.5 py-1 text-xs font-semibold text-slate-600 ring-1 ring-inset ring-slate-300/80">
+                  {humanize(data.type)}
+                </span>
+                <span className="rounded-full bg-white/80 px-2.5 py-1 text-xs font-semibold capitalize text-slate-600 ring-1 ring-inset ring-slate-300/80">
+                  {architecture.confidence} confidence
+                </span>
+                {architecture.framework && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-panel-50 px-2.5 py-1 text-xs font-semibold text-panel-700 ring-1 ring-inset ring-panel-600/20">
+                    <Zap className="h-3 w-3" aria-hidden="true" />
+                    {architecture.framework}
+                  </span>
+                )}
+              </div>
+              <code className="mt-3 block truncate rounded-lg bg-white/70 px-3 py-2 text-xs text-slate-600 ring-1 ring-inset ring-slate-200">
+                {data.path}
+              </code>
+              {data.architecture.alternatives.length > 0 && (
+                <p className="mt-3 text-xs text-slate-500">
+                  Also detected:{" "}
+                  {data.architecture.alternatives
+                    .map((item) => item.label)
+                    .join(", ")}
+                </p>
+              )}
+            </div>
+
+            <div className="rounded-xl bg-white/75 p-4 ring-1 ring-inset ring-white/80">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                    Deployment readiness
+                  </p>
+                  <div className="mt-2 flex items-center gap-2">
+                    <ReadinessIcon
+                      className={cn(
+                        "h-5 w-5",
+                        data.preflight.status === "ready"
+                          ? "text-emerald-600"
+                          : data.preflight.status === "warning"
+                            ? "text-amber-600"
+                            : "text-red-600",
+                      )}
+                      aria-hidden="true"
+                    />
+                    <span className="font-bold text-ink">
+                      {readiness.label}
+                    </span>
+                  </div>
+                </div>
+                <StatusBadge status={data.preflight.status} />
+              </div>
+              <p className="mt-3 text-sm text-slate-600">
+                {blockingChecks.length
+                  ? `${blockingChecks.length} blocking check${blockingChecks.length === 1 ? "" : "s"} must be resolved before the recommended deployment can run.`
+                  : data.preflight.status === "warning"
+                    ? "Review and resolve the warnings, then refresh before deploying."
+                    : "The detected deployment path passed its required checks."}
+              </p>
+              <p className="mt-3 text-xs text-slate-500">
+                Checked{" "}
+                <time dateTime={data.preflight.checkedAt}>
+                  {formatCheckedAt(data.preflight.checkedAt)} UTC
+                </time>
+              </p>
+            </div>
+          </div>
+        </section>
+      </details>
+      <details
+        open={data.preflight.checks.some((check) => check.status !== "ready")}
         className="rounded-2xl border border-white/60 bg-white/75 p-5 shadow-card backdrop-blur-md sm:p-6"
         aria-labelledby="preflight-title"
       >
-        <div className="flex flex-wrap items-start justify-between gap-3">
+        <summary className="cursor-pointer font-semibold">
+          Deployment checks ·{" "}
+          {
+            data.preflight.checks.filter((check) => check.status === "ready")
+              .length
+          }{" "}
+          passed
+        </summary>
+        <div className="mt-4 flex flex-wrap items-start justify-between gap-3">
           <div>
             <h3 id="preflight-title" className="font-bold text-ink">
               Preflight checks
@@ -600,241 +685,135 @@ export function ActionsManager({
         </div>
 
         <ul className="mt-5 grid gap-3 md:grid-cols-2">
-          {data.preflight.checks.map((check) => {
-            const metadata = STATUS[check.status];
-            const CheckIcon = metadata.icon;
-            return (
-              <li
-                key={check.id}
-                className={cn("rounded-xl border p-4", metadata.panel)}
-              >
-                <div className="flex items-start gap-3">
-                  <CheckIcon
-                    className={cn(
-                      "mt-0.5 h-5 w-5 shrink-0",
-                      check.status === "ready"
-                        ? "text-emerald-600"
-                        : check.status === "warning"
-                          ? "text-amber-600"
-                          : "text-red-600",
-                    )}
-                    aria-hidden="true"
-                  />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-start justify-between gap-2">
-                      <h4 className="text-sm font-bold text-ink">
-                        {check.label}
-                      </h4>
-                      <StatusBadge status={check.status} />
-                    </div>
-                    <p className="mt-1.5 text-sm text-slate-600">
-                      {check.detail}
-                    </p>
-                    {check.remediation && check.status !== "ready" && (
-                      <div className="mt-3 rounded-lg bg-white/80 px-3 py-2 text-xs text-slate-700 ring-1 ring-inset ring-slate-200/80">
-                        <span className="font-bold">How to fix:</span>{" "}
-                        {check.remediation}
+          {data.preflight.checks
+            .filter((check) => showPassedChecks || check.status !== "ready")
+            .map((check) => {
+              const metadata = STATUS[check.status];
+              const CheckIcon = metadata.icon;
+              return (
+                <li
+                  key={check.id}
+                  className={cn("rounded-xl border p-4", metadata.panel)}
+                >
+                  <div className="flex items-start gap-3">
+                    <CheckIcon
+                      className={cn(
+                        "mt-0.5 h-5 w-5 shrink-0",
+                        check.status === "ready"
+                          ? "text-emerald-600"
+                          : check.status === "warning"
+                            ? "text-amber-600"
+                            : "text-red-600",
+                      )}
+                      aria-hidden="true"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <h4 className="text-sm font-bold text-ink">
+                          {check.label}
+                        </h4>
+                        <StatusBadge status={check.status} />
                       </div>
-                    )}
-                    {check.fix && check.status !== "ready" && (
-                      <div className="mt-3">
-                        <Button
-                          type="button"
-                          size="sm"
-                          disabled={busy || check.fix.status !== "ready"}
-                          aria-busy={running === `fix:${check.fix.id}`}
-                          title={check.fix.description}
-                          onClick={(event) =>
-                            requestFix(check.fix!, event.currentTarget)
-                          }
-                        >
-                          {running === `fix:${check.fix.id}` ? (
-                            <LoaderCircle
-                              className="h-4 w-4 animate-spin"
-                              aria-hidden="true"
-                            />
-                          ) : (
-                            <Zap className="h-4 w-4" aria-hidden="true" />
-                          )}
-                          {check.fix.label}
-                        </Button>
-                        {check.fix.status !== "ready" &&
-                          check.fix.blockedBy[0] && (
-                            <p className="mt-1.5 text-xs text-slate-500">
-                              {check.fix.blockedBy[0]}
-                            </p>
-                          )}
-                      </div>
-                    )}
-                    {check.id === "compose-config" &&
-                      check.status === "blocked" &&
-                      missingEnvVariables.length > 0 &&
-                      data.permissions?.manage && (
+                      <p className="mt-1.5 text-sm text-slate-600">
+                        {check.detail}
+                      </p>
+                      {check.remediation && check.status !== "ready" && (
+                        <div className="mt-3 rounded-lg bg-white/80 px-3 py-2 text-xs text-slate-700 ring-1 ring-inset ring-slate-200/80">
+                          <span className="font-bold">How to fix:</span>{" "}
+                          {check.remediation}
+                        </div>
+                      )}
+                      {check.fix && check.status !== "ready" && (
                         <div className="mt-3">
                           <Button
                             type="button"
                             size="sm"
-                            disabled={busy}
-                            onClick={openEnvFix}
+                            disabled={busy || check.fix.status !== "ready"}
+                            aria-busy={running === `fix:${check.fix.id}`}
+                            title={check.fix.description}
+                            onClick={(event) =>
+                              requestFix(check.fix!, event.currentTarget)
+                            }
                           >
-                            <FileCog className="h-4 w-4" aria-hidden="true" />
-                            Add missing values
+                            {running === `fix:${check.fix.id}` ? (
+                              <LoaderCircle
+                                className="h-4 w-4 animate-spin"
+                                aria-hidden="true"
+                              />
+                            ) : (
+                              <Zap className="h-4 w-4" aria-hidden="true" />
+                            )}
+                            {check.fix.label}
                           </Button>
+                          {check.fix.status !== "ready" &&
+                            check.fix.blockedBy[0] && (
+                              <p className="mt-1.5 text-xs text-slate-500">
+                                {check.fix.blockedBy[0]}
+                              </p>
+                            )}
                         </div>
                       )}
+                      {check.id === "compose-config" &&
+                        check.status === "blocked" &&
+                        missingEnvVariables.length > 0 &&
+                        data.permissions?.manage && (
+                          <div className="mt-3">
+                            <Button
+                              type="button"
+                              size="sm"
+                              disabled={busy}
+                              onClick={openEnvFix}
+                            >
+                              <FileCog className="h-4 w-4" aria-hidden="true" />
+                              Add missing values
+                            </Button>
+                          </div>
+                        )}
+                    </div>
                   </div>
-                </div>
-              </li>
-            );
-          })}
+                </li>
+              );
+            })}
         </ul>
-      </section>
-
-      {data.plan ? (
-        <section
-          className="border-panel-200/70 rounded-2xl border bg-gradient-to-br from-panel-50/80 to-white/80 p-5 shadow-card sm:p-6"
-          aria-labelledby="deployment-plan-title"
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setShowPassedChecks((value) => !value)}
         >
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div className="max-w-3xl">
-              <p className="text-xs font-bold uppercase tracking-wider text-panel-600">
-                Recommended plan
-              </p>
-              <h3
-                id="deployment-plan-title"
-                className="mt-1 text-lg font-bold text-ink"
-              >
-                {data.plan.label}
-              </h3>
-              <p className="mt-1 text-sm text-slate-600">
-                {data.plan.description}
-              </p>
-              <div className="mt-3 flex flex-wrap gap-2">
-                <StatusBadge status={data.plan.status} />
-                <span className="rounded-full bg-white/80 px-2.5 py-1 text-xs font-semibold capitalize text-slate-600 ring-1 ring-inset ring-slate-300/80">
-                  {humanize(data.plan.risk)} risk
-                </span>
-                <span className="rounded-full bg-white/80 px-2.5 py-1 text-xs font-semibold capitalize text-slate-600 ring-1 ring-inset ring-slate-300/80">
-                  {humanize(data.plan.scope)} scope
-                </span>
-              </div>
-            </div>
-            <div className="flex max-w-xs flex-col items-start gap-2 sm:items-end">
-              <Button
-                type="button"
-                disabled={busy || data.plan.status !== "ready"}
-                aria-busy={running === `deploy:${data.plan.id}`}
-                aria-describedby={
-                  data.plan.status !== "ready"
-                    ? "deployment-plan-disabled-reason"
-                    : undefined
-                }
-                onClick={(event: ReactMouseEvent<HTMLButtonElement>) =>
-                  requestDeploy(data.plan!, event.currentTarget)
-                }
-              >
-                {running === `deploy:${data.plan.id}` ? (
-                  <LoaderCircle
-                    className="h-4 w-4 animate-spin"
-                    aria-hidden="true"
-                  />
-                ) : (
-                  <Play className="h-4 w-4" aria-hidden="true" />
-                )}
-                Deploy now
-              </Button>
-              {data.plan.status !== "ready" && (
-                <p
-                  id="deployment-plan-disabled-reason"
-                  className="text-xs leading-5 text-slate-600 sm:text-right"
-                >
-                  {data.plan.status === "warning"
-                    ? "Deployment stays disabled until every required preflight check reports Ready."
-                    : data.plan.status === "unauthorized"
-                      ? "Deployment requires Operations management permission."
-                      : "Resolve the blockers below, then refresh the preflight."}
-                </p>
-              )}
-            </div>
-          </div>
+          {showPassedChecks
+            ? "Hide successful checks"
+            : "Show successful checks"}
+        </Button>
+      </details>
 
-          <ol className="mt-5 grid gap-3 lg:grid-cols-3">
+      {data.plan && (
+        <details className="rounded-2xl border bg-white p-4">
+          <summary className="cursor-pointer text-sm font-medium">
+            Suggested deployment steps
+          </summary>
+          <h3 id="deployment-plan-title" className="mt-3 font-semibold">
+            {data.plan.label}
+          </h3>
+          <ol className="mt-2 list-inside list-decimal space-y-1 text-sm text-slate-600">
             {data.plan.steps.map((step, index) => (
-              <li
-                key={`${step.command}:${index}`}
-                className="rounded-xl border border-white/80 bg-white/75 p-4"
-              >
-                <div className="flex items-start gap-3">
-                  <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-panel-100 text-xs font-bold text-panel-700">
-                    {index + 1}
-                  </span>
-                  <div className="min-w-0">
-                    <h4 className="text-sm font-bold text-ink">{step.label}</h4>
-                    <p className="mt-1 text-xs leading-5 text-slate-500">
-                      {step.description}
-                    </p>
-                  </div>
-                </div>
-              </li>
+              <li key={index}>{step.label}</li>
             ))}
           </ol>
-
-          {data.plan.warnings.length > 0 && (
-            <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50/80 p-4 text-sm text-amber-900">
-              <div className="flex items-center gap-2 font-bold">
-                <TriangleAlert className="h-4 w-4" aria-hidden="true" />
-                Review before deploying
-              </div>
-              <ul className="mt-2 list-disc space-y-1 pl-5">
-                {data.plan.warnings.map((warning) => (
-                  <li key={warning}>{warning}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {data.plan.blockedBy.length > 0 && (
-            <div
-              id="deployment-plan-blockers"
-              className="mt-4 rounded-xl border border-red-200 bg-red-50/85 p-4 text-sm text-red-900"
-            >
-              <div className="flex items-center gap-2 font-bold">
-                <CircleX className="h-4 w-4" aria-hidden="true" />
-                Deployment is blocked
-              </div>
-              <ul className="mt-2 list-disc space-y-1 pl-5">
-                {data.plan.blockedBy.map((blocker) => (
-                  <li key={blocker}>{blocker}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </section>
-      ) : (
-        <section className="rounded-2xl border border-slate-200 bg-white/75 p-5 shadow-card sm:p-6">
-          <div className="flex items-start gap-3">
-            <CircleHelp
-              className="mt-0.5 h-5 w-5 shrink-0 text-slate-400"
-              aria-hidden="true"
-            />
-            <div>
-              <h3 className="font-bold text-ink">
-                No automatic deployment plan
-              </h3>
-              <p className="mt-1 text-sm text-slate-500">
-                Panelavo will not guess a start command or document root for
-                this architecture. Safe detected actions remain available below.
-              </p>
-            </div>
-          </div>
-        </section>
+          {data.plan.warnings.map((warning) => (
+            <p key={warning} className="mt-2 text-sm text-amber-700">
+              {warning}
+            </p>
+          ))}
+        </details>
       )}
-
       {hasRuntime ? (
-        <section
+        <details
           className="rounded-2xl border border-white/60 bg-white/75 p-5 shadow-card backdrop-blur-md sm:p-6"
           aria-labelledby="runtime-title"
         >
+          <summary className="cursor-pointer font-semibold">
+            Runtime details
+          </summary>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <h3
@@ -1027,95 +1006,105 @@ export function ActionsManager({
                       : "Not running"}
                     {online && process.pid ? ` · PID ${process.pid}` : ""}
                   </p>
-                  <div className="mt-4 grid grid-cols-3 gap-2">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="px-2"
-                      disabled={busy || !canControlPm2}
-                      aria-label={`Restart ${process.name}`}
-                      aria-busy={running === `pm2-restart-one:${process.name}`}
-                      aria-describedby={
-                        !canControlPm2 ? "pm2-controls-unavailable" : undefined
-                      }
-                      onClick={(event) =>
-                        requestPm2Action(
-                          "pm2-restart-one",
-                          process.name,
-                          event.currentTarget,
-                        )
-                      }
-                    >
-                      {running === `pm2-restart-one:${process.name}` ? (
-                        <LoaderCircle
-                          className="h-4 w-4 animate-spin"
-                          aria-hidden="true"
-                        />
-                      ) : (
-                        <RotateCcw className="h-4 w-4" aria-hidden="true" />
-                      )}
-                      <span className="sr-only sm:not-sr-only">Restart</span>
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="px-2"
-                      disabled={busy || !canControlPm2}
-                      aria-label={`Stop ${process.name}`}
-                      aria-busy={running === `pm2-stop-one:${process.name}`}
-                      aria-describedby={
-                        !canControlPm2 ? "pm2-controls-unavailable" : undefined
-                      }
-                      onClick={(event) =>
-                        requestPm2Action(
-                          "pm2-stop-one",
-                          process.name,
-                          event.currentTarget,
-                        )
-                      }
-                    >
-                      {running === `pm2-stop-one:${process.name}` ? (
-                        <LoaderCircle
-                          className="h-4 w-4 animate-spin"
-                          aria-hidden="true"
-                        />
-                      ) : (
-                        <Square className="h-4 w-4" aria-hidden="true" />
-                      )}
-                      <span className="sr-only sm:not-sr-only">Stop</span>
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="danger"
-                      size="sm"
-                      className="px-2"
-                      disabled={busy || !canControlPm2}
-                      aria-label={`Delete ${process.name} from PM2`}
-                      aria-busy={running === `pm2-delete-one:${process.name}`}
-                      aria-describedby={
-                        !canControlPm2 ? "pm2-controls-unavailable" : undefined
-                      }
-                      onClick={(event) =>
-                        requestPm2Action(
-                          "pm2-delete-one",
-                          process.name,
-                          event.currentTarget,
-                        )
-                      }
-                    >
-                      {running === `pm2-delete-one:${process.name}` ? (
-                        <LoaderCircle
-                          className="h-4 w-4 animate-spin"
-                          aria-hidden="true"
-                        />
-                      ) : (
-                        <Trash2 className="h-4 w-4" aria-hidden="true" />
-                      )}
-                      <span className="sr-only sm:not-sr-only">Delete</span>
-                    </Button>
-                  </div>
+                  {data.permissions?.manage && (
+                    <div className="mt-4 grid grid-cols-3 gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="px-2"
+                        disabled={busy || !canControlPm2}
+                        aria-label={`Restart ${process.name}`}
+                        aria-busy={
+                          running === `pm2-restart-one:${process.name}`
+                        }
+                        aria-describedby={
+                          !canControlPm2
+                            ? "pm2-controls-unavailable"
+                            : undefined
+                        }
+                        onClick={(event) =>
+                          requestPm2Action(
+                            "pm2-restart-one",
+                            process.name,
+                            event.currentTarget,
+                          )
+                        }
+                      >
+                        {running === `pm2-restart-one:${process.name}` ? (
+                          <LoaderCircle
+                            className="h-4 w-4 animate-spin"
+                            aria-hidden="true"
+                          />
+                        ) : (
+                          <RotateCcw className="h-4 w-4" aria-hidden="true" />
+                        )}
+                        <span className="sr-only sm:not-sr-only">Restart</span>
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="px-2"
+                        disabled={busy || !canControlPm2}
+                        aria-label={`Stop ${process.name}`}
+                        aria-busy={running === `pm2-stop-one:${process.name}`}
+                        aria-describedby={
+                          !canControlPm2
+                            ? "pm2-controls-unavailable"
+                            : undefined
+                        }
+                        onClick={(event) =>
+                          requestPm2Action(
+                            "pm2-stop-one",
+                            process.name,
+                            event.currentTarget,
+                          )
+                        }
+                      >
+                        {running === `pm2-stop-one:${process.name}` ? (
+                          <LoaderCircle
+                            className="h-4 w-4 animate-spin"
+                            aria-hidden="true"
+                          />
+                        ) : (
+                          <Square className="h-4 w-4" aria-hidden="true" />
+                        )}
+                        <span className="sr-only sm:not-sr-only">Stop</span>
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="danger"
+                        size="sm"
+                        className="px-2"
+                        disabled={busy || !canControlPm2}
+                        aria-label={`Delete ${process.name} from PM2`}
+                        aria-busy={running === `pm2-delete-one:${process.name}`}
+                        aria-describedby={
+                          !canControlPm2
+                            ? "pm2-controls-unavailable"
+                            : undefined
+                        }
+                        onClick={(event) =>
+                          requestPm2Action(
+                            "pm2-delete-one",
+                            process.name,
+                            event.currentTarget,
+                          )
+                        }
+                      >
+                        {running === `pm2-delete-one:${process.name}` ? (
+                          <LoaderCircle
+                            className="h-4 w-4 animate-spin"
+                            aria-hidden="true"
+                          />
+                        ) : (
+                          <Trash2 className="h-4 w-4" aria-hidden="true" />
+                        )}
+                        <span className="sr-only sm:not-sr-only">Delete</span>
+                      </Button>
+                    </div>
+                  )}
                 </article>
               );
             })}
@@ -1235,124 +1224,129 @@ export function ActionsManager({
               </div>
             </div>
           ) : null}
-        </section>
+        </details>
       ) : null}
 
-      {visibleGroups.map((group) => (
-        <section
-          key={group.id}
-          className="rounded-2xl border border-white/60 bg-white/75 p-5 shadow-card backdrop-blur-md sm:p-6"
-          aria-labelledby={`operation-group-${htmlId(group.id)}`}
-        >
-          <div>
-            <h3
-              id={`operation-group-${htmlId(group.id)}`}
-              className="font-bold text-ink"
-            >
-              {group.title}
-            </h3>
-            <p className="mt-1 text-sm text-slate-500">{group.description}</p>
-          </div>
-          <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {group.actions.map((action) => {
-              const key = actionKey(action);
-              const reasonId = `operation-${htmlId(group.id)}-${htmlId(key)}-reason`;
-              const Icon = ICONS[action.iconKey];
-              const runnable = isActionReady(action.status);
-              const actionBusy = running === key;
-              const showBlockedReason =
-                !runnable && blockingChecks.length === 0;
-              return (
-                <button
-                  key={key}
-                  type="button"
-                  disabled={busy || !runnable}
-                  aria-busy={actionBusy}
-                  aria-describedby={showBlockedReason ? reasonId : undefined}
-                  onClick={(event) =>
-                    requestAction(action, event.currentTarget)
-                  }
-                  className={cn(
-                    "group flex min-h-36 flex-col rounded-xl border p-4 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-panel-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed",
-                    action.risk === "destructive"
-                      ? "border-red-200/80 bg-red-50/45 enabled:hover:bg-red-50"
-                      : "enabled:hover:border-panel-300 border-slate-200/80 bg-white/75 enabled:hover:bg-panel-50/45",
-                    !runnable && "opacity-75",
-                  )}
-                >
-                  <span className="flex w-full items-start gap-3">
-                    <span
-                      className={cn(
-                        "grid h-9 w-9 shrink-0 place-items-center rounded-lg",
-                        action.risk === "destructive"
-                          ? "bg-red-100 text-red-600"
-                          : "bg-panel-50 text-panel-600",
-                      )}
-                    >
-                      {actionBusy ? (
-                        <LoaderCircle
-                          className="h-4 w-4 animate-spin"
-                          aria-hidden="true"
-                        />
-                      ) : (
-                        <Icon className="h-4 w-4" aria-hidden="true" />
-                      )}
-                    </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="flex flex-wrap items-start justify-between gap-2">
-                        <span
-                          className={cn(
-                            "font-bold",
-                            action.risk === "destructive"
-                              ? "text-red-800"
-                              : "text-ink",
-                          )}
-                        >
-                          {action.label}
-                        </span>
-                        <StatusBadge status={action.status} />
-                      </span>
-                      <span className="mt-1 block text-sm leading-5 text-slate-500">
-                        {action.description}
-                      </span>
-                    </span>
-                  </span>
-
-                  <span className="mt-auto block w-full pt-3">
-                    {action.commandPreview && (
-                      <code className="block truncate rounded-md bg-slate-950/[0.04] px-2 py-1 text-xs text-slate-600">
-                        {action.commandPreview}
-                      </code>
+      {visibleGroups
+        .filter(() => data.permissions?.manage)
+        .map((group) => (
+          <details
+            key={group.id}
+            className="rounded-2xl border border-white/60 bg-white/75 p-5 shadow-card backdrop-blur-md sm:p-6"
+            aria-labelledby={`operation-group-${htmlId(group.id)}`}
+          >
+            <summary className="cursor-pointer font-semibold">
+              Advanced: {group.title}
+            </summary>
+            <div className="mt-3">
+              <h3
+                id={`operation-group-${htmlId(group.id)}`}
+                className="font-bold text-ink"
+              >
+                {group.title}
+              </h3>
+              <p className="mt-1 text-sm text-slate-500">{group.description}</p>
+            </div>
+            <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {group.actions.map((action) => {
+                const key = actionKey(action);
+                const reasonId = `operation-${htmlId(group.id)}-${htmlId(key)}-reason`;
+                const Icon = ICONS[action.iconKey];
+                const runnable = isActionReady(action.status);
+                const actionBusy = running === key;
+                const showBlockedReason =
+                  !runnable && blockingChecks.length === 0;
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    disabled={busy || !runnable}
+                    aria-busy={actionBusy}
+                    aria-describedby={showBlockedReason ? reasonId : undefined}
+                    onClick={(event) =>
+                      requestAction(action, event.currentTarget)
+                    }
+                    className={cn(
+                      "group flex min-h-36 flex-col rounded-xl border p-4 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-panel-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed",
+                      action.risk === "destructive"
+                        ? "border-red-200/80 bg-red-50/45 enabled:hover:bg-red-50"
+                        : "enabled:hover:border-panel-300 border-slate-200/80 bg-white/75 enabled:hover:bg-panel-50/45",
+                      !runnable && "opacity-75",
                     )}
-                    <span className="mt-2 flex flex-wrap gap-1.5 text-[11px] font-semibold capitalize text-slate-400">
-                      <span>{humanize(action.scope)}</span>
-                      <span aria-hidden="true">&middot;</span>
-                      <span>{humanize(action.risk)} risk</span>
-                      {action.confirmation && (
-                        <>
-                          <span aria-hidden="true">&middot;</span>
-                          <span>confirmation required</span>
-                        </>
-                      )}
-                    </span>
-                    {showBlockedReason && (
+                  >
+                    <span className="flex w-full items-start gap-3">
                       <span
-                        id={reasonId}
-                        className="mt-2 block rounded-lg bg-red-50 px-2.5 py-2 text-xs leading-5 text-red-700"
+                        className={cn(
+                          "grid h-9 w-9 shrink-0 place-items-center rounded-lg",
+                          action.risk === "destructive"
+                            ? "bg-red-100 text-red-600"
+                            : "bg-panel-50 text-panel-600",
+                        )}
                       >
-                        <span className="font-bold">Unavailable:</span>{" "}
-                        {action.blockedBy.length
-                          ? action.blockedBy.join(" ")
-                          : `${STATUS[action.status].label} in the current capability report.`}
+                        {actionBusy ? (
+                          <LoaderCircle
+                            className="h-4 w-4 animate-spin"
+                            aria-hidden="true"
+                          />
+                        ) : (
+                          <Icon className="h-4 w-4" aria-hidden="true" />
+                        )}
                       </span>
-                    )}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </section>
-      ))}
+                      <span className="min-w-0 flex-1">
+                        <span className="flex flex-wrap items-start justify-between gap-2">
+                          <span
+                            className={cn(
+                              "font-bold",
+                              action.risk === "destructive"
+                                ? "text-red-800"
+                                : "text-ink",
+                            )}
+                          >
+                            {action.label}
+                          </span>
+                          <StatusBadge status={action.status} />
+                        </span>
+                        <span className="mt-1 block text-sm leading-5 text-slate-500">
+                          {action.description}
+                        </span>
+                      </span>
+                    </span>
+
+                    <span className="mt-auto block w-full pt-3">
+                      {action.commandPreview && (
+                        <code className="block truncate rounded-md bg-slate-950/[0.04] px-2 py-1 text-xs text-slate-600">
+                          {action.commandPreview}
+                        </code>
+                      )}
+                      <span className="mt-2 flex flex-wrap gap-1.5 text-[11px] font-semibold capitalize text-slate-400">
+                        <span>{humanize(action.scope)}</span>
+                        <span aria-hidden="true">&middot;</span>
+                        <span>{humanize(action.risk)} risk</span>
+                        {action.confirmation && (
+                          <>
+                            <span aria-hidden="true">&middot;</span>
+                            <span>confirmation required</span>
+                          </>
+                        )}
+                      </span>
+                      {showBlockedReason && (
+                        <span
+                          id={reasonId}
+                          className="mt-2 block rounded-lg bg-red-50 px-2.5 py-2 text-xs leading-5 text-red-700"
+                        >
+                          <span className="font-bold">Unavailable:</span>{" "}
+                          {action.blockedBy.length
+                            ? action.blockedBy.join(" ")
+                            : `${STATUS[action.status].label} in the current capability report.`}
+                        </span>
+                      )}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </details>
+        ))}
 
       {!visibleGroups.length && (
         <section className="rounded-2xl border border-dashed border-slate-300 bg-white/65 p-8 text-center">
@@ -1470,47 +1464,18 @@ export function ActionsManager({
       )}
 
       {confirmation && (
-        <div
-          ref={dialogRef}
-          role="dialog"
-          aria-modal="true"
-          aria-label={confirmation.title}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              closeConfirmation(true);
-              return;
-            }
-            if (event.key !== "Tab") return;
-            const buttons = Array.from(
-              dialogRef.current?.querySelectorAll<HTMLButtonElement>(
-                "button:not(:disabled)",
-              ) ?? [],
-            );
-            const first = buttons.at(0);
-            const last = buttons.at(-1);
-            if (!first || !last) return;
-            if (event.shiftKey && document.activeElement === first) {
-              event.preventDefault();
-              last.focus();
-            } else if (!event.shiftKey && document.activeElement === last) {
-              event.preventDefault();
-              first.focus();
-            }
+        <ConfirmDialog
+          title={confirmation.title}
+          message={confirmation.message}
+          confirmText={confirmation.confirmText}
+          variant={confirmation.variant}
+          onCancel={() => closeConfirmation(true)}
+          onConfirm={() => {
+            const run = confirmation.run;
+            closeConfirmation(false);
+            run();
           }}
-        >
-          <ConfirmDialog
-            title={confirmation.title}
-            message={confirmation.message}
-            confirmText={confirmation.confirmText}
-            variant={confirmation.variant}
-            onCancel={() => closeConfirmation(true)}
-            onConfirm={() => {
-              const run = confirmation.run;
-              closeConfirmation(false);
-              run();
-            }}
-          />
-        </div>
+        />
       )}
 
       {envFixValues && (
@@ -1518,6 +1483,7 @@ export function ActionsManager({
           className="fixed inset-0 z-[100] grid place-items-center bg-slate-950/40 p-4"
           role="dialog"
           aria-modal="true"
+          ref={envFixRef}
           aria-labelledby="compose-env-fix-title"
           onKeyDown={(event) => {
             if (event.key === "Escape" && !savingEnvFix) setEnvFixValues(null);

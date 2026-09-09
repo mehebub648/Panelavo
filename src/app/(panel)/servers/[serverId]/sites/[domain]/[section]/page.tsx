@@ -1,3 +1,4 @@
+import { LazySiteSection } from "@/components/sites/lazy-site-section";
 import { getFleetSiteForRender } from "@/server/fleet/page-data";
 import { notFound } from "next/navigation";
 import { ActionsManager } from "@/components/sites/actions-manager";
@@ -131,26 +132,7 @@ export default async function FleetSiteSectionPage({
     );
   }
   if (section === "actions") {
-    const [actions, cron, logs] = await Promise.all([
-      dispatchFleetAction(
-        serverId,
-        "site.section.get",
-        { domain, section: "actions" },
-        actor,
-      ),
-      dispatchFleetAction(
-        serverId,
-        "site.section.get",
-        { domain, section: "cron-jobs" },
-        actor,
-      ),
-      dispatchFleetAction(
-        serverId,
-        "site.section.get",
-        { domain, section: "logs" },
-        actor,
-      ),
-    ]);
+    const actions = await dispatchFleetAction(serverId, "site.section.get", { domain, section: "actions" }, actor);
     return (
       <Section title="Operations">
         <ActionsManager
@@ -158,18 +140,8 @@ export default async function FleetSiteSectionPage({
           initialData={actions as OperationsData}
           apiBase={apiBase}
         />
-        <SiteSectionManager
-          domain={domain}
-          section="cron-jobs"
-          initialData={(cron ?? {}) as Record<string, unknown>}
-          apiBase={apiBase}
-        />
-        <SiteSectionManager
-          domain={domain}
-          section="logs"
-          initialData={(logs ?? {}) as Record<string, unknown>}
-          apiBase={apiBase}
-        />
+        <LazySiteSection domain={domain} section="cron-jobs" title="Scheduled jobs" canWrite apiBase={apiBase} />
+        <LazySiteSection domain={domain} section="logs" title="Application logs" canWrite apiBase={apiBase} />
       </Section>
     );
   }
@@ -277,8 +249,9 @@ export default async function FleetSiteSectionPage({
   );
   if (section === "git")
     return (
-      <Section title="Git">
+      <Section title="Git & Deploy">
         <GitManager
+          canWrite
           domain={domain}
           initialData={data as Parameters<typeof GitManager>[0]["initialData"]}
           apiBase={apiBase}

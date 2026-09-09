@@ -58,8 +58,14 @@ export async function saveSiteDeployHooksForActor(
   domain: string,
   input: unknown,
 ) {
-  await writableSiteForActor(actor, domain);
-  return setDeployHooks(domain, deployHooksSchema.parse(input));
+  const { client } = await writableSiteForActor(actor, domain);
+  const hooks = deployHooksSchema.parse(input);
+  if (hooks.length)
+    await client.manageSiteSection(actor.cloudPanel, domain, "actions", {
+      action: "validate-deployment",
+      deployOperations: hooks,
+    });
+  return setDeployHooks(domain, hooks);
 }
 
 export async function getSiteBackupAutomationForActor(

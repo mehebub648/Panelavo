@@ -178,6 +178,32 @@ describe("independent many-to-many server connections", () => {
     ).rejects.toThrow(/no longer active/);
   });
 
+  it("rejects deployment jobs on older nodes before sending a signed request", async () => {
+    const ab = await connect("a", "b");
+    await at("a", () =>
+      mutateFleetState((state) => {
+        state.nodes.find((node) => node.id === ab)!.node.brokerProtocolVersion =
+          25;
+      }),
+    );
+    const calls = mock.execute.mock.calls.length;
+    await expect(
+      at("a", () =>
+        dispatchFleetAction(
+          ab,
+          "site.deployments.start",
+          {
+            domain: "site.test",
+            data: { source: "latest" },
+            idempotencyKey: "request-123",
+          },
+          actor("a"),
+        ),
+      ),
+    ).rejects.toThrow("Update this connected server");
+    expect(mock.execute.mock.calls).toHaveLength(calls);
+  });
+
   it("supports A→B, C→B and B→A with isolated keys, nicknames and single-connection revocation", async () => {
     const ab = await connect("a", "b");
     const cb = await connect("c", "b");

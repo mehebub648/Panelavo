@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
   deleteOffsiteBackup: vi.fn(),
   parseOffsiteDestination: vi.fn(),
   manageSiteSectionForActor: vi.fn(),
+  validateDeployment: vi.fn(),
 }));
 
 vi.mock("@/server/auth/site-access", () => ({
@@ -86,7 +87,9 @@ describe("actor-aware site automation", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.accessibleSiteForActor.mockResolvedValue({});
-    mocks.writableSiteForActor.mockResolvedValue({});
+    mocks.writableSiteForActor.mockResolvedValue({
+      client: { manageSiteSection: mocks.validateDeployment },
+    });
     mocks.parseUptime.mockImplementation((input) => input);
     mocks.parseDeployHooks.mockImplementation((input) => input);
     mocks.parseBackupSchedule.mockImplementation((input) => input);
@@ -166,6 +169,12 @@ describe("actor-aware site automation", () => {
     expect(mocks.getDeployHooks).toHaveBeenCalledWith(domain);
     expect(mocks.parseDeployHooks).toHaveBeenCalledWith(input);
     expect(mocks.setDeployHooks).toHaveBeenCalledWith(domain, parsed);
+    expect(mocks.validateDeployment).toHaveBeenCalledWith(
+      actor.cloudPanel,
+      domain,
+      "actions",
+      { action: "validate-deployment", deployOperations: parsed },
+    );
   });
 
   it("loads backup schedule, destination, and remote inventory after write access", async () => {
