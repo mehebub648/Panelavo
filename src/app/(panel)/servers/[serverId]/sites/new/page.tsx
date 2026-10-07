@@ -21,7 +21,7 @@ export default async function FleetCreateSitePage({
   return (
     <CreateSiteForm
       apiBase={`/api/fleet/servers/${serverId}/proxy`}
-      routeBase={`/servers/${serverId}`}
+      routeBase={`/servers/${serverId}?tab=websites`}
     />
   );
 }

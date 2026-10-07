@@ -399,3 +399,5 @@ Removing a domain from a website detaches its alias and related redirect setting
 Website Settings shows the project folder separately from the advanced public web folder and upstream. Saves submit changed fields only. Routing changes show the exact old and new upstream for confirmation; they do not restart or reconfigure the application.
 
 Environment edits prompt before file switches or page navigation discard them. If Environment cannot load, Settings shows a retryable error card instead of hiding the section.
+
+After creating an application website, the website list shows its exact assigned website port and next steps. Docker examples publish to 127.0.0.1 only; the website port is the host side of the mapping, separate from the container's internal port.

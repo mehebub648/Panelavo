@@ -31,6 +31,11 @@ import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 
 type ListedSite = CloudPanelSite;
+type CreationNotice = {
+  domain: string;
+  type?: SiteType;
+  port?: number;
+};
 
 const typeLabels: Record<SiteType, string> = {
   php: "PHP",
@@ -74,6 +79,8 @@ export function SiteList({ user, apiBase = "", routeBase = "", listHref = "/site
   const [query, setQuery] = useState("");
   const [type, setType] = useState("all");
   const [copied, setCopied] = useState("");
+  const [creationNotice, setCreationNotice] =
+    useState<CreationNotice | null>(null);
   const load = useCallback(
     async (refresh = false) => {
       if (refresh) setRefreshing(true);
@@ -111,7 +118,26 @@ export function SiteList({ user, apiBase = "", routeBase = "", listHref = "/site
   useEffect(() => {
     const created = params.get("created");
     if (created) {
-      toast.success(`${created} was created`);
+      const typeValue = params.get("createdType");
+      const portValue = Number(params.get("createdPort"));
+      const createdType =
+        typeValue && typeValue in typeLabels
+          ? (typeValue as SiteType)
+          : undefined;
+      const createdPort =
+        Number.isInteger(portValue) && portValue >= 1 && portValue <= 65_535
+          ? portValue
+          : undefined;
+      setCreationNotice({
+        domain: created,
+        type: createdType,
+        port: createdPort,
+      });
+      toast.success(`${created} was created`, {
+        description: createdPort
+          ? `Website port: ${createdPort}`
+          : undefined,
+      });
       router.replace(listHref, { scroll: false });
     }
   }, [params, router, listHref]);
@@ -190,6 +216,48 @@ export function SiteList({ user, apiBase = "", routeBase = "", listHref = "/site
     );
   return (
     <div className="mx-auto max-w-[1380px] space-y-5">
+      {creationNotice && (
+        <section className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-950 shadow-sm">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="flex min-w-0 gap-3">
+              <Check className="mt-0.5 h-5 w-5 shrink-0 text-emerald-600" />
+              <div>
+                <p className="font-bold">{creationNotice.domain} was created</p>
+                {creationNotice.port && (
+                  <>
+                    <p className="mt-1 text-emerald-900">
+                      Website port:{" "}
+                      <code className="rounded bg-white/70 px-1.5 py-0.5 font-bold">
+                        {creationNotice.port}
+                      </code>
+                    </p>
+                    <p className="mt-1 text-xs text-emerald-800">
+                      {creationNotice.type === "docker"
+                        ? `Map 127.0.0.1:${creationNotice.port} to the container’s internal HTTP port.`
+                        : `Operations supplies PORT=${creationNotice.port}; manual starts should listen on 127.0.0.1:${creationNotice.port}.`}
+                    </p>
+                  </>
+                )}
+              </div>
+            </div>
+            {creationNotice.port && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={async () => {
+                  await navigator.clipboard.writeText(
+                    String(creationNotice.port),
+                  );
+                  toast.success("Website port copied");
+                }}
+              >
+                <Clipboard className="h-4 w-4" /> Copy port
+              </Button>
+            )}
+          </div>
+        </section>
+      )}
       <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
         <div>
           <h2 className="text-2xl font-bold tracking-tight text-ink">

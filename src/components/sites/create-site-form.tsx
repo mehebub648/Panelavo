@@ -31,7 +31,11 @@ import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { normalizeDomain } from "@/schemas/sites";
 import { cn } from "@/lib/utils";
-import { localSiteProxyUrl, managedApplicationPort } from "@/lib/site-url";
+import {
+  createdSiteRedirectUrl,
+  localSiteProxyUrl,
+  managedApplicationPort,
+} from "@/lib/site-url";
 import { defaultPhpVhostTemplate } from "@/lib/php-vhost-template";
 
 const types = [
@@ -253,8 +257,17 @@ export function CreateSiteForm({
         [])
         toast.warning(warning, { duration: 12000 });
       setValues(initial);
+      const createdSite = result.data.site as {
+        domain: string;
+        type?: string;
+        appPort?: number;
+      };
       router.push(
-        `${routeBase}?created=${encodeURIComponent(result.data.site.domain)}`,
+        createdSiteRedirectUrl(routeBase, {
+          domain: createdSite.domain,
+          type: createdSite.type ?? type,
+          port: createdSite.appPort,
+        }),
       );
       router.refresh();
     } catch (reason) {
@@ -463,12 +476,19 @@ export function CreateSiteForm({
                       Site id <b>{previewId}</b> · site user{" "}
                       <b>site-{previewId}</b>
                       {type && ["nodejs", "python", "docker"].includes(type)
-                        ? ` · application port ${previewPort} (site id + 10,000; use this port in your application)`
+                        ? ` · website port ${previewPort}`
                         : ""}{" "}
                       — reserved automatically from this category. A DNS record
                       is created for the system domain when Cloudflare is
                       configured in Settings.
                     </p>
+                    {type && ["nodejs", "python", "docker"].includes(type) && (
+                      <p className="mt-1 text-xs text-slate-500">
+                        This is the current default: the site number plus
+                        10,000. Panelavo checks the final port again when the
+                        website is created.
+                      </p>
+                    )}
                   </>
                 ) : (
                   <span className="text-slate-500">
@@ -583,8 +603,13 @@ export function CreateSiteForm({
                   ))}
                 </Select>
                 <p className="mt-1.5 text-xs text-slate-400">
-                  Your app must listen on the reserved port
-                  {previewPort ? ` (${previewPort})` : ""}.
+                  Operations supplies PORT
+                  {previewPort ? `=${previewPort}` : ""} when it starts your
+                  app. For a manual start, listen on{" "}
+                  {previewPort
+                    ? `127.0.0.1:${previewPort}`
+                    : "the website port"}
+                  .
                 </p>
               </div>
             )}
@@ -604,19 +629,25 @@ export function CreateSiteForm({
                   ))}
                 </Select>
                 <p className="mt-1.5 text-xs text-slate-400">
-                  Your app must listen on the reserved port
-                  {previewPort ? ` (${previewPort})` : ""}.
+                  Operations supplies PORT
+                  {previewPort ? `=${previewPort}` : ""} when it starts your
+                  app. For a manual start, listen on{" "}
+                  {previewPort
+                    ? `127.0.0.1:${previewPort}`
+                    : "the website port"}
+                  .
                 </p>
               </div>
             )}
             {type === "docker" && (
               <div className="sm:col-span-2">
                 <p className="rounded-xl bg-sky-50 px-4 py-3 text-xs leading-5 text-sky-800">
-                  NGINX will proxy this website to{" "}
+                  NGINX will send website traffic to the private website port{" "}
                   <b>http://127.0.0.1:{previewPort ?? "<application port>"}</b>.
-                  Publish your container on that port (for example{" "}
+                  Map that host port to your container&apos;s internal HTTP port
+                  (for example{" "}
                   <code className="rounded bg-white/70 px-1 py-0.5">
-                    docker run -p {previewPort ?? 30000}:80 …
+                    docker run -p 127.0.0.1:{previewPort ?? 30000}:80 …
                   </code>{" "}
                   or a compose file), then use the site&apos;s Actions tab to
                   manage it.

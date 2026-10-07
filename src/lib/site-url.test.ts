@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  createdSiteRedirectUrl,
   localSiteProxyUrl,
   managedApplicationPort,
   managedSiteIdForApplicationPort,
@@ -14,5 +15,26 @@ describe("site URLs", () => {
 
   it("does not invent a target before a site id is available", () => {
     expect(localSiteProxyUrl(null)).toBe("");
+  });
+
+  it("carries the server-assigned port into local and fleet success routes", () => {
+    expect(
+      createdSiteRedirectUrl("/sites", {
+        domain: "site-20004.example.test",
+        type: "nodejs",
+        port: 30004,
+      }),
+    ).toBe(
+      "/sites?created=site-20004.example.test&createdType=nodejs&createdPort=30004",
+    );
+    expect(
+      createdSiteRedirectUrl("/servers/remote?tab=websites", {
+        domain: "site-21000.example.test",
+        type: "docker",
+        port: 31000,
+      }),
+    ).toBe(
+      "/servers/remote?tab=websites&created=site-21000.example.test&createdType=docker&createdPort=31000",
+    );
   });
 });

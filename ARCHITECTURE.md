@@ -169,3 +169,5 @@ Alias removal does not invoke provider DNS deletion. Detaching an apex alias pre
 The Settings form sends a change-only PATCH. A label-only save stays in local metadata and does not invoke CloudPanel site updates. Port/upstream changes require the form's explicit old-to-new confirmation.
 
 Local and Fleet settings distinguish a failed environment request from the read-only secret boundary. Error rendering includes no environment values. Dirty dotenv drafts guard file switches, links and unload.
+
+Creation redirects carry the returned site type and actual CloudPanel appPort or loopback reverseProxyUrl port. The website list uses these returned values for its creation handoff rather than recalculating from a stale preview ID.
