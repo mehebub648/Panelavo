@@ -1,4 +1,5 @@
 import { getCloudPanelClient } from "@/server/cloudpanel";
+import { AppError } from "@/server/cloudpanel/errors";
 import { resolveDnsStatus } from "@/server/network/dns";
 import { autoPointDns } from "@/server/network/auto-dns";
 import type { CloudPanelSession } from "@/types/cloudpanel";
@@ -83,36 +84,32 @@ export async function certificateAlreadyCovers(
   systemDomain: string,
   desired: string[],
 ): Promise<boolean> {
+  const client = getCloudPanelClient();
+  let data: CertificateList;
   try {
-    const data = (await getCloudPanelClient().getSiteSection(
+    data = (await client.getSiteSection(
       session,
       systemDomain,
       "certificates",
-    )) as {
-      items?: {
-        type?: string;
-        domains?: string[];
-        expiresAt?: string | null;
-      }[];
-    };
-    const want = new Set(desired.map((name) => name.toLowerCase()));
-    return (data.items ?? []).some((cert) => {
-      // Only a Let's Encrypt certificate counts as SSL coverage — CloudPanel's
-      // self-signed placeholder (and even an imported cert) must never
-      // suppress a real issuance.
-      if (!isLetsEncrypt(cert.type)) return false;
-      if (!Array.isArray(cert.domains)) return false;
-      if (
-        cert.expiresAt &&
-        new Date(cert.expiresAt).getTime() < Date.now() + 7 * 86_400_000
-      )
-        return false; // expiring soon — let a re-issue happen
-      const have = new Set(cert.domains.map((name) => name.toLowerCase()));
-      return Array.from(want).every((name) => have.has(name));
-    });
+    )) as CertificateList;
   } catch {
     return false; // cannot tell — issue rather than risk serving without SSL
   }
+  const cert = (data.items ?? []).find(
+    (item) =>
+      isLetsEncrypt(item.type) &&
+      covers(item.domains, desired) &&
+      (!item.expiresAt ||
+        new Date(item.expiresAt).getTime() >= Date.now() + 7 * 86_400_000) &&
+      (item.default || item.id),
+  );
+  if (!cert) return false;
+  if (!cert.default)
+    await client.manageSiteSection(session, systemDomain, "certificates", {
+      action: "set-default",
+      id: cert.id,
+    });
+  return true;
 }
 
 type CertificateList = {
@@ -127,6 +124,11 @@ type CertificateList = {
 
 const isLetsEncrypt = (type: unknown) =>
   ["2", "lets-encrypt"].includes(String(type ?? "").toLowerCase());
+
+function covers(domains: string[] | undefined, desired: string[]) {
+  const have = new Set((domains ?? []).map((name) => name.toLowerCase()));
+  return desired.every((name) => have.has(name.toLowerCase()));
+}
 
 /**
  * Issue the Let's Encrypt certificate for the system domain plus SAN, then
@@ -149,25 +151,27 @@ export async function issueSiteSsl(
       : { action: "lets-encrypt" },
   )) as CertificateList;
 
-  try {
-    const freshest = (data.items ?? [])
-      .filter((cert) => isLetsEncrypt(cert.type) && cert.id)
-      .sort(
-        (a, b) =>
-          new Date(b.expiresAt ?? 0).getTime() -
-          new Date(a.expiresAt ?? 0).getTime(),
-      )[0];
-    if (freshest && !freshest.default)
-      await client.manageSiteSection(session, systemDomain, "certificates", {
-        action: "set-default",
-        id: freshest.id,
-      });
-  } catch (error) {
-    // The certificate is installed either way; default promotion is cosmetic
-    // consistency between CloudPanel's records and what nginx serves.
-    console.error(
-      `Could not promote the new certificate for ${systemDomain}:`,
-      error,
+  const freshest = (data.items ?? [])
+    .filter(
+      (cert) =>
+        isLetsEncrypt(cert.type) &&
+        cert.id &&
+        covers(cert.domains, [systemDomain, ...san]),
+    )
+    .sort(
+      (a, b) =>
+        new Date(b.expiresAt ?? 0).getTime() -
+        new Date(a.expiresAt ?? 0).getTime(),
+    )[0];
+  if (!freshest)
+    throw new AppError(
+      "INTERNAL_ERROR",
+      "Certificate issuance did not return a certificate covering the requested addresses. Recheck DNS and retry HTTPS setup.",
+      502,
     );
-  }
+  if (!freshest.default)
+    await client.manageSiteSection(session, systemDomain, "certificates", {
+      action: "set-default",
+      id: freshest.id,
+    });
 }

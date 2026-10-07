@@ -181,3 +181,5 @@ The deployment settings UI tracks saved configuration separately from form edits
 Domain addition and website creation await certificate issuance and return nonfatal HTTPS warnings. Creation persists aliases only after successful vhost synchronization and removes rejected alias routing before issuing SSL. The Domains page hides generic certificate mutation controls while retaining installed-certificate status.
 
 The global /domains route and connected-server domains tab retain their URLs but are labeled Cloudflare DNS. Site-scoped Domains remains the routing/alias and HTTPS workflow.
+
+Certificate reuse activates a matching unexpired trusted certificate. Issuance selects only certificates covering the complete requested hostname set and propagates default-activation failures.

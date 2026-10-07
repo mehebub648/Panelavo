@@ -411,3 +411,5 @@ Git & Deploy presents the deployment workflow first. Advanced tools contain Upda
 The website Domains page provides one Recheck DNS & secure action. Adding addresses and creating websites wait for their certificate attempt and report any remaining DNS/HTTPS work. Installed certificates are displayed below without competing issuance controls. Alias metadata reflects the addresses CloudPanel successfully accepted.
 
 Global Cloudflare DNS manages connected provider zones and records. Attach an address to a website through that website's Domains tab; changing DNS alone does not attach it to a website.
+
+HTTPS readiness requires the covering trusted certificate to be active. Panelavo activates an existing matching certificate when possible and reports activation failures instead of claiming success.

@@ -211,3 +211,5 @@ Save automatic deployment settings before generating a CI workflow or token. Pen
 A successful website/domain creation can include a DNS or HTTPS warning. Read that result and use Recheck DNS & secure after correcting DNS; the attached website remains available through its system domain. No generated site id is presented as an application port.
 
 Use website Domains to attach an address; use Cloudflare DNS for provider record administration. Both local and connected-server navigation use these names.
+
+If a covering certificate is installed but inactive, Recheck DNS & secure activates it without another issuance. Activation failures are shown for recovery.
