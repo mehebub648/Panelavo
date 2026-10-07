@@ -32,7 +32,7 @@ use App\Site\Updater\StaticSite as StaticSiteUpdater;
 use Symfony\Component\Dotenv\Dotenv;
 
 const CLOUDPANEL_ROOT = '/home/clp/htdocs/app/files';
-const PANELAVO_BROKER_PROTOCOL_VERSION = 29;
+const PANELAVO_BROKER_PROTOCOL_VERSION = 30;
 const PANELAVO_BROKER_MAX_INPUT_BYTES = 100663296;
 const PANELAVO_ROOTLESS_MIGRATION_ROOT = '/var/lib/panelavo/rootless-migrations';
 const PANELAVO_ROOTLESS_MIGRATION_TTL = 86400;
@@ -5778,6 +5778,96 @@ function loadFreshSiteScaffold(Site $site, string $root, array $ignored = []): ?
     ) ? ['path' => $path, 'files' => $current] : null;
 }
 
+function gitCloneReadiness(Site $site, ?string $root = null, array $ignored = []): array
+{
+    $root ??= siteRootPath($site);
+    if (!is_dir($root)) return ['status' => 'empty', 'files' => [], 'detail' => 'The application folder will be created for the repository.'];
+    $real = realpath($root);
+    if (!$real) return ['status' => 'blocked', 'files' => [], 'detail' => 'The application folder could not be inspected safely.'];
+    $entries = array_values(array_diff(scandir($real) ?: [], ['.', '..', '.well-known'], $ignored));
+    sort($entries, SORT_STRING);
+    if (!$entries) return ['status' => 'empty', 'files' => [], 'detail' => 'The application folder is empty.'];
+    $scaffold = loadFreshSiteScaffold($site, $real, $ignored);
+    if ($scaffold) return [
+        'status' => 'scaffold',
+        'files' => array_values(array_map(static fn(array $file): string => (string) $file['name'], $scaffold['files'])),
+        'detail' => 'Only the unchanged website placeholder files created with this site are present.',
+    ];
+    $files = freshSiteScaffoldInventory($real, $ignored);
+    if ($files) return [
+        'status' => 'files',
+        'files' => array_values(array_map(static fn(array $file): string => (string) $file['name'], $files)),
+        'detail' => 'Small top-level files are present. They can be preserved in a private backup when explicitly requested.',
+    ];
+    return ['status' => 'blocked', 'files' => $entries, 'detail' => 'The folder contains directories, links, large files, or too many files to replace safely.'];
+}
+
+function preservedGitBackup(Site $site, string $root, array $inventory): string
+{
+    $base = backupsBase($site) . '/preserved-git';
+    if (is_link($base) || (!is_dir($base) && !mkdir($base, 0700))) throw new RuntimeException('The private backup folder could not be created.');
+    chmod($base, 0700); chown($base, $site->getUser()); chgrp($base, $site->getUser());
+    $baseReal = realpath($base);
+    if (!$baseReal || !str_starts_with($baseReal, backupsBase($site) . '/')) throw new RuntimeException('The private backup folder could not be validated.');
+    $directory = $baseReal . '/' . gmdate('Ymd-His') . '-' . bin2hex(random_bytes(4));
+    if (!mkdir($directory, 0700)) throw new RuntimeException('The private backup could not be created.');
+    chown($directory, $site->getUser()); chgrp($directory, $site->getUser());
+    $filesDirectory = $directory . '/files';
+    if (!mkdir($filesDirectory, 0700)) throw new RuntimeException('The private backup files folder could not be created.');
+    chown($filesDirectory, $site->getUser()); chgrp($filesDirectory, $site->getUser());
+    $backupFiles = array_map(static function (array $file) use ($root): array {
+        $mode = @fileperms($root . '/' . (string) ($file['name'] ?? ''));
+        return $file + ['mode' => is_int($mode) ? ($mode & 0777) : 0600];
+    }, $inventory);
+    $manifest = json_encode(['createdAt' => gmdate(DATE_ATOM), 'files' => $backupFiles], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+    if (!is_string($manifest) || file_put_contents($directory . '/manifest.json', $manifest, LOCK_EX) === false) throw new RuntimeException('The private backup manifest could not be written.');
+    chmod($directory . '/manifest.json', 0600); chown($directory . '/manifest.json', $site->getUser()); chgrp($directory . '/manifest.json', $site->getUser());
+    return $directory;
+}
+
+function applySiteFileOwnership(string $path, string $user): void
+{
+    if (!function_exists('posix_geteuid') || posix_geteuid() === 0) {
+        chown($path, $user); chgrp($path, $user);
+    }
+}
+
+function copyPreservedGitFiles(string $root, array $inventory, string $backup, string $user): void
+{
+    foreach ($inventory as $file) {
+        $name = (string) ($file['name'] ?? '');
+        $source = $root . '/' . $name;
+        $target = $backup . '/files/' . $name;
+        if ($name === '' || is_link($source) || !is_file($source) || !copy($source, $target)
+            || !hash_equals((string) ($file['sha256'] ?? ''), (string) hash_file('sha256', $target))) {
+            throw new RuntimeException('The existing files could not be copied into the private backup.');
+        }
+        $mode = @fileperms($source);
+        chmod($target, is_int($mode) ? ($mode & 0777) : 0600); applySiteFileOwnership($target, $user);
+    }
+}
+
+function restorePreservedGitFiles(string $root, array $inventory, string $backup, string $user): bool
+{
+    $restored = true;
+    foreach ($inventory as $file) {
+        $name = (string) ($file['name'] ?? '');
+        $source = $backup . '/files/' . $name;
+        $target = $root . '/' . $name;
+        if ($name === '' || !is_file($source) || is_link($source)) { $restored = false; continue; }
+        if (file_exists($target) || is_link($target)) {
+            $hash = !is_link($target) && is_file($target) ? hash_file('sha256', $target) : false;
+            if (!is_string($hash) || !hash_equals((string) ($file['sha256'] ?? ''), $hash)) { $restored = false; continue; }
+        } elseif (!@copy($source, $target)) {
+            $restored = false; continue;
+        }
+        $mode = @fileperms($source);
+        if (is_int($mode)) @chmod($target, $mode & 0777);
+        applySiteFileOwnership($target, $user);
+    }
+    return $restored;
+}
+
 function gitChanges(Site $site): array
 {
     $raw = runGit($site, ['status', '--porcelain=v1', '-z', '--untracked-files=all'])['stdout'];
@@ -6156,11 +6246,143 @@ function manageDeployment(Site $site, User $user, array $operation): array
     }
 }
 
+function parseGitRemoteBranches(string $raw): array
+{
+    $raw = trim($raw);
+    if ($raw === '') return [];
+    $branches = [];
+    foreach (preg_split('/\R/', $raw) ?: [] as $line) {
+        [$name, $symbolic] = array_pad(explode("\0", $line, 2), 2, '');
+        if ($name !== '' && $symbolic === '') $branches[] = $name;
+    }
+    sort($branches, SORT_STRING);
+    return array_values(array_unique($branches));
+}
+
+function gitRemoteBranches(Site $site): array
+{
+    return parseGitRemoteBranches(runGit($site, ['for-each-ref', '--format=%(refname:short)%00%(symref)', 'refs/remotes'], true)['stdout']);
+}
+
+function gitGraphRefs(Site $site): array
+{
+    $raw = rtrim(runGit($site, [
+        'for-each-ref',
+        '--format=%(objectname)%00%(*objectname)%00%(refname:short)',
+        'refs/heads', 'refs/remotes', 'refs/tags',
+    ], true)['stdout']);
+    $refs = [];
+    foreach ($raw === '' ? [] : (preg_split('/\R/', $raw) ?: []) as $line) {
+        [$object, $peeled, $name] = array_pad(explode("\0", $line, 3), 3, '');
+        $hash = $peeled !== '' ? $peeled : $object;
+        if ($hash !== '' && $name !== '') $refs[$hash][] = $name;
+    }
+    foreach ($refs as &$names) { sort($names, SORT_STRING); $names = array_values(array_unique($names)); }
+    unset($names);
+    return $refs;
+}
+
+function parseGitGraph(string $raw, array $refs = []): array
+{
+    if ($raw === '') return [];
+    $fields = explode("\0", rtrim($raw, "\0"));
+    $graph = [];
+    for ($index = 0; $index + 5 < count($fields) && count($graph) < 50; $index += 6) {
+        $graph[] = [
+            'hash' => $fields[$index],
+            'shortHash' => $fields[$index + 1],
+            'parents' => $fields[$index + 2] === '' ? [] : preg_split('/\s+/', $fields[$index + 2]),
+            'refs' => array_values((array) ($refs[$fields[$index]] ?? [])),
+            'author' => $fields[$index + 3],
+            'date' => $fields[$index + 4],
+            'subject' => $fields[$index + 5],
+        ];
+    }
+    return $graph;
+}
+
+function gitValidatedPath(Site $site, string $name): ?string
+{
+    $gitDirectory = trim(runGit($site, ['rev-parse', '--path-format=absolute', '--absolute-git-dir'], true)['stdout']);
+    $path = trim(runGit($site, ['rev-parse', '--path-format=absolute', '--git-path', $name], true)['stdout']);
+    $gitReal = $gitDirectory !== '' ? realpath($gitDirectory) : false;
+    if (!$gitReal || $path === '' || !file_exists($path)) return null;
+    $pathReal = realpath($path);
+    if (!$pathReal || ($pathReal !== $gitReal && !str_starts_with($pathReal, $gitReal . '/'))) return null;
+    return $pathReal;
+}
+
+function classifyGitOperation(array $markers, string $sequencerTodo = ''): ?string
+{
+    if (!empty($markers['rebase-merge']) || !empty($markers['rebase-apply'])) return 'rebase';
+    if (!empty($markers['MERGE_HEAD'])) return 'merge';
+    if (!empty($markers['CHERRY_PICK_HEAD'])) return 'cherry-pick';
+    if (!empty($markers['REVERT_HEAD'])) return 'revert';
+    $line = trim((string) strtok($sequencerTodo, "\r\n"));
+    if (preg_match('/^pick\s/', $line)) return 'cherry-pick';
+    if (preg_match('/^revert\s/', $line)) return 'revert';
+    return null;
+}
+
+function gitOperationState(Site $site): array
+{
+    $markers = [];
+    foreach (['rebase-merge', 'rebase-apply', 'MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD'] as $marker) {
+        $markers[$marker] = gitValidatedPath($site, $marker) !== null;
+    }
+    $todo = gitValidatedPath($site, 'sequencer/todo');
+    $sequencerTodo = $todo ? (string) @file_get_contents($todo, false, null, 0, 4096) : '';
+    $operation = classifyGitOperation($markers, $sequencerTodo);
+    $raw = runGit($site, ['diff', '--name-only', '--diff-filter=U', '-z'], true)['stdout'];
+    $conflicts = array_values(array_filter(explode("\0", $raw), static fn(string $path): bool => $path !== ''));
+    return ['operation' => $operation, 'conflictedFiles' => $conflicts];
+}
+
+function classifyGitBranchSelection(string $branch, array $locals, array $remotes, bool $remoteAllowed = true): string
+{
+    $isLocal = in_array($branch, $locals, true);
+    $isRemote = $remoteAllowed && in_array($branch, $remotes, true);
+    if ($isLocal && $isRemote) return 'ambiguous';
+    if ($isLocal) return 'local';
+    if ($isRemote) return 'remote';
+    return 'missing';
+}
+
+function gitKnownBranch(Site $site, string $branch, bool $remoteAllowed = true): array
+{
+    validateDeploymentBranch($site, $branch);
+    $local = trim(runGit($site, ['for-each-ref', '--format=%(refname:short)', 'refs/heads'], true)['stdout']);
+    $locals = $local === '' ? [] : preg_split('/\R/', $local);
+    $selection = classifyGitBranchSelection($branch, $locals, gitRemoteBranches($site), $remoteAllowed);
+    if ($selection === 'ambiguous') respond(['ok' => false, 'code' => 'GIT_CONFLICT', 'message' => 'That name identifies both a local and a remote branch. Rename one branch before continuing.']);
+    if ($selection === 'local') return ['name' => $branch, 'remote' => false];
+    if ($selection === 'remote') return ['name' => $branch, 'remote' => true];
+    respond(['ok' => false, 'code' => 'INVALID_REQUEST', 'message' => 'Choose an existing local branch or an exact fetched remote branch.']);
+}
+
+function gitConflictPath(Site $site, string $requested): string
+{
+    if ($requested === '' || strlen($requested) > 1000 || str_contains($requested, "\0") || str_starts_with($requested, '/') || str_contains($requested, '\\')) invalidBrokerRequest();
+    foreach (explode('/', $requested) as $part) if ($part === '' || $part === '.' || $part === '..') invalidBrokerRequest();
+    $state = gitOperationState($site);
+    if (!in_array($requested, $state['conflictedFiles'], true)) invalidBrokerRequest();
+    if (trim(runGit($site, ['ls-files', '--unmerged', '--', $requested], true)['stdout']) === '') invalidBrokerRequest();
+    return $requested;
+}
+
+function gitIdentityOptions(Site $site): array
+{
+    $options = [];
+    if (trim(runGit($site, ['config', '--get', 'user.name'], true)['stdout']) === '') $options = array_merge($options, ['-c', 'user.name=Panelavo ' . $site->getUser()]);
+    if (trim(runGit($site, ['config', '--get', 'user.email'], true)['stdout']) === '') $options = array_merge($options, ['-c', 'user.email=' . $site->getUser() . '@localhost']);
+    return $options;
+}
+
 function gitSection(Site $site, ?array $selectedChange = null, ?string $notice = null): array
 {
     $root = siteRootPath($site);
     $repo = is_dir($root . '/.git') || is_file($root . '/.git');
-    if (!$repo) return ['isRepository' => false, 'path' => $root];
+    if (!$repo) return ['isRepository' => false, 'path' => $root, 'cloneReadiness' => gitCloneReadiness($site, $root)];
     $branch = trim(runGit($site, ['branch', '--show-current'], true)['stdout']);
     $head = trim(runGit($site, ['rev-parse', '--verify', 'HEAD'], true)['stdout']);
     $remotesRaw = redactDeploymentText(trim(runGit($site, ['remote', '-v'], true)['stdout']));
@@ -6168,10 +6390,15 @@ function gitSection(Site $site, ?array $selectedChange = null, ?string $notice =
     $counts = $upstream ? preg_split('/\s+/', trim(runGit($site, ['rev-list', '--left-right', '--count', 'HEAD...@{upstream}'], true)['stdout'])) : [];
     $branchesRaw = trim(runGit($site, ['branch', '--format=%(refname:short)'], true)['stdout']);
     $logRaw = trim(runGit($site, ['log', '-20', '--pretty=format:%h%x09%an%x09%ar%x09%s'], true)['stdout']);
+    $graphRaw = runGit($site, ['log', '--all', '-50', '-z', '--date=iso-strict', '--pretty=format:%H%x00%h%x00%P%x00%an%x00%aI%x00%s'], true)['stdout'];
     $data = ['isRepository' => true, 'path' => $root, 'branch' => $branch, 'head' => $head, 'upstream' => $upstream, 'ahead' => (int) ($counts[0] ?? 0), 'behind' => (int) ($counts[1] ?? 0),
+        'cloneReadiness' => ['status' => 'blocked', 'files' => [], 'detail' => 'This application folder is already a Git repository.'],
         'remotes' => array_values(array_filter(array_map(fn($line) => preg_split('/\s+/', $line), explode("\n", $remotesRaw)))),
         'branches' => $branchesRaw === '' ? [] : explode("\n", $branchesRaw),
+        'remoteBranches' => gitRemoteBranches($site),
         'changes' => gitChanges($site),
+        'graph' => parseGitGraph($graphRaw, gitGraphRefs($site)),
+        'state' => gitOperationState($site),
         'commits' => $logRaw === '' ? [] : array_map(function ($line) { $p = explode("\t", $line, 4); return ['hash' => $p[0] ?? '', 'author' => $p[1] ?? '', 'date' => $p[2] ?? '', 'subject' => $p[3] ?? '']; }, explode("\n", $logRaw))];
     if ($selectedChange !== null) $data['selectedDiff'] = ['path' => $selectedChange['path'], 'diff' => substr(gitFileDiff($site, $selectedChange), 0, 300000)];
     if ($notice !== null) $data['notice'] = $notice;
@@ -7075,6 +7302,101 @@ function runFreshSiteScaffoldSelfTest(): never
     $assert(freshSiteScaffoldInventory($temporary) === null, 'directories must never be treated as removable scaffolding');
     deleteTree($temporary);
     echo "Fresh-site scaffold self-test passed.\n";
+    exit(0);
+}
+
+function gitFixtureCommand(string $user, array $args, string $cwd): array
+{
+    $command = ['/usr/bin/git'];
+    if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+        $command = ['/usr/bin/sudo', '-n', '-u', $user, '--', '/usr/bin/git'];
+    }
+    $process = proc_open(array_merge($command, $args), [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, $cwd);
+    if (!is_resource($process)) throw new RuntimeException('Git fixture command could not start.');
+    fclose($pipes[0]); $stdout = stream_get_contents($pipes[1]); fclose($pipes[1]); $stderr = stream_get_contents($pipes[2]); fclose($pipes[2]);
+    return ['code' => proc_close($process), 'stdout' => (string) $stdout, 'stderr' => (string) $stderr];
+}
+
+function runGitBrokerSelfTest(string $user): never
+{
+    if (preg_match('/^[a-z_][a-z0-9_-]{0,31}$/', $user) !== 1) throw new RuntimeException('Pass a valid site user to --self-test-git.');
+    $account = function_exists('posix_getpwnam') ? posix_getpwnam($user) : false;
+    if (!is_array($account)) throw new RuntimeException('The requested site user does not exist.');
+    $assert = static function (bool $condition, string $message): void {
+        if (!$condition) throw new RuntimeException($message);
+    };
+    $temporary = sys_get_temp_dir() . '/panelavo-git-self-test-' . bin2hex(random_bytes(4));
+    mkdir($temporary, 0700);
+    chown($temporary, $user); chgrp($temporary, $user);
+    $run = static function (array $args, ?string $cwd = null, bool $allowFailure = false) use ($user, $temporary): array {
+        $result = gitFixtureCommand($user, $args, $cwd ?? $temporary);
+        if (!$allowFailure && $result['code'] !== 0) throw new RuntimeException(trim($result['stderr'] ?: $result['stdout']));
+        return $result;
+    };
+    try {
+        mkdir($temporary . '/repo', 0700); chown($temporary . '/repo', $user); chgrp($temporary . '/repo', $user);
+        $run(['init', '-b', 'main'], $temporary . '/repo');
+        $run(['config', 'user.name', 'Panelavo fixture'], $temporary . '/repo');
+        $run(['config', 'user.email', $user . '@localhost'], $temporary . '/repo');
+        file_put_contents($temporary . '/repo/app.txt', "base\n"); chown($temporary . '/repo/app.txt', $user); chgrp($temporary . '/repo/app.txt', $user);
+        $run(['add', 'app.txt'], $temporary . '/repo'); $run(['commit', '-m', 'base'], $temporary . '/repo');
+        $run(['checkout', '-b', 'feature'], $temporary . '/repo');
+        file_put_contents($temporary . '/repo/app.txt', "feature\n");
+        $run(['commit', '-am', "feature\tchange"], $temporary . '/repo');
+        $run(['checkout', 'main'], $temporary . '/repo');
+        file_put_contents($temporary . '/repo/app.txt', "main\n");
+        $run(['commit', '-am', 'main change'], $temporary . '/repo');
+        $merge = $run(['merge', '--no-edit', 'feature'], $temporary . '/repo', true);
+        $assert($merge['code'] !== 0, 'the fixture must create a real merge conflict');
+        $marker = trim($run(['rev-parse', '--path-format=absolute', '--git-path', 'MERGE_HEAD'], $temporary . '/repo')['stdout']);
+        $assert(is_file($marker), 'the active merge marker must be discovered through git-path');
+        $conflicts = explode("\0", rtrim($run(['diff', '--name-only', '--diff-filter=U', '-z'], $temporary . '/repo')['stdout'], "\0"));
+        $assert($conflicts === ['app.txt'], 'the real unmerged path must be reported');
+        $run(['merge', '--abort'], $temporary . '/repo');
+        $assert(!file_exists($marker), 'merge abort must clear the validated marker');
+        $assert(classifyGitOperation(['MERGE_HEAD' => true, 'rebase-merge' => true]) === 'rebase', 'rebase markers must take priority over merge internals');
+        $assert(classifyGitOperation([], "pick deadbeef next\n") === 'cherry-pick', 'sequencer pick state must remain visible between cherry-pick steps');
+        $assert(classifyGitOperation([], "revert deadbeef next\n") === 'revert', 'sequencer revert state must remain visible between revert steps');
+        $run(['init', '--bare', 'origin.git']);
+        $run(['remote', 'add', 'origin', $temporary . '/origin.git'], $temporary . '/repo');
+        $run(['push', '--all', 'origin'], $temporary . '/repo');
+        $run(['fetch', 'origin'], $temporary . '/repo');
+        $remoteRaw = $run(['for-each-ref', '--format=%(refname:short)%00%(symref)', 'refs/remotes'], $temporary . '/repo')['stdout'];
+        $remoteBranches = parseGitRemoteBranches($remoteRaw);
+        $assert(in_array('origin/main', $remoteBranches, true) && in_array('origin/feature', $remoteBranches, true), 'exact fetched remote refs must be returned');
+        $assert(classifyGitBranchSelection('origin/main', ['origin/main'], $remoteBranches) === 'ambiguous', 'a colliding local and remote short ref must be rejected as ambiguous');
+        $assert(classifyGitBranchSelection('origin/feature', ['main', 'feature'], $remoteBranches) === 'remote', 'an exact fetched remote ref must remain selectable');
+        $raw = $run(['log', '--all', '-50', '-z', '--date=iso-strict', '--pretty=format:%H%x00%h%x00%P%x00%an%x00%aI%x00%s'], $temporary . '/repo')['stdout'];
+        $head = trim($run(['rev-parse', 'HEAD'], $temporary . '/repo')['stdout']);
+        $graph = parseGitGraph($raw, [$head => ['main']]);
+        $assert(count($graph) === 3 && count($graph[0]['parents']) === 1, 'structured graph parsing must preserve commits and parents');
+        $headRows = array_values(array_filter($graph, static fn(array $commit): bool => $commit['hash'] === $head));
+        $assert(($headRows[0]['refs'] ?? []) === ['main'], 'structured graph parsing must attach exact refs');
+        $assert(count(array_filter($graph, static fn(array $commit): bool => str_contains($commit['subject'], "\t"))) === 1, 'structured graph parsing must preserve delimiter-like subject text');
+
+        $preserveRoot = $temporary . '/preserve-root';
+        $preserveBackup = $temporary . '/preserve-backup';
+        foreach ([$preserveRoot, $preserveBackup, $preserveBackup . '/files'] as $directory) {
+            mkdir($directory, 0700); chown($directory, $user); chgrp($directory, $user);
+        }
+        file_put_contents($preserveRoot . '/manifest.json', "website manifest\n");
+        file_put_contents($preserveRoot . '/deploy.sh', "#!/bin/sh\nexit 0\n");
+        chmod($preserveRoot . '/deploy.sh', 0750);
+        foreach (['manifest.json', 'deploy.sh'] as $name) { chown($preserveRoot . '/' . $name, $user); chgrp($preserveRoot . '/' . $name, $user); }
+        $inventory = freshSiteScaffoldInventory($preserveRoot);
+        $assert(is_array($inventory) && count($inventory) === 2, 'ordinary top-level files must be eligible for explicit preservation');
+        file_put_contents($preserveBackup . '/manifest.json', "backup metadata\n");
+        copyPreservedGitFiles($preserveRoot, $inventory, $preserveBackup, $user);
+        $assert(file_get_contents($preserveBackup . '/manifest.json') === "backup metadata\n", 'an existing website manifest must not overwrite backup metadata');
+        $assert(file_get_contents($preserveBackup . '/files/manifest.json') === "website manifest\n", 'the original manifest must be preserved below files/');
+        foreach ($inventory as $file) unlink($preserveRoot . '/' . $file['name']);
+        $assert(restorePreservedGitFiles($preserveRoot, $inventory, $preserveBackup, $user), 'preserved files must restore after a failed promotion');
+        $assert(file_get_contents($preserveRoot . '/manifest.json') === "website manifest\n", 'rollback must restore exact original content');
+        $assert((fileperms($preserveRoot . '/deploy.sh') & 0777) === 0750, 'rollback must restore original file mode');
+        echo "Git broker self-test passed as {$user}.\n";
+    } finally {
+        deleteTree($temporary);
+    }
     exit(0);
 }
 
@@ -8386,6 +8708,7 @@ if (($argv[1] ?? '') === '--vpn-docker-firewall') {
 }
 if (($argv[1] ?? '') === '--self-test-ports') runComposePortSelfTest();
 if (($argv[1] ?? '') === '--self-test-scaffold') runFreshSiteScaffoldSelfTest();
+if (($argv[1] ?? '') === '--self-test-git') runGitBrokerSelfTest((string) ($argv[2] ?? ''));
 if (($argv[1] ?? '') === '--self-test-env') runEnvSelfTest();
 if (($argv[1] ?? '') === '--self-test-rootless') runRootlessSelfTest();
 if (($argv[1] ?? '') === '--self-test-datastore') runDatastoreSelfTest();
@@ -8710,7 +9033,7 @@ try {
             if (!$createdSite instanceof Site) {
                 respond(['ok' => false, 'code' => 'CLPCTL_FAILED', 'message' => 'The created website record could not be loaded.']);
             }
-            if ($createdSite->getType() === Site::TYPE_PHP) captureFreshSiteScaffold($createdSite);
+            captureFreshSiteScaffold($createdSite);
             respond(['ok' => true, 'site' => publicSite($createdSite)]);
 
         case 'clpctl-site-delete':
@@ -8982,6 +9305,16 @@ try {
                 $ref = (string) ($operation['branch'] ?? '');
                 if ($ref !== '') validateDeploymentBranch($site, $ref);
                 if ($action !== 'diff') $gitLock = deploymentSiteLock($site);
+                $repositoryExists = is_dir(siteRootPath($site) . '/.git') || is_file(siteRootPath($site) . '/.git');
+                $activeGitState = $repositoryExists ? gitOperationState($site) : ['operation' => null, 'conflictedFiles' => []];
+                if ($activeGitState['operation'] !== null
+                    && !in_array($action, ['fetch', 'diff', 'resolve-conflict', 'continue', 'abort'], true)) {
+                    respond([
+                        'ok' => false,
+                        'code' => 'GIT_CONFLICT',
+                        'message' => 'Finish or abort the active ' . $activeGitState['operation'] . ' before making another Git change.',
+                    ]);
+                }
                 if ($action === 'clone') {
                     $url = trim((string) ($operation['url'] ?? '')); if (!preg_match('#^(https://|git@)[^\s]+$#', $url)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
                     // Clone into Panelavo's configured application root,
@@ -9000,8 +9333,22 @@ try {
                             && (is_link($root . '/.well-known') || !is_dir($root . '/.well-known')))) {
                         respond(['ok' => false, 'code' => 'DIRECTORY_NOT_EMPTY']);
                     }
-                    $scaffold = $contentEntries ? loadFreshSiteScaffold($site, $root) : null;
-                    if ($contentEntries && !$scaffold) respond(['ok' => false, 'code' => 'DIRECTORY_NOT_EMPTY']);
+                    if (array_key_exists('preserveExisting', $operation) && !is_bool($operation['preserveExisting'])) invalidBrokerRequest();
+                    $preserveExisting = ($operation['preserveExisting'] ?? false) === true;
+                    $readiness = gitCloneReadiness($site, $root);
+                    $scaffold = $readiness['status'] === 'scaffold' ? loadFreshSiteScaffold($site, $root) : null;
+                    $preservedInventory = $readiness['status'] === 'files' ? freshSiteScaffoldInventory($root) : null;
+                    if ($readiness['status'] === 'blocked'
+                        || ($readiness['status'] === 'files' && !$preserveExisting)
+                        || ($contentEntries && !$scaffold && !$preservedInventory)) {
+                        respond([
+                            'ok' => false,
+                            'code' => 'DIRECTORY_NOT_EMPTY',
+                            'message' => $readiness['status'] === 'files'
+                                ? 'Review the listed files and choose Preserve existing files before cloning.'
+                                : (string) $readiness['detail'],
+                        ]);
+                    }
 
                     // Always clone into a temporary child first. The original
                     // scaffold and ACME directory stay untouched until Git has
@@ -9023,7 +9370,7 @@ try {
                     }
                     $scaffoldNames = $scaffold
                         ? array_map(static fn(array $file): string => (string) ($file['name'] ?? ''), $scaffold['files'])
-                        : [];
+                        : ($preservedInventory ? array_map(static fn(array $file): string => (string) ($file['name'] ?? ''), $preservedInventory) : []);
                     foreach ($clonedEntries as $name) {
                         if ((file_exists($root . '/' . $name) || is_link($root . '/' . $name))
                             && !in_array($name, $scaffoldNames, true)) {
@@ -9034,6 +9381,27 @@ try {
 
                     $scaffoldBackup = null;
                     $stagedScaffold = [];
+                    $preservedBackup = null;
+                    if ($preservedInventory) {
+                        // Reinspect the exact top-level files after the network
+                        // operation. Added, replaced, linked, or edited entries
+                        // cancel promotion before any website file is moved.
+                        $current = freshSiteScaffoldInventory($root, [$temporary]);
+                        if (!is_array($current) || !hash_equals(
+                            hash('sha256', json_encode($preservedInventory, JSON_UNESCAPED_SLASHES) ?: ''),
+                            hash('sha256', json_encode($current, JSON_UNESCAPED_SLASHES) ?: ''),
+                        )) {
+                            deleteTree($temporaryPath);
+                            respond(['ok' => false, 'code' => 'DIRECTORY_NOT_EMPTY', 'message' => 'The existing files changed while the repository was being staged. Nothing was replaced.']);
+                        }
+                        try {
+                            $preservedBackup = preservedGitBackup($site, $root, $preservedInventory);
+                            copyPreservedGitFiles($root, $preservedInventory, $preservedBackup, (string) $site->getUser());
+                        } catch (RuntimeException $error) {
+                            deleteTree($temporaryPath);
+                            respond(['ok' => false, 'code' => 'GIT_FAILED', 'message' => $error->getMessage()]);
+                        }
+                    }
                     if ($scaffold) {
                         // Recheck the exact hashes after the network operation;
                         // an edited or newly added file cancels the promotion.
@@ -9066,6 +9434,22 @@ try {
                             }
                             $stagedScaffold[] = $name;
                         }
+                    } elseif ($preservedInventory) {
+                        foreach ($preservedInventory as $file) {
+                            $name = (string) ($file['name'] ?? '');
+                            if ($name === '' || !@unlink($root . '/' . $name)) {
+                                $restored = restorePreservedGitFiles($root, $preservedInventory, $preservedBackup, (string) $site->getUser());
+                                deleteTree($temporaryPath);
+                                respond([
+                                    'ok' => false,
+                                    'code' => $restored ? 'GIT_FAILED' : 'SITE_UPDATE_FAILED',
+                                    'message' => $restored
+                                        ? 'The existing files could not be staged and were restored from the private backup.'
+                                        : 'The existing files remain in the private backup because automatic restoration could not complete.',
+                                ]);
+                            }
+                            $stagedScaffold[] = $name;
+                        }
                     }
 
                     $promoted = [];
@@ -9083,8 +9467,18 @@ try {
                             if (!@rename($root . '/' . $name, $temporaryPath . '/' . $name)) $restored = false;
                         }
                         foreach (array_reverse($stagedScaffold) as $name) {
-                            if (!@rename($scaffoldBackup . '/' . $name, $root . '/' . $name)) $restored = false;
+                            if (!$scaffoldBackup) continue;
+                            $source = $scaffoldBackup ? $scaffoldBackup . '/' . $name : $preservedBackup . '/files/' . $name;
+                            $restoredFile = $scaffoldBackup ? @rename($source, $root . '/' . $name) : @copy($source, $root . '/' . $name);
+                            if (!$restoredFile) $restored = false;
+                            else {
+                                $restoreMode = @fileperms($source);
+                                if (is_int($restoreMode)) @chmod($root . '/' . $name, $restoreMode & 0777);
+                                @chown($root . '/' . $name, $site->getUser()); @chgrp($root . '/' . $name, $site->getUser());
+                            }
                         }
+                        if (!$scaffoldBackup && $preservedInventory
+                            && !restorePreservedGitFiles($root, $preservedInventory, $preservedBackup, (string) $site->getUser())) $restored = false;
                         if ($restored) {
                             if (is_dir($temporaryPath)) deleteTree($temporaryPath);
                             if ($scaffoldBackup && is_dir($scaffoldBackup)) deleteTree($scaffoldBackup);
@@ -9102,7 +9496,16 @@ try {
                         deleteTree($scaffoldBackup);
                         @unlink((string) $scaffold['path']);
                     }
+                    if ($preservedBackup) $notice = 'Repository cloned. The previous files remain in the private backups/preserved-git folder.';
                 } elseif ($action === 'init') runGit($site, ['init']);
+                elseif ($action === 'create-branch') {
+                    if ($ref === '' || runGit($site, ['rev-parse', '--verify', 'HEAD'], true)['code'] !== 0) invalidBrokerRequest();
+                    if (runGit($site, ['show-ref', '--verify', '--quiet', 'refs/heads/' . $ref], true)['code'] === 0
+                        || in_array($ref, gitRemoteBranches($site), true)) {
+                        respond(['ok' => false, 'code' => 'GIT_CONFLICT', 'message' => 'That branch name already exists locally or as an exact remote branch.']);
+                    }
+                    runGit($site, ['branch', $ref, 'HEAD']);
+                }
                 elseif ($action === 'set-remote') {
                     $url = trim((string) ($operation['url'] ?? '')); if (!preg_match('#^(https://|git@)[^\s]+$#', $url)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
                     runGit($site, ['remote', 'remove', 'origin'], true); runGit($site, ['remote', 'add', 'origin', $url]);
@@ -9118,8 +9521,76 @@ try {
                         if ($deployment['exitCode'] !== 0) $notice = 'Files were updated, but deployment failed. Review the failed step before retrying.';
                     }
                 }
-                elseif ($action === 'push') runGit($site, $ref ? ['push', '-u', 'origin', $ref] : ['push']);
-                elseif ($action === 'checkout') runGit($site, ['checkout', $ref]);
+                elseif ($action === 'push') {
+                    if ($ref) gitKnownBranch($site, $ref, false);
+                    runGit($site, $ref ? ['push', '-u', 'origin', 'refs/heads/' . $ref] : ['push']);
+                }
+                elseif ($action === 'checkout') {
+                    if ($ref === '') invalidBrokerRequest();
+                    $selected = gitKnownBranch($site, $ref);
+                    if (!$selected['remote']) runGit($site, ['checkout', $ref]);
+                    else {
+                        $parts = explode('/', $ref, 2);
+                        $local = $parts[1] ?? '';
+                        validateDeploymentBranch($site, $local);
+                        if (runGit($site, ['show-ref', '--verify', '--quiet', 'refs/heads/' . $local], true)['code'] === 0) {
+                            respond(['ok' => false, 'code' => 'GIT_CONFLICT', 'message' => 'A local branch with that tracking name already exists.']);
+                        }
+                        runGit($site, ['checkout', '--track', '-b', $local, $ref]);
+                    }
+                }
+                elseif ($action === 'set-upstream') {
+                    if ($ref === '' || !in_array($ref, gitRemoteBranches($site), true)) invalidBrokerRequest();
+                    $current = trim(runGit($site, ['branch', '--show-current'], true)['stdout']);
+                    if ($current === '') respond(['ok' => false, 'code' => 'GIT_CONFLICT', 'message' => 'Check out a local branch before setting its upstream.']);
+                    runGit($site, ['branch', '--set-upstream-to=' . $ref, $current]);
+                }
+                elseif ($action === 'merge') {
+                    if ($ref === '') invalidBrokerRequest();
+                    if (gitChanges($site)) respond(['ok' => false, 'code' => 'GIT_CONFLICT', 'message' => 'Commit or move local changes before merging.']);
+                    $selected = gitKnownBranch($site, $ref);
+                    $merge = runGit($site, array_merge(gitIdentityOptions($site), ['merge', '--no-edit', $selected['name']]), true);
+                    if ($merge['code'] !== 0) {
+                        $mergeState = gitOperationState($site);
+                        if ($mergeState['operation'] === 'merge' && $mergeState['conflictedFiles']) {
+                            $notice = 'The merge stopped on conflicts. Resolve every listed file, then continue or abort the merge.';
+                        } else {
+                            respond(['ok' => false, 'code' => 'GIT_FAILED', 'message' => redactDeploymentText(trim($merge['stderr'] ?: $merge['stdout']))]);
+                        }
+                    }
+                }
+                elseif ($action === 'resolve-conflict') {
+                    $choice = (string) ($operation['choice'] ?? '');
+                    if (!in_array($choice, ['ours', 'theirs', 'working'], true)) invalidBrokerRequest();
+                    $state = gitOperationState($site);
+                    if ($state['operation'] === null || (($choice === 'ours' || $choice === 'theirs') && $state['operation'] !== 'merge')) invalidBrokerRequest();
+                    $path = gitConflictPath($site, (string) ($operation['path'] ?? ''));
+                    if ($choice !== 'working') runGit($site, ['checkout', '--' . $choice, '--', $path]);
+                    runGit($site, ['add', '--', $path]);
+                }
+                elseif ($action === 'continue') {
+                    $state = gitOperationState($site);
+                    if ($state['operation'] === null || $state['conflictedFiles']) respond(['ok' => false, 'code' => 'GIT_CONFLICT', 'message' => 'Resolve every conflicted file before continuing.']);
+                    $identity = gitIdentityOptions($site);
+                    $args = match ($state['operation']) {
+                        'merge' => ['commit', '--no-edit'],
+                        'rebase' => ['-c', 'core.editor=true', 'rebase', '--continue'],
+                        'cherry-pick' => ['cherry-pick', '--continue'],
+                        'revert' => ['revert', '--continue'],
+                    };
+                    runGit($site, array_merge($identity, $args));
+                }
+                elseif ($action === 'abort') {
+                    $state = gitOperationState($site);
+                    if ($state['operation'] === null) invalidBrokerRequest();
+                    $args = match ($state['operation']) {
+                        'merge' => ['merge', '--abort'],
+                        'rebase' => ['rebase', '--abort'],
+                        'cherry-pick' => ['cherry-pick', '--abort'],
+                        'revert' => ['revert', '--abort'],
+                    };
+                    runGit($site, $args);
+                }
                 elseif ($action === 'commit') { $message = trim((string) ($operation['message'] ?? '')); if ($message === '' || strlen($message) > 500) respond(['ok' => false, 'code' => 'INVALID_REQUEST']); runGit($site, ['add', '--all']); runGit($site, ['commit', '-m', $message]); }
                 elseif ($action === 'diff') {
                     $change = gitChangedPath($site, (string) ($operation['path'] ?? ''));

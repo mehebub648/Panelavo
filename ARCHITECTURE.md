@@ -197,3 +197,5 @@ DomainsManager refreshes server components after successful domain POST actions 
 Operations uses separate Deployment, Runtime, Advanced tools, Scheduled jobs, and Logs tabs on local and connected-server routes. Tab and step URL parameters survive refresh and browser history. Jobs and logs load on first selection and remain mounted after switching.
 
 Git failures distinguish authentication, dirty working trees, diverged history, missing upstreams, missing identity, empty history, SSH host identity, and network failures. Recovery messages identify the relevant repository view without exposing raw command output or recommending deletion of existing application files.
+
+Broker protocol 30 adds preserved Git imports, exact branch/upstream actions, structured history and validated conflict recovery. Install the trusted broker from this release before activating the application. Imports revalidate exact file fingerprints, preserve `.well-known`, and keep a site-user private originals backup outside the application root. Git mutations retain the website lock and fixed argument arrays; no force checkout, automatic stash, reset, or force push is added.

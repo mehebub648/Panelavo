@@ -4,13 +4,19 @@ import { gitReference } from "@/lib/deployment";
 const gitPath = z.string().min(1).max(4096).refine((value) => !value.includes("\0"));
 const gitBranch = z.union([gitReference, z.literal("")]).optional();
 export const gitRequestSchema = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("clone"), url: z.string().min(1).max(1000), branch: gitBranch }).strict(),
+  z.object({ action: z.literal("clone"), url: z.string().min(1).max(1000), branch: gitBranch, preserveExisting: z.boolean().optional() }).strict(),
   z.object({ action: z.literal("init") }).strict(),
   z.object({ action: z.literal("set-remote"), url: z.string().min(1).max(1000) }).strict(),
   z.object({ action: z.literal("fetch") }).strict(),
   z.object({ action: z.literal("pull"), branch: gitBranch, filesOnly: z.boolean().optional() }).strict(),
   z.object({ action: z.literal("push"), branch: gitBranch }).strict(),
   z.object({ action: z.literal("checkout"), branch: gitReference }).strict(),
+  z.object({ action: z.literal("create-branch"), branch: gitReference }).strict(),
+  z.object({ action: z.literal("set-upstream"), branch: gitReference }).strict(),
+  z.object({ action: z.literal("merge"), branch: gitReference }).strict(),
+  z.object({ action: z.literal("resolve-conflict"), path: gitPath, choice: z.enum(["ours", "theirs", "working"]) }).strict(),
+  z.object({ action: z.literal("continue") }).strict(),
+  z.object({ action: z.literal("abort") }).strict(),
   z.object({ action: z.literal("commit"), message: z.string().trim().min(1).max(500) }).strict(),
   z.object({ action: z.literal("diff"), path: gitPath }).strict(),
   z.object({ action: z.literal("discard"), path: gitPath }).strict(),

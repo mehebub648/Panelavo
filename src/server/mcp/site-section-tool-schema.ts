@@ -380,9 +380,13 @@ const gitPathSchema = z
   .min(1)
   .max(4096)
   .refine(noNul, "Git paths cannot contain NUL bytes.");
-const gitBranchSchema = z
-  .union([z.string().regex(/^[A-Za-z0-9._\/-]{1,200}$/), z.literal("")])
-  .optional();
+const gitReferenceSchema = z.string().min(1).max(200)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._/-]*$/)
+  .refine((value) => !value.includes("..") && !value.includes("//") &&
+    !value.endsWith("/") && !value.endsWith(".") &&
+    !value.split("/").some((part) => part.startsWith(".") || part.endsWith(".lock")),
+    "Choose a valid branch name.");
+const gitBranchSchema = z.union([gitReferenceSchema, z.literal("")]).optional();
 const gitRemoteSchema = z
   .string()
   .min(1)
@@ -396,6 +400,7 @@ const gitOperationSchema = z.discriminatedUnion("action", [
       action: z.literal("clone"),
       url: gitRemoteSchema,
       branch: gitBranchSchema,
+      preserveExisting: z.boolean().optional(),
     })
     .strict(),
   z.object({ action: z.literal("init") }).strict(),
@@ -406,9 +411,15 @@ const gitOperationSchema = z.discriminatedUnion("action", [
   z
     .object({
       action: z.literal("checkout"),
-      branch: z.string().regex(/^[A-Za-z0-9._\/-]{1,200}$/),
+      branch: gitReferenceSchema,
     })
     .strict(),
+  z.object({ action: z.literal("create-branch"), branch: gitReferenceSchema }).strict(),
+  z.object({ action: z.literal("set-upstream"), branch: gitReferenceSchema }).strict(),
+  z.object({ action: z.literal("merge"), branch: gitReferenceSchema }).strict(),
+  z.object({ action: z.literal("resolve-conflict"), path: gitPathSchema, choice: z.enum(["ours", "theirs", "working"]) }).strict(),
+  z.object({ action: z.literal("continue") }).strict(),
+  z.object({ action: z.literal("abort") }).strict(),
   z
     .object({
       action: z.literal("commit"),

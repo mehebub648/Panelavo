@@ -2,9 +2,36 @@ import { describe, expect, it } from "vitest";
 import {
   backupRequestSchema,
   envRequestSchema,
+  gitRequestSchema,
   operationsRequestSchema,
   terminalRequestSchema,
 } from "./operations";
+
+describe("gitRequestSchema", () => {
+  it("accepts bounded branch, import and conflict recovery actions", () => {
+    for (const action of ["create-branch", "checkout", "set-upstream", "merge"]) {
+      expect(gitRequestSchema.parse({ action, branch: "origin/release/v1" })).toEqual({ action, branch: "origin/release/v1" });
+    }
+    expect(gitRequestSchema.parse({ action: "clone", url: "https://example.test/app.git", preserveExisting: true })).toMatchObject({ preserveExisting: true });
+    for (const choice of ["ours", "theirs", "working"]) {
+      expect(gitRequestSchema.parse({ action: "resolve-conflict", path: "src/page.tsx", choice })).toMatchObject({ choice });
+    }
+    for (const action of ["continue", "abort"]) expect(gitRequestSchema.parse({ action })).toEqual({ action });
+  });
+
+  it("rejects force options, unsafe branch names and arbitrary recovery commands", () => {
+    for (const branch of ["--force", "main..other", "a//b", "a.lock", "/main"]) {
+      expect(gitRequestSchema.safeParse({ action: "create-branch", branch }).success).toBe(false);
+    }
+    for (const operation of [
+      { action: "checkout", branch: "main", force: true },
+      { action: "clone", url: "https://example.test/app.git", preserveExisting: "yes" },
+      { action: "resolve-conflict", path: "file\0.txt", choice: "working" },
+      { action: "resolve-conflict", path: "file.txt", choice: "shell" },
+      { action: "abort", command: "reset --hard" },
+    ]) expect(gitRequestSchema.safeParse(operation).success).toBe(false);
+  });
+});
 
 describe("operationsRequestSchema", () => {
   it("accepts allow-listed actions and deployment plan identifiers", () => {

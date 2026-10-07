@@ -148,6 +148,7 @@ describe("MCP site-section tool schema", () => {
           action: "clone",
           url: "https://github.com/example/app.git",
           branch: "main",
+          preserveExisting: true,
         },
         { action: "init" },
         {
@@ -158,6 +159,12 @@ describe("MCP site-section tool schema", () => {
         { action: "pull", branch: "main" },
         { action: "push", branch: "main" },
         { action: "checkout", branch: "release/v1" },
+        { action: "create-branch", branch: "release/v2" },
+        { action: "set-upstream", branch: "origin/release/v2" },
+        { action: "merge", branch: "release/v2" },
+        { action: "resolve-conflict", path: "src/index.ts", choice: "working" },
+        { action: "continue" },
+        { action: "abort" },
         { action: "commit", message: "Deploy release" },
         { action: "diff", path: "src/index.ts" },
         { action: "discard", path: "src/index.ts" },
@@ -314,6 +321,12 @@ describe("MCP site-section tool schema", () => {
   });
 
   it("retains existing conditional operation and per-area limits", () => {
+    for (const branch of ["--force", "main..other", "a//b", "a.lock", "/main"]) {
+      rejects("git", { action: "create-branch", branch });
+    }
+    rejects("git", { action: "resolve-conflict", path: "file.txt", choice: "shell" });
+    rejects("git", { action: "continue", command: "reset --hard" });
+    rejects("git", { action: "clone", url: "https://example.test/app.git", preserveExisting: "yes" });
     rejects("actions", { action: "run", command: "npm-run" });
     rejects("actions", {
       action: "run",

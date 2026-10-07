@@ -145,7 +145,7 @@ const STORAGE_GROWING_ACTIONS: Record<string, Set<string>> = {
     "save-file",
     "upload",
   ]),
-  git: new Set(["checkout", "clone", "fetch", "pull"]),
+  git: new Set(["checkout", "clone", "fetch", "pull", "merge", "resolve-conflict", "continue"]),
 };
 
 const STORAGE_GROWING_OPERATION_COMMANDS = new Set([
