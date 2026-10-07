@@ -323,6 +323,35 @@ describe("GitManager", () => {
     ]);
   });
 
+  it("keeps a rejected branch dialog open with its actionable error visible", async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(
+        response({
+          success: false,
+          error: { message: "Branch name already exists: feature/existing" },
+        }),
+      )
+      .mockResolvedValueOnce(response({ success: true, data: repository }));
+    renderManager();
+    fireEvent.click(screen.getByRole("tab", { name: "Branches" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create branch" }));
+
+    const dialog = screen.getByRole("dialog", { name: "Create branch" });
+    fireEvent.change(within(dialog).getByLabelText("Branch name"), {
+      target: { value: "feature/existing" },
+    });
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Create branch" }),
+    );
+
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+      "Branch name already exists: feature/existing",
+    );
+    expect(dialog).toBeVisible();
+    expect(screen.getByRole("button", { name: "Open Branches" })).toBeVisible();
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
   it("shows recovery links and restricts replacement choices to merge conflicts", async () => {
     const conflicted: GitData = {
       ...repository,

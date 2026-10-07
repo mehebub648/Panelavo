@@ -68,10 +68,19 @@ function recoveryFor(message: string): { tab: GitTab; detail: string } {
       detail:
         "Review the origin URL and add this website's deployment key to the repository, then retry.",
     };
-  if (/dirty|local changes|working tree|uncommitted/i.test(message))
+  if (
+    /dirty|local changes|working tree|uncommitted|protect your local files|open changes/i.test(
+      message,
+    )
+  )
     return {
       tab: "changes",
       detail: "Commit the listed changes or discard them explicitly.",
+    };
+  if (/no first commit|first commit/i.test(message))
+    return {
+      tab: "changes",
+      detail: "Create the first commit from Changes before using branches.",
     };
   if (/conflict|unresolved|continue|abort/i.test(message))
     return {
@@ -95,6 +104,16 @@ function recoveryFor(message: string): { tab: GitTab; detail: string } {
     return {
       tab: "branches",
       detail: "Choose an exact remote branch as the tracking upstream.",
+    };
+  if (
+    /branch name already exists|tracking name already exists|choose an existing .*branch|invalid (?:branch|ref)|unknown (?:branch|ref)|(?:branch|ref) .*not (?:found|exist)/i.test(
+      message,
+    )
+  )
+    return {
+      tab: "branches",
+      detail:
+        "Review the exact local and remote branch names, then choose a different existing ref or a unique new name.",
     };
   return {
     tab: "connection",
@@ -511,7 +530,10 @@ export function GitManager({
                   <Button
                     size="sm"
                     disabled={!changes.length || busy}
-                    onClick={() => setCommitOpen(true)}
+                    onClick={() => {
+                      setActionError("");
+                      setCommitOpen(true);
+                    }}
                   >
                     <GitCommit className="h-4 w-4" /> Commit
                   </Button>
@@ -613,7 +635,10 @@ export function GitManager({
                     variant="outline"
                     size="sm"
                     disabled={busy}
-                    onClick={() => setCreateBranchOpen(true)}
+                    onClick={() => {
+                      setActionError("");
+                      setCreateBranchOpen(true);
+                    }}
                   >
                     <Plus className="h-4 w-4" /> Create branch
                   </Button>
@@ -772,7 +797,10 @@ export function GitManager({
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => setRemoteOpen(true)}
+                    onClick={() => {
+                      setActionError("");
+                      setRemoteOpen(true);
+                    }}
                   >
                     Edit remote
                   </Button>
@@ -872,6 +900,11 @@ export function GitManager({
             <p className="text-xs text-slate-500">
               SSH remotes use the deployment public key shown in this tab.
             </p>
+            {actionError && (
+              <p role="alert" className="text-sm text-red-700">
+                {actionError}
+              </p>
+            )}
             <Button disabled={busy}>Save remote</Button>
           </form>
         </Modal>
@@ -900,6 +933,11 @@ export function GitManager({
                 required
               />
             </div>
+            {actionError && (
+              <p role="alert" className="text-sm text-red-700">
+                {actionError}
+              </p>
+            )}
             <Button disabled={busy}>Commit all changes</Button>
           </form>
         </Modal>
@@ -930,6 +968,11 @@ export function GitManager({
               Creates a local branch from the current commit without publishing
               it.
             </p>
+            {actionError && (
+              <p role="alert" className="text-sm text-red-700">
+                {actionError}
+              </p>
+            )}
             <Button disabled={busy}>Create branch</Button>
           </form>
         </Modal>
