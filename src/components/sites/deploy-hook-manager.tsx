@@ -65,6 +65,7 @@ export function DeployHookManager({
 }) {
   const base = `${apiBase}/api/sites/${encodeURIComponent(domain)}`;
   const [settings, setSettings] = useState<Settings>();
+  const [savedSettings, setSavedSettings] = useState<Settings>();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [command, setCommand] = useState<DeployHookOperation["command"]>();
@@ -81,6 +82,7 @@ export function DeployHookManager({
           result.error?.message || "Deployment settings could not be loaded.",
         );
       setSettings(result.data);
+      setSavedSettings(result.data);
     } catch (reason) {
       setError(
         reason instanceof Error
@@ -88,6 +90,7 @@ export function DeployHookManager({
           : "Deployment settings could not be loaded.",
       );
       setSettings(undefined);
+      setSavedSettings(undefined);
     } finally {
       setBusy(false);
     }
@@ -129,6 +132,13 @@ export function DeployHookManager({
   const selectedArgument = argumentsAvailable.includes(argument)
     ? argument
     : (argumentsAvailable[0] ?? "");
+  const dirty = Boolean(
+    savedSettings &&
+      (settings.branch !== savedSettings.branch ||
+        settings.healthPath !== savedSettings.healthPath ||
+        settings.automationEnabled !== savedSettings.automationEnabled ||
+        JSON.stringify(settings.hooks) !== JSON.stringify(savedSettings.hooks)),
+  );
   function change(patch: Partial<Settings>) {
     setSettings((current) => (current ? { ...current, ...patch } : current));
   }
@@ -154,7 +164,9 @@ export function DeployHookManager({
         throw new Error(
           result.error?.message || "Deployment settings could not be saved.",
         );
-      change(result.data);
+      const next = { ...settings, ...result.data };
+      setSettings(next);
+      setSavedSettings(next);
       toast.success("Deployment settings saved");
     } catch (reason) {
       setError(
@@ -334,11 +346,32 @@ export function DeployHookManager({
             Save this setting before using the API. Only the configured branch
             and its tested commit are accepted.
           </p>
-          <AutomaticDeployment
-            domain={domain}
-            apiBase={apiBase}
-            branch={settings.branch}
-          />
+          {settings.automationEnabled && !savedSettings?.automationEnabled && (
+            <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-800">
+              Save changes to enable automatic deployment and create a token.
+            </p>
+          )}
+          {!settings.automationEnabled && savedSettings?.automationEnabled && (
+            <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-800">
+              Save changes to disable automatic deployment. Existing tokens
+              remain active until you save.
+            </p>
+          )}
+          {settings.automationEnabled && savedSettings?.automationEnabled && (
+            <>
+              {settings.branch !== savedSettings.branch && (
+                <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-800">
+                  Save changes to update the CI branch. The workflow below still
+                  uses the saved branch: {savedSettings.branch}.
+                </p>
+              )}
+              <AutomaticDeployment
+                domain={domain}
+                apiBase={apiBase}
+                branch={savedSettings.branch}
+              />
+            </>
+          )}
         </div>
       </details>
       {error && (
@@ -346,8 +379,8 @@ export function DeployHookManager({
           {error}
         </p>
       )}
-      <Button disabled={busy} onClick={() => void save()}>
-        {busy ? "Validating…" : "Save deployment settings"}
+      <Button disabled={busy || !dirty} onClick={() => void save()}>
+        {busy ? "Validating…" : "Save changes"}
       </Button>
     </div>
   );

@@ -405,3 +405,5 @@ After creating an application website, the website list shows its exact assigned
 Website navigation keeps common tasks visible and groups Vhost, Git & Deploy and Terminal under Developer tools. The same direct URLs and browser Back/Forward behavior remain available.
 
 Website Settings can align the proxy with an already-running application owned by that website. The target must be a healthy private loopback listener and cannot belong to another website; Panelavo checks it again after saving and restores the previous proxy setting if it stops responding.
+
+Git & Deploy presents the deployment workflow first. Advanced tools contain Update files only, which skips build, migrations and application restart and can immediately change PHP/static pages. Automatic deployment tokens and generated workflows are available only after saving enablement; workflows use the saved branch.

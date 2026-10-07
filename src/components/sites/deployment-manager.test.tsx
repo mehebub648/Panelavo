@@ -12,6 +12,7 @@ import {
 } from "@testing-library/react";
 import { DeploymentManager, DeploymentOutput } from "./deployment-manager";
 import { DeployHookManager } from "./deploy-hook-manager";
+import { GitManager } from "./git-manager";
 import { LazySiteSection } from "./lazy-site-section";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
@@ -98,6 +99,102 @@ describe("deployment browser workflow", () => {
       screen.queryByRole("button", { name: /Save/ }),
     ).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
+  });
+  it("waits for saved automation settings before showing CI tokens", async () => {
+    vi.mocked(fetch).mockResolvedValue({
+      json: async () => ({
+        success: true,
+        data: {
+          hooks: [],
+          branch: "main",
+          healthPath: "/",
+          automationEnabled: false,
+        },
+      }),
+    } as Response);
+    render(<DeployHookManager domain="site.test" />);
+    const automation = (await screen.findByText("Automatic deployment")).closest(
+      "details",
+    )!;
+    automation.open = true;
+    const toggle = await screen.findByRole("checkbox", {
+      name: "Allow deployment from CI",
+    });
+    expect(
+      screen.queryByRole("button", { name: "Create deployment token" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(toggle);
+    expect(
+      screen.getByText(/Save changes to enable automatic deployment/),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "Create deployment token" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeEnabled();
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+  it("keeps the generated workflow on the saved branch until changes are saved", async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce({
+        json: async () => ({
+          success: true,
+          data: {
+            hooks: [],
+            branch: "main",
+            healthPath: "/",
+            automationEnabled: true,
+          },
+        }),
+      } as Response)
+      .mockResolvedValueOnce({
+        json: async () => ({
+          success: true,
+          data: { tokens: [], endpoint: "https://panel.test/deployments" },
+        }),
+      } as Response);
+    render(<DeployHookManager domain="site.test" />);
+    const automation = (await screen.findByText("Automatic deployment")).closest(
+      "details",
+    )!;
+    automation.open = true;
+    expect(
+      await screen.findByRole("button", { name: "Create deployment token" }),
+    ).toBeVisible();
+    fireEvent.change(screen.getByDisplayValue("main"), {
+      target: { value: "feature" },
+    });
+    expect(screen.getByText(/workflow below still uses the saved branch: main/)).toBeVisible();
+    expect(screen.getByText(/refs\/heads\/main/)).toBeInTheDocument();
+    expect(screen.queryByText(/refs\/heads\/feature/)).not.toBeInTheDocument();
+  });
+  it("keeps the files-only update inside Advanced Git tools", async () => {
+    vi.mocked(fetch).mockResolvedValue({
+      json: async () => ({ success: true, data: { jobs: [] } }),
+    } as Response);
+    render(
+      <GitManager
+        domain="site.test"
+        canWrite
+        initialData={{
+          isRepository: true,
+          path: "/home/site/app",
+          branch: "main",
+          head: "abc123",
+          remotes: [["origin", "git@example.test:repo.git", "(fetch)"]],
+          branches: ["main"],
+          changes: [],
+          commits: [],
+          upstream: "origin/main",
+          ahead: 0,
+          behind: 0,
+        }}
+      />,
+    );
+    const update = screen.getByRole("button", { name: "Update files only" });
+    expect(update.closest("details")).toHaveTextContent("Advanced Git tools");
+    expect(
+      screen.getByRole("button", { name: "Deploy latest changes" }),
+    ).toBeVisible();
   });
   it("blocks deployment when history or server capability cannot be loaded", async () => {
     vi.mocked(fetch).mockResolvedValue({

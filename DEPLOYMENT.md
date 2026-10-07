@@ -205,3 +205,5 @@ For v0.1.143 listener diagnostics, install the updated root-owned bridge through
 From v0.1.149, new domain additions and creation expose an explicit www companion choice. Existing host lists are preserved; adding a www companion attaches its routing before DNS and SSL preparation.
 
 When changing a website port to an already-running site-owned listener, start and verify the application first, then save the exact port in Settings. Existing listeners are health-gated before and after the proxy update; the previous proxy setting is restored if the target fails the second check.
+
+Save automatic deployment settings before generating a CI workflow or token. Pending branch edits do not change the workflow until saved. Use the normal deployment action when build and restart hooks are needed; Update files only is an advanced Git action.

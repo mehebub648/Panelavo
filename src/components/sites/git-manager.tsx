@@ -248,24 +248,26 @@ export function GitManager({
         }
       />
       {data.deployment && <DeploymentOutput result={data} />}
-      <div className="rounded-xl border p-4">
-        <Button
-          variant="outline"
-          disabled={busy || !origin || !data.branch || changes.length > 0}
-          onClick={() => setUpdateFiles(true)}
-        >
-          <ArrowDownToLine className="h-4 w-4" />
-          Update files only
-        </Button>
-        <p className="mt-2 text-xs text-slate-500">
-          Skips deployment steps. Updated files can immediately affect PHP and
-          static websites.
-        </p>
-      </div>
       <details className="space-y-4 rounded-2xl border bg-slate-50 p-4">
         <summary className="cursor-pointer font-semibold">
           Advanced Git tools
         </summary>
+        <div className="rounded-xl border bg-white p-4">
+          <h3 className="text-sm font-semibold">Update source without deployment</h3>
+          <p className="mt-1 text-xs text-slate-500">
+            Pull the latest files without running build, migration, or restart
+            steps. PHP and static websites may change immediately.
+          </p>
+          <Button
+            className="mt-3"
+            variant="outline"
+            disabled={busy || !origin || !data.branch || changes.length > 0}
+            onClick={() => setUpdateFiles(true)}
+          >
+            <ArrowDownToLine className="h-4 w-4" />
+            Update files only
+          </Button>
+        </div>
         <div className="flex flex-wrap gap-2">
           <Button
             variant="outline"
