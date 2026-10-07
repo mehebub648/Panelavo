@@ -2,7 +2,13 @@
 
 import React from "react";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CloudPanelUser, PanelRole } from "@/types/cloudpanel";
 import { AppShell } from "./app-shell";
@@ -78,6 +84,11 @@ describe("Fleet navigation visibility", () => {
       "href",
       "/settings",
     );
+    expect(screen.getByRole("link", { name: "Websites" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    expect(screen.getByRole("button", { name: "Open account menu" })).toBeVisible();
     expect(
       screen.getByRole("link", { name: "Cloudflare DNS" }),
     ).toHaveAttribute("href", "/domains");
@@ -203,5 +214,19 @@ describe("Fleet navigation visibility", () => {
       "/sites",
     );
     expect(screen.getByText("Local content")).toBeInTheDocument();
+  });
+
+  it("locks background scrolling while the responsive menu is open", () => {
+    render(
+      <AppShell user={user("user")}>
+        <p>Content</p>
+      </AppShell>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Open navigation" }));
+    expect(screen.getByLabelText("Main menu")).toBeVisible();
+    expect(document.body.style.overflow).toBe("hidden");
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByLabelText("Main menu")).not.toBeInTheDocument();
+    expect(document.body.style.overflow).toBe("");
   });
 });

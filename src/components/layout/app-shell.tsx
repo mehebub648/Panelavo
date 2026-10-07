@@ -83,6 +83,19 @@ export function AppShell({
   }, [superAdmin, pathname]);
   const [open, setOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    const previous = document.body.style.overflow;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.body.style.overflow = "hidden";
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previous;
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
   const title = pathname.startsWith("/servers/")
     ? pathname.endsWith("/sites/new")
       ? "Add website"
@@ -216,7 +229,10 @@ export function AppShell({
       <div className="flex h-20 items-center border-b border-slate-100 px-6">
         <Brand />
       </div>
-      <nav className="flex-1 space-y-1 px-3 py-6" aria-label="Main navigation">
+      <nav
+        className="min-h-0 flex-1 space-y-1 overflow-y-auto px-3 py-6"
+        aria-label="Main navigation"
+      >
         {nav.map(({ href, label, icon: Icon }) => {
           const active = href.includes("?tab=")
             ? href === fleetSectionHref(serverId, section)
@@ -225,9 +241,10 @@ export function AppShell({
             <Link
               key={href}
               href={href}
+              aria-current={active ? "page" : undefined}
               onClick={() => setOpen(false)}
               className={cn(
-                "flex h-11 items-center gap-3 rounded-lg px-3.5 text-sm font-semibold transition",
+                "flex h-11 items-center gap-3 rounded-lg px-3.5 text-sm font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-panel-500",
                 active
                   ? "bg-panel-50 text-panel-700"
                   : "text-slate-500 hover:bg-slate-50 hover:text-slate-900",
@@ -281,12 +298,17 @@ export function AppShell({
             className="absolute inset-0 bg-slate-950/30"
             onClick={() => setOpen(false)}
           />
-          <aside className="relative flex h-full w-[280px] flex-col bg-white shadow-2xl">
+          <aside
+            role="dialog"
+            aria-modal="true"
+            aria-label="Main menu"
+            className="relative flex h-full w-[min(280px,85vw)] flex-col bg-white shadow-2xl"
+          >
             {sidebar}
           </aside>
         </div>
       )}
-      <div className="lg:pl-64">
+      <div className="min-w-0 lg:pl-64">
         <header className="sticky top-0 z-20 flex min-h-20 flex-wrap items-center justify-between gap-y-2 border-b border-slate-200/80 bg-white/95 px-4 py-3 backdrop-blur sm:px-8">
           <div className="flex min-w-0 items-center gap-3">
             <Button
@@ -326,7 +348,10 @@ export function AppShell({
           </div>
           <DropdownMenu.Root>
             <DropdownMenu.Trigger asChild>
-              <button className="flex items-center gap-3 rounded-xl px-2 py-1.5 text-left outline-none hover:bg-slate-50 focus-visible:ring-2 focus-visible:ring-panel-500">
+              <button
+                aria-label="Open account menu"
+                className="flex items-center gap-3 rounded-xl px-2 py-1.5 text-left outline-none hover:bg-slate-50 focus-visible:ring-2 focus-visible:ring-panel-500"
+              >
                 <span className="hidden text-right sm:block">
                   <span className="block text-sm font-semibold text-slate-800">
                     {user.username}
@@ -370,7 +395,9 @@ export function AppShell({
             </DropdownMenu.Portal>
           </DropdownMenu.Root>
         </header>
-        <main className="px-4 py-7 sm:px-8 sm:py-9">{children}</main>
+        <main className="min-w-0 overflow-x-clip px-4 py-6 sm:px-8 sm:py-9">
+          {children}
+        </main>
       </div>
     </div>
   );
