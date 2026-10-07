@@ -185,3 +185,5 @@ The global /domains route and connected-server domains tab retain their URLs but
 Certificate reuse activates a matching unexpired trusted certificate. Issuance selects only certificates covering the complete requested hostname set and propagates default-activation failures.
 
 Broker protocol 28 accepts an explicit per-domain wwwCanonical map (bare/www/both) while retaining legacy wwwRedirects. Both attached names are required. The vhost transformer removes the prior managed redirect block, recreates the chosen direction and preserves ACME challenges and request URI.
+
+Root listener inspection carries an explicit availability verdict through Operations, endpoint verification and port repair. Failed or unavailable socket inspection is distinct from an empty listener list and cannot authorize a port change or pass deployment verification.

@@ -215,3 +215,5 @@ Use website Domains to attach an address; use Cloudflare DNS for provider record
 If a covering certificate is installed but inactive, Recheck DNS & secure activates it without another issuance. Activation failures are shown for recovery.
 
 Broker protocol 28 adds both canonical-address redirect directions. Install the trusted root-owned broker from this release before the application; the ordinary updater refuses an incompatible broker. Existing bare-to-www preferences remain compatible.
+
+Use Website traffic in Operations to compare the configured proxy port with detected application listeners. Resolve an inspection-unavailable warning before relying on ownership verification or port repair.

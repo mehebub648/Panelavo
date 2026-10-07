@@ -126,6 +126,8 @@ export type SiteEndpointOperation =
 export type SiteEndpointResult = {
   ports?: SiteEndpointPort[];
   probe?: SiteEndpointProbe;
+  inspectionAvailable?: boolean;
+  inspectionDetail?: string;
   checkedAt: string;
 };
 

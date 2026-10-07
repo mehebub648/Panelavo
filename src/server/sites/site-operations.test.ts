@@ -376,6 +376,33 @@ describe("normalizeOperationsData", () => {
     ).toMatchObject({ status: "blocked" });
   });
 
+  it("reports listener inspection as unavailable without claiming the app is stopped", () => {
+    const data = normalizeOperationsData({
+      ...base,
+      type: "nodejs",
+      expectedPort: 30004,
+      port: {
+        expected: 30004,
+        listening: false,
+        conflict: false,
+        detected: [],
+        inspectionAvailable: false,
+        detail: "Panelavo could not inspect the server listener table.",
+      },
+    });
+
+    expect(
+      data.preflight.checks.find((item) => item.id === "runtime-port"),
+    ).toMatchObject({
+      status: "warning",
+      blocker: false,
+      detail: "Panelavo could not inspect the server listener table.",
+      remediation: expect.stringContaining(
+        "restore the listener-inspection tool",
+      ),
+    });
+  });
+
   it("uses the detected Node package manager and includes deterministic build and PM2 steps", () => {
     const data = normalizeOperationsData({
       ...base,
@@ -470,6 +497,26 @@ describe("normalizeOperationsData", () => {
       data.preflight.checks.find((item) => item.id === "upstream-port"),
     ).toMatchObject({ status: "blocked", blocker: true });
     expect(data.preflight.status).toBe("blocked");
+  });
+
+  it("does not call a reverse-proxy upstream stopped when listener inspection is unavailable", () => {
+    const data = normalizeOperationsData({
+      ...base,
+      type: "reverse-proxy",
+      reverseProxyUrl: "http://127.0.0.1:24001",
+      expectedPort: 24001,
+      port: {
+        expected: 24001,
+        listening: false,
+        detected: [],
+        inspectionAvailable: false,
+        detail: "Panelavo could not inspect the server listener table.",
+      },
+    });
+
+    expect(
+      data.preflight.checks.find((item) => item.id === "upstream-port"),
+    ).toMatchObject({ status: "warning", blocker: false });
   });
 
   it("blocks an ambiguous Node lockfile selection instead of guessing", () => {

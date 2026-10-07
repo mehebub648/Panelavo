@@ -147,6 +147,7 @@ export type SitePortCapability = {
   owned?: boolean;
   conflict?: boolean;
   detected: number[];
+  inspectionAvailable?: boolean;
   detail: string;
 };
 

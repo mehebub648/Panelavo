@@ -1551,12 +1551,20 @@ function requestedPortConflict(
 // Read listening sockets once from the host and mark the processes that are
 // owned by this site's Unix user. The UI receives only port numbers and a safe
 // summary; PIDs and command lines never leave the bridge.
-function hostListeningPorts(Site $site): array
+function hostListeningPortInspection(Site $site): array
 {
     $binary = is_executable('/usr/bin/ss') ? '/usr/bin/ss' : (is_executable('/usr/sbin/ss') ? '/usr/sbin/ss' : null);
-    if (!$binary) return [];
+    if (!$binary) return [
+        'available' => false,
+        'listeners' => [],
+        'detail' => 'Panelavo could not inspect listeners because the ss tool is unavailable.',
+    ];
     $result = runSiteCommand($site, [$binary, '-H', '-ltnp'], 15, true);
-    if ($result['code'] !== 0) return [];
+    if ($result['code'] !== 0) return [
+        'available' => false,
+        'listeners' => [],
+        'detail' => 'Panelavo could not inspect the server listener table. Refresh after checking the ss tool and broker permissions.',
+    ];
     $account = function_exists('posix_getpwnam') ? posix_getpwnam((string) $site->getUser()) : false;
     $siteUid = is_array($account) ? (int) ($account['uid'] ?? -1) : -1;
     $root = siteRootPath($site);
@@ -1583,7 +1591,7 @@ function hostListeningPorts(Site $site): array
         }
         $items[] = ['port' => $port, 'address' => (string) $parts[3], 'siteOwned' => $siteOwned, 'process' => $process];
     }
-    return $items;
+    return ['available' => true, 'listeners' => $items, 'detail' => 'Listener ownership was inspected.'];
 }
 
 function isSafeEndpointAddress(string $address, int $port): bool
@@ -1600,7 +1608,8 @@ function manageSiteEndpoint($manager, Site $site, array $operation): array
 {
     $action = $operation['action'] ?? null;
     if (!in_array($action, ['list', 'verify'], true)) invalidBrokerRequest();
-    $listeners = hostListeningPorts($site);
+    $inspection = hostListeningPortInspection($site);
+    $listeners = $inspection['listeners'];
     $owned = array_values(array_map(
         static fn(array $item): array => [
             'port' => (int) $item['port'],
@@ -1615,10 +1624,22 @@ function manageSiteEndpoint($manager, Site $site, array $operation): array
         ),
     ));
     usort($owned, static fn(array $left, array $right): int => $left['port'] <=> $right['port']);
-    $result = ['ports' => $owned, 'checkedAt' => gmdate(DATE_ATOM)];
+    $result = [
+        'ports' => $owned,
+        'inspectionAvailable' => $inspection['available'],
+        'inspectionDetail' => $inspection['detail'],
+        'checkedAt' => gmdate(DATE_ATOM),
+    ];
     if ($action === 'list') return $result;
 
     $port = brokerPortValue($operation['port'] ?? null);
+    if (empty($inspection['available'])) return $result + ['probe' => [
+        'port' => $port,
+        'owned' => false,
+        'loopback' => false,
+        'reachable' => false,
+        'detail' => $inspection['detail'],
+    ]];
     $endpointDomain = isset($operation['endpointDomain'])
         ? brokerDomainValue($operation['endpointDomain'])
         : null;
@@ -1693,9 +1714,21 @@ function manageSiteEndpoint($manager, Site $site, array $operation): array
     ], static fn($value) => $value !== null)];
 }
 
-function sitePortCapability(Site $site, array $listeners): array
+function sitePortCapability(Site $site, array $inspection): array
 {
     $expected = expectedSitePort($site);
+    $listeners = (array) ($inspection['listeners'] ?? []);
+    if (empty($inspection['available'])) return [
+        'expected' => $expected,
+        'listening' => false,
+        'occupied' => false,
+        'owned' => false,
+        'projectOwned' => false,
+        'conflict' => false,
+        'detected' => [],
+        'inspectionAvailable' => false,
+        'detail' => (string) ($inspection['detail'] ?? 'Panelavo could not inspect server listeners.'),
+    ];
     $sitePorts = array_values(array_unique(array_map(
         static fn(array $item): int => (int) $item['port'],
         array_filter($listeners, static fn(array $item): bool => !empty($item['siteOwned'])),
@@ -1728,6 +1761,7 @@ function sitePortCapability(Site $site, array $listeners): array
         'projectOwned' => $projectOwned,
         'conflict' => $conflict,
         'detected' => $sitePorts,
+        'inspectionAvailable' => true,
         'detail' => $detail,
     ];
 }
@@ -2265,8 +2299,9 @@ function operationsState(Site $site, User $user): array
     $nodeBin = nodeBinPath($home);
     if ($nodeBin && preg_match('#/node/v?([0-9.]+)/bin$#', $nodeBin, $match)) $tools['node']['version'] = $match[1];
     $pythonManifest = is_file($root . '/requirements.txt') || is_file($root . '/pyproject.toml') || is_file($root . '/Pipfile');
-    $listeners = hostListeningPorts($site);
-    $port = sitePortCapability($site, $listeners);
+    $listenerInspection = hostListeningPortInspection($site);
+    $listeners = $listenerInspection['listeners'];
+    $port = sitePortCapability($site, $listenerInspection);
     $compose = $composeFile !== null ? composeCapability($site, $root, $composeFile) : null;
     $portRepair = portRepairCapability($site, $root, $port, $composeFile, $compose, $package, $ecosystem);
     return [
@@ -2832,8 +2867,10 @@ function executeOperationSteps(Site $site, array $steps): array
                 $expectedPort = (int) $stepDefinition['verifyOwnedPort'];
                 $capability = null;
                 for ($attempt = 0; $attempt < 12; $attempt++) {
-                    $capability = sitePortCapability($site, hostListeningPorts($site));
-                    if (!empty($capability['listening']) || !empty($capability['conflict'])) break;
+                    $capability = sitePortCapability($site, hostListeningPortInspection($site));
+                    if (empty($capability['inspectionAvailable'])
+                        || !empty($capability['listening'])
+                        || !empty($capability['conflict'])) break;
                     usleep(5000000);
                 }
                 if (!empty($capability['conflict']) || empty($capability['listening'])) {
@@ -3975,7 +4012,7 @@ function portRepairPlanForSite(Site $site): array
     foreach (['ecosystem.config.js', 'ecosystem.config.cjs', 'ecosystem.config.json'] as $candidate) {
         if (is_file($root . '/' . $candidate)) { $ecosystem = $candidate; break; }
     }
-    $port = sitePortCapability($site, hostListeningPorts($site));
+    $port = sitePortCapability($site, hostListeningPortInspection($site));
     return portRepairCapability($site, $root, $port, $composeFile, $compose, $package, $ecosystem);
 }
 

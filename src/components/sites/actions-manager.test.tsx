@@ -203,4 +203,56 @@ describe("ActionsManager", () => {
     });
     expect(mocks.refresh).toHaveBeenCalled();
   });
+
+  it("keeps the configured traffic target visible when listener inspection is unavailable", () => {
+    const initialData = normalizeOperationsData({
+      type: "nodejs",
+      path: "/home/site/htdocs/example.test",
+      permissions: { manage: true, docker: false },
+      expectedPort: 30004,
+      port: {
+        expected: 30004,
+        listening: false,
+        conflict: false,
+        detected: [],
+        inspectionAvailable: false,
+        detail: "Panelavo could not inspect the server listener table.",
+      },
+    });
+
+    render(<ActionsManager domain="example.test" initialData={initialData} />);
+
+    expect(
+      screen.getByRole("region", { name: "Website traffic alignment" }),
+    ).toHaveTextContent("127.0.0.1:30004");
+    expect(screen.getByText("Listener check unavailable")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Application is not listening on the website port"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows the configured and detected ports when website traffic is misaligned", () => {
+    const initialData = normalizeOperationsData({
+      type: "nodejs",
+      path: "/home/site/htdocs/example.test",
+      permissions: { manage: true, docker: false },
+      expectedPort: 34000,
+      port: {
+        expected: 34000,
+        listening: false,
+        conflict: false,
+        detected: [24000],
+        inspectionAvailable: true,
+        detail: "This site owns another listener, but not the configured port.",
+      },
+    });
+
+    render(<ActionsManager domain="example.test" initialData={initialData} />);
+
+    const traffic = screen.getByRole("region", {
+      name: "Website traffic alignment",
+    });
+    expect(traffic).toHaveTextContent("127.0.0.1:34000");
+    expect(traffic).toHaveTextContent("Site-owned listener: 24000");
+  });
 });

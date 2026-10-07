@@ -684,8 +684,10 @@ function preflightChecks(raw: RawOperationsData, type: string) {
         raw.port.listening,
         raw.port.detail,
         raw.port.detail,
-        raw.portRepair?.detail ||
-          `The deployment will provide PORT=${raw.port.expected} and verify 127.0.0.1:${raw.port.expected}. If an ecosystem file overrides PORT, update it to match the configured port.`,
+        raw.port.inspectionAvailable === false
+          ? "Refresh this check. If it remains unavailable, ask a server administrator to restore the listener-inspection tool and broker permissions before changing the application."
+          : raw.portRepair?.detail ||
+              `The deployment will provide PORT=${raw.port.expected} and verify 127.0.0.1:${raw.port.expected}. If an ecosystem file overrides PORT, update it to match the configured port.`,
         {
           warning: !raw.port.conflict,
           fix: raw.portRepair?.canApply
@@ -695,6 +697,7 @@ function preflightChecks(raw: RawOperationsData, type: string) {
       ),
     );
   } else if (type === "reverse-proxy" && raw.port?.expected) {
+    const inspectionUnavailable = raw.port.inspectionAvailable === false;
     checks.push(
       check(
         "upstream-port",
@@ -702,7 +705,10 @@ function preflightChecks(raw: RawOperationsData, type: string) {
         raw.port.listening,
         raw.port.detail,
         raw.port.detail,
-        `Start the upstream on 127.0.0.1:${raw.port.expected}, or change the reverse-proxy URL in Settings.`,
+        inspectionUnavailable
+          ? "Refresh this check. If it remains unavailable, ask a server administrator to restore the listener-inspection tool and broker permissions before changing the upstream."
+          : `Start the upstream on 127.0.0.1:${raw.port.expected}, or change the reverse-proxy URL in Settings.`,
+        { warning: inspectionUnavailable },
       ),
     );
   }

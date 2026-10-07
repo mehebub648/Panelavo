@@ -442,6 +442,18 @@ export function ActionsManager({
   const envDrift = (runtime?.env ?? []).filter(
     (item) => item.status === "differs" || item.status === "missing",
   );
+  const traffic = data.port;
+  const trafficFix = data.preflight.checks.find(
+    (item) => item.id === "runtime-port" || item.id === "upstream-port",
+  )?.fix;
+  const trafficTone =
+    traffic?.inspectionAvailable === false
+      ? "border-amber-200 bg-amber-50 text-amber-800"
+      : traffic?.listening
+        ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+        : traffic?.conflict
+          ? "border-red-200 bg-red-50 text-red-700"
+          : "border-amber-200 bg-amber-50 text-amber-800";
 
   return (
     <div
@@ -462,11 +474,13 @@ export function ActionsManager({
                   item.state === "running" && item.health !== "unhealthy",
               ) || data.pm2?.some((item) => item.status === "online")
                 ? "Application is running"
-                : data.port?.listening
-                  ? "Application port is responding"
-                  : ["php", "static"].includes(data.type)
-                    ? "Served by the website server"
-                    : "Runtime status is unavailable or stopped"}
+                : data.port?.inspectionAvailable === false
+                  ? "Application runtime could not be verified"
+                  : data.port?.listening
+                    ? "Application listener is aligned"
+                    : ["php", "static"].includes(data.type)
+                      ? "Served by the website server"
+                      : "Runtime status is unavailable or stopped"}
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -515,6 +529,71 @@ export function ActionsManager({
           </div>
         </div>
       </section>
+      {traffic?.expected && (
+        <section
+          className="rounded-2xl border bg-white p-5 shadow-card"
+          aria-label="Website traffic alignment"
+        >
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <Network
+                  className="h-5 w-5 text-panel-600"
+                  aria-hidden="true"
+                />
+                <h3 className="font-bold">Website traffic</h3>
+              </div>
+              <p className="mt-2 text-sm text-slate-600">
+                CloudPanel sends this website to{" "}
+                <code className="rounded bg-slate-100 px-1.5 py-0.5 font-semibold text-slate-800">
+                  127.0.0.1:{traffic.expected}
+                </code>
+                .
+              </p>
+              <div
+                className={cn(
+                  "mt-3 inline-flex rounded-lg border px-3 py-2 text-sm font-semibold",
+                  trafficTone,
+                )}
+              >
+                {traffic.inspectionAvailable === false
+                  ? "Listener check unavailable"
+                  : traffic.listening
+                    ? "Listener aligned"
+                    : traffic.conflict
+                      ? "Port conflict"
+                      : "Application is not listening on the website port"}
+              </div>
+              <p className="mt-2 max-w-3xl text-sm text-slate-600">
+                {traffic.detail}
+              </p>
+              {traffic.detected.length > 0 && !traffic.listening && (
+                <p className="mt-2 text-xs text-slate-500">
+                  Site-owned listener{traffic.detected.length === 1 ? "" : "s"}:{" "}
+                  {traffic.detected.join(", ")}
+                </p>
+              )}
+            </div>
+            {data.permissions?.manage && trafficFix?.status === "ready" ? (
+              <Button
+                type="button"
+                disabled={busy}
+                onClick={(event) => requestFix(trafficFix, event.currentTarget)}
+              >
+                <Zap className="h-4 w-4" aria-hidden="true" />
+                Fix port configuration
+              </Button>
+            ) : !traffic.listening && traffic.inspectionAvailable !== false ? (
+              <a
+                className="inline-flex items-center rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                href={`${apiBase ? apiBase.replace(/^\/api\/fleet\/servers\//, "/servers/").replace(/\/proxy$/, "") : ""}/sites/${encodeURIComponent(domain)}/settings`}
+              >
+                Review port settings
+              </a>
+            ) : null}
+          </div>
+        </section>
+      )}
       <DeploymentManager
         domain={domain}
         apiBase={apiBase}
