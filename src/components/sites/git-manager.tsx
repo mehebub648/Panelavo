@@ -778,11 +778,16 @@ export function GitManager({
                   </Button>
                 )}
               </div>
-              {canWrite && (
-                <div className="mt-5">
-                  <DeploymentKey domain={domain} apiBase={apiBase} />
-                </div>
-              )}
+            </section>
+          )}
+          {canWrite && (
+            <section className="rounded-2xl border bg-white p-5 shadow-card">
+              <h3 className="font-bold">Private repository access</h3>
+              <p className="mt-1 text-sm text-slate-500">
+                Add this website&apos;s public key to a private repository
+                before cloning with its SSH URL.
+              </p>
+              <DeploymentKey domain={domain} apiBase={apiBase} />
             </section>
           )}
           {data.isRepository && (
@@ -790,7 +795,7 @@ export function GitManager({
               data={data}
               busy={busy}
               canWrite={canWrite}
-              filesUrl={`${siteRoute}/files`}
+              filesUrl={`${siteRoute}/file-manager`}
               terminalUrl={`${siteRoute}/terminal`}
               resolveWorking={(path) =>
                 void action(

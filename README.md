@@ -431,3 +431,5 @@ Settings shows the exact safe reason when a port is reserved, owned by another p
 After a successful domain change, installed certificate coverage and active status refresh immediately on the same page.
 
 Git failures distinguish authentication, dirty working trees, diverged history, missing upstreams, missing identity, empty history, SSH host identity, and network failures. Recovery messages identify the relevant repository view without exposing raw command output or recommending deletion of existing application files.
+
+Connection & Recovery exposes the website public deployment key before cloning. Failed key reads offer a read-only Retry without creating credentials. Conflict Files links open the actual File Manager route.

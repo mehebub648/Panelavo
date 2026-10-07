@@ -1,6 +1,9 @@
 "use client";
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
+
+const loadErrorMessage =
+  "Could not load the deployment key. The panel may still be restarting. Retry in a moment.";
 
 export function DeploymentKey({
   domain,
@@ -11,20 +14,31 @@ export function DeploymentKey({
 }) {
   const [key, setKey] = useState<string>();
   const [error, setError] = useState("");
+  const [loadError, setLoadError] = useState("");
+  const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const base = `${apiBase}/api/sites/${encodeURIComponent(domain)}/sections/users`;
-  useEffect(() => {
-    fetch(base)
-      .then((response) => response.json())
-      .then((result) => {
-        if (!result.success)
-          throw new Error(
-            result.error?.message || "Could not load the deployment key.",
-          );
-        setKey(result.data.keyPair?.publicKey || "");
-      })
-      .catch((reason) => setError(reason.message));
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setLoadError("");
+    setKey(undefined);
+    try {
+      const response = await fetch(base);
+      if (!response.ok) throw new Error("Deployment key request failed");
+      const result = await response.json();
+      if (!result.success) throw new Error("Deployment key response failed");
+      setKey(result.data.keyPair?.publicKey || "");
+    } catch {
+      setLoadError(loadErrorMessage);
+    } finally {
+      setLoading(false);
+    }
   }, [base]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
   async function generate() {
     setBusy(true);
     setError("");
@@ -79,8 +93,19 @@ export function DeploymentKey({
         >
           Create deployment key
         </Button>
+      ) : loading ? (
+        <p className="text-xs">Loading public key…</p>
+      ) : loadError ? (
+        <div className="space-y-2">
+          <p role="alert" className="text-sm text-red-700">
+            {loadError}
+          </p>
+          <Button variant="outline" size="sm" onClick={() => void load()}>
+            Retry
+          </Button>
+        </div>
       ) : (
-        <p className="text-xs">{error || "Loading public key…"}</p>
+        <p className="text-xs">Loading public key…</p>
       )}
       {error && key !== undefined && (
         <p role="alert" className="text-sm text-red-700">

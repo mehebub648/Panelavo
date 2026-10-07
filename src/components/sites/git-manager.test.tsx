@@ -269,6 +269,10 @@ describe("GitManager", () => {
 
     expect(screen.getByText("index.php")).toBeVisible();
     expect(screen.getByText("storage/data.json")).toBeVisible();
+    expect(screen.getByText("Deployment key")).toBeVisible();
+    expect(
+      screen.getByText(/Add this website's public key.*before cloning/),
+    ).toBeVisible();
     const clone = screen.getByRole("button", { name: "Clone repository" });
     expect(clone).toBeDisabled();
     fireEvent.change(screen.getByLabelText("Repository URL"), {
@@ -334,7 +338,7 @@ describe("GitManager", () => {
 
     expect(screen.getByRole("link", { name: "Open Files" })).toHaveAttribute(
       "href",
-      "/servers/server-1/sites/site.test/files?path=src%2Fapp.ts",
+      "/servers/server-1/sites/site.test/file-manager?path=src%2Fapp.ts",
     );
     expect(screen.getByRole("link", { name: "Open Terminal" })).toHaveAttribute(
       "href",

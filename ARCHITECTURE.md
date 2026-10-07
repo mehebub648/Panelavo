@@ -201,3 +201,5 @@ Git failures distinguish authentication, dirty working trees, diverged history, 
 Broker protocol 30 adds preserved Git imports, exact branch/upstream actions, structured history and validated conflict recovery. Install the trusted broker from this release before activating the application. Imports revalidate exact file fingerprints, preserve `.well-known`, and keep a site-user private originals backup outside the application root. Git mutations retain the website lock and fixed argument arrays; no force checkout, automatic stash, reset, or force push is added.
 
 Git & Deploy uses accessible tabs with a persistent `gitTab` URL. Failed mutations refresh server state and keep an actionable error visible; conflict results show a recovery notice. Branch switching, merging, version replacement and abort require explicit review. The history graph uses the broker's exact commit hashes and parent links; read-only users retain status, branches and history.
+
+Connection & Recovery exposes the website public deployment key before cloning. Failed key reads offer a read-only Retry without creating credentials. Conflict Files links open the actual File Manager route.
