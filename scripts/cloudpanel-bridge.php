@@ -32,7 +32,7 @@ use App\Site\Updater\StaticSite as StaticSiteUpdater;
 use Symfony\Component\Dotenv\Dotenv;
 
 const CLOUDPANEL_ROOT = '/home/clp/htdocs/app/files';
-const PANELAVO_BROKER_PROTOCOL_VERSION = 27;
+const PANELAVO_BROKER_PROTOCOL_VERSION = 28;
 const PANELAVO_BROKER_MAX_INPUT_BYTES = 100663296;
 const PANELAVO_ROOTLESS_MIGRATION_ROOT = '/var/lib/panelavo/rootless-migrations';
 const PANELAVO_ROOTLESS_MIGRATION_TTL = 86400;
@@ -785,7 +785,7 @@ function pathIsContained(string $candidate, string $root): bool
 //   #panel:block:start ... #panel:block:end
 // ACME challenge requests stay reachable while blocking, so certificates for
 // the system domain keep renewing.
-function applyDomainConfig(string $template, array $aliases, string $block, string $systemDomain, string $redirectTo, array $wwwRedirects = []): string
+function applyDomainConfig(string $template, array $aliases, string $block, string $systemDomain, string $redirectTo, array $wwwCanonical = []): string
 {
     $stripped = [];
     $skipping = false;
@@ -809,13 +809,16 @@ function applyDomainConfig(string $template, array $aliases, string $block, stri
         $result[] = $aliases
             ? $indent . 'server_name ' . $orig . ' ' . implode(' ', $aliases) . '; #panel:orig=' . $orig
             : $line;
-        if ($wwwRedirects) {
+        $redirectPairs = array_filter($wwwCanonical, fn($mode) => $mode !== 'both');
+        if ($redirectPairs) {
             $result[] = $indent . '#panel:www:start';
-            foreach ($wwwRedirects as $source) {
+            foreach ($redirectPairs as $bare => $mode) {
+                $source = $mode === 'apex' ? 'www.' . $bare : $bare;
+                $target = $mode === 'apex' ? $bare : 'www.' . $bare;
                 $result[] = $indent . 'set $panel_www_redirect "";';
                 $result[] = $indent . 'if ($host = "' . $source . '") { set $panel_www_redirect "1"; }';
                 $result[] = $indent . 'if ($request_uri ~ "^/\.well-known/acme-challenge/") { set $panel_www_redirect ""; }';
-                $result[] = $indent . 'if ($panel_www_redirect = "1") { return 301 https://www.' . $source . '$request_uri; }';
+                $result[] = $indent . 'if ($panel_www_redirect = "1") { return 301 https://' . $target . '$request_uri; }';
             }
             $result[] = $indent . '#panel:www:end';
         }
@@ -9084,12 +9087,18 @@ try {
                 if (!in_array($block, ['none', 'error', 'redirect'], true)) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
                 $redirectTo = strtolower((string) ($operation['redirectTo'] ?? ''));
                 if ($block === 'redirect' && (!preg_match($domainPattern, $redirectTo) || $redirectTo === $site->getDomainName())) respond(['ok' => false, 'code' => 'INVALID_REQUEST']);
-                $wwwRedirects = $operation['wwwRedirects'] ?? [];
-                if (!is_array($wwwRedirects) || count($wwwRedirects) > 5) invalidBrokerRequest();
-                foreach ($wwwRedirects as $source) {
-                    if (!is_string($source) || !preg_match($domainPattern, $source) || str_starts_with($source, 'www.') || !in_array($source, $aliases, true) || !in_array('www.' . $source, $aliases, true)) invalidBrokerRequest();
+                $wwwCanonical = $operation['wwwCanonical'] ?? null;
+                if ($wwwCanonical === null) {
+                    $wwwRedirects = $operation['wwwRedirects'] ?? [];
+                    if (!is_array($wwwRedirects) || count($wwwRedirects) > 5) invalidBrokerRequest();
+                    $wwwCanonical = [];
+                    foreach ($wwwRedirects as $source) $wwwCanonical[(string) $source] = 'www';
                 }
-                $content = applyDomainConfig((string) $site->getVhostTemplate(), $aliases, $block, $site->getDomainName(), $redirectTo, array_values(array_unique($wwwRedirects)));
+                if (!is_array($wwwCanonical) || count($wwwCanonical) > 5) invalidBrokerRequest();
+                foreach ($wwwCanonical as $source => $mode) {
+                    if (!is_string($source) || !is_string($mode) || !in_array($mode, ['apex', 'www', 'both'], true) || !preg_match($domainPattern, $source) || str_starts_with($source, 'www.') || !in_array($source, $aliases, true) || !in_array('www.' . $source, $aliases, true)) invalidBrokerRequest();
+                }
+                $content = applyDomainConfig((string) $site->getVhostTemplate(), $aliases, $block, $site->getDomainName(), $redirectTo, $wwwCanonical);
                 $site->setVhostTemplate($content);
                 $model->setVhostTemplate($content);
                 $updater->updateNginxVhostWithRollback();
