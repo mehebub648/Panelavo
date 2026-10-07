@@ -221,3 +221,5 @@ Use Website traffic in Operations to compare the configured proxy port with dete
 Existing CNAME aliases can be kept when they reach this origin. For a conflicting CNAME, change or remove the exact record in Cloudflare and retry website DNS setup.
 
 Cloudflare-proxied addresses can be ready even when public DNS returns edge IPs. Connect the relevant zone so Panelavo can verify the origin. A DNS-ready badge does not prove HTTP routing or certificate activation; verify those independently.
+
+A rejected port change now reports its specific ownership, reservation or health failure. If the target fails after the change, the message distinguishes a restored proxy from a rollback failure.

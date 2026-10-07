@@ -421,3 +421,5 @@ Operations always displays Website traffic with the configured private port and 
 DNS preparation preserves a valid www CNAME that already leads to this server. A conflicting CNAME is reported with instructions to change it in Cloudflare; Panelavo does not overwrite it automatically.
 
 Domains distinguishes direct DNS from Cloudflare proxy DNS with a verified origin. Proxy edge addresses do not have to match the server address: connected provider records must prove the origin and the hostname must resolve publicly. HTTPS and application health are checked separately.
+
+Settings shows the exact safe reason when a port is reserved, owned by another project, cannot be inspected, or fails health checks. A failed upstream change explains whether the previous proxy setting was restored.

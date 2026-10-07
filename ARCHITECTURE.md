@@ -189,3 +189,5 @@ Broker protocol 28 accepts an explicit per-domain wwwCanonical map (apex/www/bot
 Root listener inspection carries an explicit availability verdict through Operations, endpoint verification and port repair. Failed or unavailable socket inspection is distinct from an empty listener list and cannot authorize a port change or pass deployment verification.
 
 Actor-scoped DNS readiness uses resolveDnsOriginStatus. A direct public answer to the server is sufficient, including wildcard DNS; otherwise a public answer plus a connected proxied A/CNAME chain must prove this origin. Provider failures are contained per hostname and cannot replace missing evidence. SSL planning and domain reads share this verdict.
+
+Update-site diagnostics use an exact message-pattern and bridge-code allowlist before reaching the browser. Unrecognized privileged output remains generic, preserving the credential boundary.

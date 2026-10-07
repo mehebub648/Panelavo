@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createdSiteFromBridge,
   privilegedErrorMessage,
+  siteUpdateErrorMessage,
   siteSectionBridgeError,
   siteSectionTimeout,
   vpnBridgeError,
@@ -144,6 +145,76 @@ describe("privilegedErrorMessage", () => {
     ).toBe(
       "Use 2–50 characters, starting with a letter and containing only letters, numbers, and hyphens.",
     );
+  });
+});
+
+describe("siteUpdateErrorMessage", () => {
+  const fallback = "The server could not update the website.";
+
+  it("surfaces safe port ownership and reservation details", () => {
+    expect(
+      siteUpdateErrorMessage(
+        {
+          code: "INVALID_REQUEST",
+          message: "Port 31001 is reserved by another CloudPanel website.",
+        },
+        fallback,
+      ),
+    ).toBe("Port 31001 is reserved by another CloudPanel website.");
+    expect(
+      siteUpdateErrorMessage(
+        {
+          code: "INVALID_REQUEST",
+          message:
+            "Port 31001 is listening, but it is not a loopback listener owned by this project.",
+        },
+        fallback,
+      ),
+    ).toContain("not a loopback listener owned by this project");
+  });
+
+  it("explains whether a failed upstream change was restored", () => {
+    expect(
+      siteUpdateErrorMessage(
+        {
+          code: "INVALID_REQUEST",
+          message:
+            "The selected upstream stopped responding while CloudPanel was updated. The previous proxy setting was restored.",
+        },
+        fallback,
+      ),
+    ).toContain("previous proxy setting was restored");
+    expect(
+      siteUpdateErrorMessage(
+        {
+          code: "BRIDGE_FAILED",
+          message:
+            "The selected upstream stopped responding, and Panelavo could not restore the previous proxy setting automatically.",
+        },
+        fallback,
+      ),
+    ).toContain("could not restore");
+  });
+
+  it("keeps unexpected bridge output behind the generic error", () => {
+    expect(
+      siteUpdateErrorMessage(
+        {
+          code: "BRIDGE_FAILED",
+          message: "Failed while reading /etc/shadow: secret output",
+        },
+        fallback,
+      ),
+    ).toBe(fallback);
+    expect(
+      siteUpdateErrorMessage(
+        {
+          code: "BRIDGE_FAILED",
+          message: "Port 31001 is reserved by another CloudPanel website.",
+        },
+        fallback,
+      ),
+    ).toBe(fallback);
   });
 });
 

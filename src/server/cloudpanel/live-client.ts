@@ -466,6 +466,61 @@ export function privilegedErrorMessage(detail: string, fallback: string) {
   return fallback;
 }
 
+const SAFE_SITE_UPDATE_DETAILS: ReadonlyArray<readonly [string, RegExp]> = [
+  [
+    "INVALID_REQUEST",
+    /^Application port \d{1,5} is already reserved or listening on this server\.$/,
+  ],
+  [
+    "INVALID_REQUEST",
+    /^Port \d{1,5} is reserved by another CloudPanel website\.$/,
+  ],
+  [
+    "INVALID_REQUEST",
+    /^Port \d{1,5} also has a public, wildcard, or foreign listener and cannot be used safely\.$/,
+  ],
+  [
+    "INVALID_REQUEST",
+    /^Port \d{1,5} is listening, but it is not a loopback listener owned by this project\.$/,
+  ],
+  [
+    "INVALID_REQUEST",
+    /^The port belongs to this project, but curl is unavailable for the health check\.$/,
+  ],
+  [
+    "INVALID_REQUEST",
+    /^The project owns this loopback port, but its HTTP health check failed\.$/,
+  ],
+  [
+    "INVALID_REQUEST",
+    /^Panelavo could not inspect listeners because the ss tool is unavailable\.$/,
+  ],
+  [
+    "INVALID_REQUEST",
+    /^Panelavo could not inspect the server listener table\. Refresh after checking the ss tool and broker permissions\.$/,
+  ],
+  [
+    "INVALID_REQUEST",
+    /^The selected upstream stopped responding while CloudPanel was updated\. The previous proxy setting was restored\.$/,
+  ],
+  [
+    "BRIDGE_FAILED",
+    /^The selected upstream stopped responding, and Panelavo could not restore the previous proxy setting automatically\.$/,
+  ],
+];
+
+export function siteUpdateErrorMessage(
+  result: Pick<BridgeResult, "code" | "message">,
+  fallback: string,
+) {
+  const detail = result.message?.trim() ?? "";
+  return SAFE_SITE_UPDATE_DETAILS.some(
+    ([code, pattern]) => code === result.code && pattern.test(detail),
+  )
+    ? detail
+    : fallback;
+}
+
 export function vpnBridgeError(result: BridgeResult) {
   const detail = result.message?.trim();
   if (result.code === "FORBIDDEN")
@@ -917,7 +972,10 @@ export class LiveCloudPanelClient implements CloudPanelClient {
     if (!result.ok)
       throw this.privilegedError(
         result,
-        "The server could not update the website.",
+        siteUpdateErrorMessage(
+          result,
+          "The server could not update the website.",
+        ),
       );
     if (!result.site)
       throw new AppError(
