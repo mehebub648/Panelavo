@@ -173,3 +173,5 @@ Local and Fleet settings distinguish a failed environment request from the read-
 Creation redirects carry the returned site type and actual CloudPanel appPort or loopback reverseProxyUrl port. The website list uses these returned values for its creation handoff rather than recalculating from a stale preview ID.
 
 Domain addition accepts an optional includeWww choice and attaches the selected names before recording metadata. Creation submits the explicit served aliases array. DNS point/delete and SSL planning operate on exactly those hosts, preventing www resolution or certification without matching NGINX routing.
+
+Settings port changes reuse the root-owned endpoint inventory and HTTP probe. A requested occupied port requires same-site ownership, loopback-only bindings, no competing listener or CloudPanel reservation, and a post-update health check with proxy rollback on failure.

@@ -203,3 +203,5 @@ Set `PANELAVO_OPENAI_APPS_CHALLENGE` only to the domain-verification text provid
 For v0.1.143 listener diagnostics, install the updated root-owned bridge through trusted setup.sh. Existing ports are not reassigned. Healthy HTTP responses do not override failed ownership or loopback verification. Artifact binary requests need the creating MCP credential's bearer token; connector-managed tokens may be unavailable to shell tools, so use the direct file-upload tool for files up to 64 MiB or create the session with a client controlling its own credential.
 
 From v0.1.149, new domain additions and creation expose an explicit www companion choice. Existing host lists are preserved; adding a www companion attaches its routing before DNS and SSL preparation.
+
+When changing a website port to an already-running site-owned listener, start and verify the application first, then save the exact port in Settings. Existing listeners are health-gated before and after the proxy update; the previous proxy setting is restored if the target fails the second check.

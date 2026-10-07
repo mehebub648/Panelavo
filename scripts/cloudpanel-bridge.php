@@ -1532,6 +1532,19 @@ function requestedSitePort(array $siteInput): ?int
     return is_numeric($port) ? brokerPortValue($port) : null;
 }
 
+function requestedPortConflict(
+    ?int $requested,
+    ?int $current,
+    array $reserved,
+    ?array $probe,
+): ?string {
+    if ($requested === null || $requested === $current || !in_array($requested, $reserved, true)) return null;
+    if ($probe && !empty($probe['owned']) && !empty($probe['loopback']) && !empty($probe['reachable'])) return null;
+    return is_string($probe['detail'] ?? null) && $probe['detail'] !== ''
+        ? $probe['detail']
+        : 'Application port ' . $requested . ' is already reserved or listening on this server.';
+}
+
 // Read listening sockets once from the host and mark the processes that are
 // owned by this site's Unix user. The UI receives only port numbers and a safe
 // summary; PIDs and command lines never leave the bridge.
@@ -1628,10 +1641,17 @@ function manageSiteEndpoint($manager, Site $site, array $operation): array
         static fn(array $item): bool => !empty($item['siteOwned'])
             && isSafeEndpointAddress((string) $item['address'], $port),
     ));
-    if (!$eligible) {
-        $detail = $matching
-            ? 'Port ' . $port . ' is listening, but it is not a loopback listener owned by this project.'
-            : 'Port ' . $port . ' is not listening yet.';
+    $ineligible = array_values(array_filter(
+        $matching,
+        static fn(array $item): bool => empty($item['siteOwned'])
+            || !isSafeEndpointAddress((string) $item['address'], $port),
+    ));
+    if (!$eligible || $ineligible) {
+        $detail = !$matching
+            ? 'Port ' . $port . ' is not listening yet.'
+            : ($eligible
+                ? 'Port ' . $port . ' also has a public, wildcard, or foreign listener and cannot be used safely.'
+                : 'Port ' . $port . ' is listening, but it is not a loopback listener owned by this project.');
         return $result + ['probe' => [
             'port' => $port,
             'owned' => false,
@@ -7049,6 +7069,18 @@ function runEndpointSelfTest(): never
     foreach (['0.0.0.0:22001', '*:22001', '127.0.0.1:22002'] as $unsafe) {
         if (isSafeEndpointAddress($unsafe, 22001)) throw new RuntimeException('Unsafe endpoint address accepted.');
     }
+    $owned = ['owned' => true, 'loopback' => true, 'reachable' => true, 'detail' => 'Healthy owned listener.'];
+    if (requestedPortConflict(24000, 34000, [24000, 34000], $owned) !== null) {
+        throw new RuntimeException('A healthy site-owned loopback target was rejected.');
+    }
+    $foreign = ['owned' => false, 'loopback' => true, 'reachable' => true, 'detail' => 'Foreign listener.'];
+    if (requestedPortConflict(24000, 34000, [24000, 34000], $foreign) !== 'Foreign listener.') {
+        throw new RuntimeException('A foreign reserved listener was accepted.');
+    }
+    if (requestedPortConflict(24000, 34000, [34000], null) !== null
+        || requestedPortConflict(34000, 34000, [34000], null) !== null) {
+        throw new RuntimeException('An available or unchanged port was rejected.');
+    }
     echo "Project endpoint self-test passed.\n";
     exit(0);
 }
@@ -9490,34 +9522,52 @@ try {
             $settings = $input['settings'] ?? [];
             if (!is_array($settings)) invalidBrokerRequest();
             $requestedPort = requestedSitePort($settings);
-            $verifiedEndpointPort = false;
+            $currentPort = expectedSitePort($site);
+            $reservedPorts = hostReservedPorts($manager);
+            $portProbeSite = $site;
+            $portProbeOperation = null;
             if ($requestedPort !== null && isset($input['endpointParentDomain'])) {
                 $parent = authorizedSite(
                     $manager,
                     $user,
                     brokerDomainValue($input['endpointParentDomain']),
                 );
-                $endpointCheck = manageSiteEndpoint($manager, $parent, [
+                $portProbeSite = $parent;
+                $portProbeOperation = [
                     'action' => 'verify',
                     'port' => $requestedPort,
                     'endpointDomain' => strtolower((string) $site->getDomainName()),
-                ]);
-                $probe = $endpointCheck['probe'] ?? null;
-                $verifiedEndpointPort = is_array($probe)
-                    && !empty($probe['owned'])
-                    && !empty($probe['loopback'])
-                    && !empty($probe['reachable']);
+                ];
+            } elseif ($requestedPort !== null
+                && $requestedPort !== $currentPort
+                && in_array($requestedPort, $reservedPorts, true)) {
+                $portProbeOperation = ['action' => 'verify', 'port' => $requestedPort];
             }
-            if ($requestedPort !== null
-                && $requestedPort !== expectedSitePort($site)
-                && in_array($requestedPort, hostReservedPorts($manager), true)
-                && !$verifiedEndpointPort) {
+            $portProbe = $portProbeOperation === null
+                ? null
+                : (manageSiteEndpoint($manager, $portProbeSite, $portProbeOperation)['probe'] ?? null);
+            $portConflict = requestedPortConflict(
+                $requestedPort,
+                $currentPort,
+                $reservedPorts,
+                is_array($portProbe) ? $portProbe : null,
+            );
+            if ($portConflict !== null) {
                 respond([
                     'ok' => false,
                     'code' => 'INVALID_REQUEST',
-                    'message' => 'Application port ' . $requestedPort . ' is already reserved or listening on this server.',
+                    'message' => $portConflict,
                 ]);
             }
+            $verifyPortAfterUpdate = $requestedPort !== null
+                && $requestedPort !== $currentPort
+                && is_array($portProbe)
+                && !empty($portProbe['owned'])
+                && !empty($portProbe['loopback'])
+                && !empty($portProbe['reachable']);
+            $previousNodePort = $site->getNodejsSettings()?->getPort();
+            $previousPythonPort = $site->getPythonSettings()?->getPort();
+            $previousReverseProxyUrl = $site->getReverseProxyUrl();
             $runtimeChanged = false;
             if (array_key_exists('applicationRootDirectory', $input) && !is_dir(siteRootPath($site))) {
                 respond(['ok' => false, 'code' => 'INVALID_REQUEST', 'message' => 'The root directory does not exist.']);
@@ -9565,6 +9615,47 @@ try {
                 $updater->updateNginxVhostWithRollback();
             }
             $manager->flush();
+            if ($verifyPortAfterUpdate && $portProbeOperation !== null) {
+                $postUpdate = manageSiteEndpoint($manager, $portProbeSite, $portProbeOperation);
+                $postProbe = $postUpdate['probe'] ?? null;
+                $postHealthy = is_array($postProbe)
+                    && !empty($postProbe['owned'])
+                    && !empty($postProbe['loopback'])
+                    && !empty($postProbe['reachable']);
+                if (!$postHealthy) {
+                    try {
+                        $restored = false;
+                        if ($model instanceof NodejsSiteModel && is_numeric($previousNodePort)) {
+                            $site->getNodejsSettings()->setPort((int) $previousNodePort);
+                            $updater->nodejsSettings();
+                            $restored = true;
+                        } elseif ($model instanceof PythonSiteModel && is_numeric($previousPythonPort)) {
+                            $site->getPythonSettings()->setPort((int) $previousPythonPort);
+                            $updater->pythonSettings();
+                            $restored = true;
+                        } elseif ($model instanceof ReverseProxySiteModel && is_string($previousReverseProxyUrl)) {
+                            $site->setReverseProxyUrl($previousReverseProxyUrl);
+                            $model->setReverseProxyUrl($previousReverseProxyUrl);
+                            $updater->updateNginxVhostWithRollback();
+                            $restored = true;
+                        }
+                        if (!$restored) throw new RuntimeException('No previous proxy setting was available.');
+                        $manager->flush();
+                    } catch (Throwable $rollbackError) {
+                        error_log('CloudPanel bridge port rollback: ' . $rollbackError::class . ': ' . $rollbackError->getMessage());
+                        respond([
+                            'ok' => false,
+                            'code' => 'BRIDGE_FAILED',
+                            'message' => 'The selected upstream stopped responding, and Panelavo could not restore the previous proxy setting automatically.',
+                        ], 1);
+                    }
+                    respond([
+                        'ok' => false,
+                        'code' => 'INVALID_REQUEST',
+                        'message' => 'The selected upstream stopped responding while CloudPanel was updated. The previous proxy setting was restored.',
+                    ]);
+                }
+            }
             respond(['ok' => true, 'site' => publicSite($site)]);
 
         default:
