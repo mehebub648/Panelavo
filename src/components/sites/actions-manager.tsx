@@ -4,6 +4,7 @@ import { DeploymentManager } from "@/components/sites/deployment-manager";
 import React, {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   useTransition,
@@ -124,6 +125,16 @@ const WORKFLOW_STEPS = [
   "Verify",
 ] as const;
 
+const WORKSPACE_TABS = [
+  ["deployment", "Deployment"],
+  ["runtime", "Runtime"],
+  ["advanced", "Advanced tools"],
+  ["jobs", "Scheduled jobs"],
+  ["logs", "Logs"],
+] as const;
+
+type WorkspaceTab = (typeof WORKSPACE_TABS)[number][0];
+
 function formatBytes(bytes: number) {
   if (!bytes) return "0 B";
   const units = ["B", "KB", "MB", "GB"];
@@ -201,14 +212,22 @@ export function ActionsManager({
   domain,
   initialData,
   apiBase = "",
+  scheduledJobs,
+  logs,
 }: {
   domain: string;
   initialData: OperationsData;
   apiBase?: string;
+  scheduledJobs?: React.ReactNode;
+  logs?: React.ReactNode;
 }) {
   const router = useRouter();
   const [data, setData] = useState(initialData);
   const [workflowStep, setWorkflowStep] = useState(0);
+  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("deployment");
+  const [openedWorkspaceTabs, setOpenedWorkspaceTabs] = useState<
+    Set<WorkspaceTab>
+  >(() => new Set(["deployment"]));
   const [showPassedChecks, setShowPassedChecks] = useState(false);
   const [latestRun, setLatestRun] = useState<OperationRun | null>(
     initialData.run ?? null,
@@ -231,20 +250,95 @@ export function ActionsManager({
   const outputRef = useRef<HTMLElement>(null);
   const confirmationTriggerRef = useRef<HTMLButtonElement | null>(null);
   const workflowHeadingRef = useRef<HTMLHeadingElement>(null);
+  const workspaceTabRefs = useRef<
+    Record<WorkspaceTab, HTMLButtonElement | null>
+  >({
+    deployment: null,
+    runtime: null,
+    advanced: null,
+    jobs: null,
+    logs: null,
+  });
+
+  const hasScheduledJobs = Boolean(scheduledJobs);
+  const hasLogs = Boolean(logs);
+  const visibleWorkspaceTabs = useMemo(
+    () =>
+      WORKSPACE_TABS.filter(([value]) => {
+        if (value === "jobs") return hasScheduledJobs;
+        if (value === "logs") return hasLogs;
+        return true;
+      }),
+    [hasLogs, hasScheduledJobs],
+  );
 
   useEffect(() => {
-    const syncStep = () => {
-      const value = Number(
-        new URLSearchParams(window.location.search).get("step"),
-      );
+    const syncLocation = (resetOpened: boolean) => {
+      const params = new URLSearchParams(window.location.search);
+      const value = Number(params.get("step"));
       setWorkflowStep(
         Number.isInteger(value) && value >= 1 && value <= 4 ? value - 1 : 0,
       );
+      const requestedTab = params.get("tab") as WorkspaceTab | null;
+      const resolvedTab =
+        requestedTab && visibleWorkspaceTabs.some(([tab]) => tab === requestedTab)
+          ? requestedTab
+          : "deployment";
+      setWorkspaceTab(resolvedTab);
+      setOpenedWorkspaceTabs((current) => {
+        if (resetOpened) return new Set(["deployment", resolvedTab]);
+        if (current.has(resolvedTab)) return current;
+        const next = new Set(current);
+        next.add(resolvedTab);
+        return next;
+      });
     };
-    syncStep();
-    window.addEventListener("popstate", syncStep);
-    return () => window.removeEventListener("popstate", syncStep);
-  }, [domain, apiBase]);
+    const syncHistory = () => syncLocation(false);
+    syncLocation(true);
+    window.addEventListener("popstate", syncHistory);
+    return () => window.removeEventListener("popstate", syncHistory);
+  }, [domain, apiBase, visibleWorkspaceTabs]);
+
+  function chooseWorkspaceTab(value: WorkspaceTab, focus = false) {
+    if (workspaceTab !== value) {
+      const url = new URL(window.location.href);
+      url.searchParams.set("tab", value);
+      window.history.pushState(null, "", url);
+    }
+    setWorkspaceTab(value);
+    setOpenedWorkspaceTabs((current) => {
+      if (current.has(value)) return current;
+      const next = new Set(current);
+      next.add(value);
+      return next;
+    });
+    if (focus) {
+      window.requestAnimationFrame(() =>
+        workspaceTabRefs.current[value]?.focus(),
+      );
+    }
+  }
+
+  function moveWorkspaceTab(
+    event: React.KeyboardEvent<HTMLButtonElement>,
+    current: WorkspaceTab,
+  ) {
+    const currentIndex = visibleWorkspaceTabs.findIndex(
+      ([tab]) => tab === current,
+    );
+    let nextIndex: number | undefined;
+    if (event.key === "ArrowRight")
+      nextIndex = (currentIndex + 1) % visibleWorkspaceTabs.length;
+    if (event.key === "ArrowLeft")
+      nextIndex =
+        (currentIndex - 1 + visibleWorkspaceTabs.length) %
+        visibleWorkspaceTabs.length;
+    if (event.key === "Home") nextIndex = 0;
+    if (event.key === "End") nextIndex = visibleWorkspaceTabs.length - 1;
+    if (nextIndex === undefined) return;
+    event.preventDefault();
+    chooseWorkspaceTab(visibleWorkspaceTabs[nextIndex][0], true);
+  }
 
   function chooseWorkflowStep(value: number) {
     const url = new URL(window.location.href);
@@ -349,6 +443,7 @@ export function ActionsManager({
       const outcome = result.data.run;
       if (outcome) {
         setLatestRun(outcome);
+        chooseWorkspaceTab("advanced");
         focusLatestOutput();
       }
       if (outcome?.timedOut) {
@@ -501,6 +596,43 @@ export function ActionsManager({
       aria-busy={busy}
       aria-live={isRefreshing ? "polite" : "off"}
     >
+      <div
+        role="tablist"
+        aria-label="Operations workspace"
+        className="flex gap-1 overflow-x-auto rounded-2xl border border-slate-200 bg-slate-100/70 p-1"
+      >
+        {visibleWorkspaceTabs.map(([value, label]) => (
+          <button
+            key={value}
+            ref={(element) => {
+              workspaceTabRefs.current[value] = element;
+            }}
+            type="button"
+            role="tab"
+            id={`operations-tab-${value}`}
+            aria-selected={workspaceTab === value}
+            aria-controls={`operations-panel-${value}`}
+            tabIndex={workspaceTab === value ? 0 : -1}
+            onClick={() => chooseWorkspaceTab(value)}
+            onKeyDown={(event) => moveWorkspaceTab(event, value)}
+            className={cn(
+              "min-h-10 shrink-0 rounded-xl px-4 py-2 text-sm font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-panel-500",
+              workspaceTab === value
+                ? "bg-white text-panel-700 shadow-sm"
+                : "text-slate-600 hover:bg-white/70 hover:text-slate-900",
+            )}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <div
+        role="tabpanel"
+        id="operations-panel-deployment"
+        aria-labelledby="operations-tab-deployment"
+        hidden={workspaceTab !== "deployment"}
+        className="space-y-5"
+      >
       <nav
         aria-label="Deployment steps"
         className="rounded-2xl border border-slate-200 bg-white p-2 shadow-card"
@@ -713,22 +845,10 @@ export function ActionsManager({
                   Restart application
                 </Button>
               )}
-              {data.permissions?.manage && (
+              {data.permissions?.manage && logs && (
                 <Button
                   variant="outline"
-                  onClick={() => {
-                    const logs = document.getElementById(
-                      "application-logs",
-                    ) as HTMLDetailsElement | null;
-                    if (logs) {
-                      logs.open = true;
-                      logs.scrollIntoView({
-                        behavior: "smooth",
-                        block: "start",
-                      });
-                      logs.querySelector("summary")?.focus();
-                    }
-                  }}
+                  onClick={() => chooseWorkspaceTab("logs", true)}
                 >
                   <ScrollText className="h-4 w-4" />
                   View logs
@@ -919,10 +1039,6 @@ export function ActionsManager({
         ) : null}
       </div>
       <div hidden={workflowStep !== 0} className="space-y-5">
-        <details className="rounded-2xl border bg-white p-4">
-          <summary className="cursor-pointer text-sm font-medium">
-            Detected application details
-          </summary>{" "}
           <section
             className={cn(
               "overflow-hidden rounded-2xl border bg-white/75 shadow-card backdrop-blur-md",
@@ -1022,7 +1138,6 @@ export function ActionsManager({
               </div>
             </div>
           </section>
-        </details>
       </div>
       <div hidden={workflowStep !== 1} className="space-y-5">
         <details
@@ -1194,16 +1309,20 @@ export function ActionsManager({
           </p>
         )}
       </div>
+      </div>
 
-      <div hidden={workflowStep !== 3} className="space-y-5">
+      <div
+        role="tabpanel"
+        id="operations-panel-runtime"
+        aria-labelledby="operations-tab-runtime"
+        hidden={workspaceTab !== "runtime"}
+        className="space-y-5"
+      >
         {hasRuntime ? (
-          <details
+          <section
             className="rounded-2xl border border-white/60 bg-white/75 p-5 shadow-card backdrop-blur-md sm:p-6"
             aria-labelledby="runtime-title"
           >
-            <summary className="cursor-pointer font-semibold">
-              Runtime details
-            </summary>
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <h3
@@ -1619,43 +1738,59 @@ export function ActionsManager({
                 </div>
               </div>
             ) : null}
-          </details>
-        ) : null}
+          </section>
+        ) : (
+          <section className="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center">
+            <Activity
+              className="mx-auto h-9 w-9 text-slate-300"
+              aria-hidden="true"
+            />
+            <h3 className="mt-3 font-bold text-ink">No runtime detected</h3>
+            <p className="mx-auto mt-1 max-w-2xl text-sm text-slate-500">
+              No managed process, container, or listening application port was
+              found for this website.
+            </p>
+          </section>
+        )}
       </div>
 
-      <details className="rounded-2xl border border-slate-200 bg-white p-5 shadow-card sm:p-6">
-        <summary className="cursor-pointer font-semibold text-slate-700">
-          Advanced tools · individual commands and process controls
-        </summary>
-        <p className="mt-2 text-sm text-slate-500">
-          Use these when the guided deployment does not cover your task. Each
-          command retains its own permission and safety checks.
-        </p>
-        <div className="mt-4 space-y-4">
-          {visibleGroups
-            .filter(() => data.permissions?.manage)
-            .map((group) => (
-              <details
-                key={group.id}
-                className="rounded-2xl border border-white/60 bg-white/75 p-5 shadow-card backdrop-blur-md sm:p-6"
-                aria-labelledby={`operation-group-${htmlId(group.id)}`}
-              >
-                <summary className="cursor-pointer font-semibold">
-                  Advanced: {group.title}
-                </summary>
-                <div className="mt-3">
-                  <h3
-                    id={`operation-group-${htmlId(group.id)}`}
-                    className="font-bold text-ink"
-                  >
-                    {group.title}
-                  </h3>
-                  <p className="mt-1 text-sm text-slate-500">
-                    {group.description}
-                  </p>
-                </div>
-                <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                  {group.actions.map((action) => {
+      <div
+        role="tabpanel"
+        id="operations-panel-advanced"
+        aria-labelledby="operations-tab-advanced"
+        hidden={workspaceTab !== "advanced"}
+        className="space-y-5"
+      >
+        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-card sm:p-6">
+          <h3 className="font-bold text-ink">
+            Individual commands and process controls
+          </h3>
+          <p className="mt-2 text-sm text-slate-500">
+            Use these when the guided deployment does not cover your task. Each
+            command retains its own permission and safety checks.
+          </p>
+          <div className="mt-4 space-y-4">
+            {visibleGroups
+              .filter(() => data.permissions?.manage)
+              .map((group) => (
+                <section
+                  key={group.id}
+                  className="rounded-2xl border border-white/60 bg-white/75 p-5 shadow-card backdrop-blur-md sm:p-6"
+                  aria-labelledby={`operation-group-${htmlId(group.id)}`}
+                >
+                  <div>
+                    <h3
+                      id={`operation-group-${htmlId(group.id)}`}
+                      className="font-bold text-ink"
+                    >
+                      {group.title}
+                    </h3>
+                    <p className="mt-1 text-sm text-slate-500">
+                      {group.description}
+                    </p>
+                  </div>
+                  <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                    {group.actions.map((action) => {
                     const key = actionKey(action);
                     const reasonId = `operation-${htmlId(group.id)}-${htmlId(key)}-reason`;
                     const Icon = ICONS[action.iconKey];
@@ -1752,13 +1887,13 @@ export function ActionsManager({
                         </span>
                       </button>
                     );
-                  })}
-                </div>
-              </details>
-            ))}
+                    })}
+                  </div>
+                </section>
+              ))}
 
-          {!visibleGroups.length && (
-            <section className="rounded-2xl border border-dashed border-slate-300 bg-white/65 p-8 text-center">
+            {!visibleGroups.length && (
+              <section className="rounded-2xl border border-dashed border-slate-300 bg-white/65 p-8 text-center">
               {blockingChecks.length ||
               data.preflight.status === "unauthorized" ? (
                 <>
@@ -1791,13 +1926,13 @@ export function ActionsManager({
                   </p>
                 </>
               )}
-            </section>
-          )}
-        </div>
-      </details>
+              </section>
+            )}
+          </div>
+        </section>
 
-      {latestRun && (
-        <section
+        {latestRun && (
+          <section
           ref={outputRef}
           role="log"
           aria-live="polite"
@@ -1873,7 +2008,30 @@ export function ActionsManager({
           <pre className="max-h-[50vh] overflow-auto whitespace-pre-wrap break-words bg-slate-950 p-5 font-mono text-xs leading-5 text-slate-200">
             {latestRun.output || "The operation produced no output."}
           </pre>
-        </section>
+          </section>
+        )}
+      </div>
+
+      {scheduledJobs && (
+        <div
+          role="tabpanel"
+          id="operations-panel-jobs"
+          aria-labelledby="operations-tab-jobs"
+          hidden={workspaceTab !== "jobs"}
+        >
+          {openedWorkspaceTabs.has("jobs") ? scheduledJobs : null}
+        </div>
+      )}
+
+      {logs && (
+        <div
+          role="tabpanel"
+          id="operations-panel-logs"
+          aria-labelledby="operations-tab-logs"
+          hidden={workspaceTab !== "logs"}
+        >
+          {openedWorkspaceTabs.has("logs") ? logs : null}
+        </div>
       )}
 
       {confirmation && (

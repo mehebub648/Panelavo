@@ -212,12 +212,48 @@ export default async function SiteSectionPage({
           <ActionsManager
             domain={domain}
             initialData={actionsResult.value as OperationsData}
+            scheduledJobs={
+              canWrite ? (
+                <LazySiteSection
+                  domain={domain}
+                  section="cron-jobs"
+                  title="Scheduled jobs"
+                  canWrite
+                />
+              ) : undefined
+            }
+            logs={
+              canWrite ? (
+                <LazySiteSection
+                  domain={domain}
+                  section="logs"
+                  title="Application logs"
+                  canWrite
+                />
+              ) : undefined
+            }
           />
         ) : (
-          <SectionUnavailable name="deployment checks and actions" />
+          <div className="space-y-5">
+            <SectionUnavailable name="deployment checks and actions" />
+            {canWrite ? (
+              <>
+                <LazySiteSection
+                  domain={domain}
+                  section="cron-jobs"
+                  title="Scheduled jobs"
+                  canWrite
+                />
+                <LazySiteSection
+                  domain={domain}
+                  section="logs"
+                  title="Application logs"
+                  canWrite
+                />
+              </>
+            ) : null}
+          </div>
         )}
-        <LazySiteSection domain={domain} section="cron-jobs" title="Scheduled jobs" canWrite={canWrite} />
-        <LazySiteSection domain={domain} section="logs" title="Application logs" canWrite={canWrite} />
       </div>
     );
   }

@@ -231,3 +231,5 @@ Cloudflare-proxied addresses can be ready even when public DNS returns edge IPs.
 A rejected port change now reports its specific ownership, reservation or health failure. If the target fails after the change, the message distinguishes a restored proxy from a rollback failure.
 
 Certificate coverage and activation shown beneath Domains refresh after successful changes, so users do not need to reload the page manually.
+
+Operations uses separate Deployment, Runtime, Advanced tools, Scheduled jobs, and Logs tabs on local and connected-server routes. Tab and step URL parameters survive refresh and browser history. Jobs and logs load on first selection and remain mounted after switching.

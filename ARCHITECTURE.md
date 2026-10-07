@@ -193,3 +193,5 @@ Actor-scoped DNS readiness uses resolveDnsOriginStatus. A direct public answer t
 Update-site diagnostics use an exact message-pattern and bridge-code allowlist before reaching the browser. Unrecognized privileged output remains generic, preserving the credential boundary.
 
 DomainsManager refreshes server components after successful domain POST actions so the sibling certificate status receives fresh CloudPanel data; failed actions preserve the current page state.
+
+Operations uses separate Deployment, Runtime, Advanced tools, Scheduled jobs, and Logs tabs on local and connected-server routes. Tab and step URL parameters survive refresh and browser history. Jobs and logs load on first selection and remain mounted after switching.

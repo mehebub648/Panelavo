@@ -153,9 +153,25 @@ export default async function FleetSiteSectionPage({
           domain={domain}
           initialData={actions as OperationsData}
           apiBase={apiBase}
+          scheduledJobs={
+            <LazySiteSection
+              domain={domain}
+              section="cron-jobs"
+              title="Scheduled jobs"
+              canWrite
+              apiBase={apiBase}
+            />
+          }
+          logs={
+            <LazySiteSection
+              domain={domain}
+              section="logs"
+              title="Application logs"
+              canWrite
+              apiBase={apiBase}
+            />
+          }
         />
-        <LazySiteSection domain={domain} section="cron-jobs" title="Scheduled jobs" canWrite apiBase={apiBase} />
-        <LazySiteSection domain={domain} section="logs" title="Application logs" canWrite apiBase={apiBase} />
       </Section>
     );
   }

@@ -30,9 +30,7 @@ function chooseStep(name: string) {
 }
 
 function openAdvanced() {
-  screen
-    .getByText("Advanced tools · individual commands and process controls")
-    .closest("details")!.open = true;
+  fireEvent.click(screen.getByRole("tab", { name: "Advanced tools" }));
 }
 
 vi.mock("next/navigation", () => ({
@@ -117,12 +115,10 @@ describe("ActionsManager", () => {
     );
     vi.stubGlobal(
       "fetch",
-      vi
-        .fn()
-        .mockResolvedValue({
-          ok: true,
-          json: async () => ({ success: true, data: { jobs: [] } }),
-        }),
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ success: true, data: { jobs: [] } }),
+      }),
     );
   });
 
@@ -141,6 +137,9 @@ describe("ActionsManager", () => {
         screen.getByRole("region", { name: "Website detection" }),
       ).getByText("Docker Compose"),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Detected application details"),
+    ).not.toBeInTheDocument();
     chooseStep("Prepare");
     expect(
       screen.getAllByText(
@@ -152,8 +151,9 @@ describe("ActionsManager", () => {
       screen.getByRole("button", { name: "Deploy current files" }),
     ).toBeDisabled();
     openAdvanced();
-    screen.getByText("Advanced: Runtime & lifecycle").closest("details")!.open =
-      true;
+    expect(
+      screen.getByRole("heading", { name: "Runtime & lifecycle" }).closest("details"),
+    ).toBeNull();
     expect(
       screen.getByRole("button", { name: /^Start services/i }),
     ).toBeDisabled();
@@ -229,8 +229,6 @@ describe("ActionsManager", () => {
     );
 
     openAdvanced();
-    screen.getByText("Advanced: Runtime & lifecycle").closest("details")!.open =
-      true;
     fireEvent.click(screen.getByRole("button", { name: /Stop project/i }));
     const dialog = await screen.findByRole("dialog", {
       name: "Stop the entire Compose project?",
@@ -407,10 +405,81 @@ describe("ActionsManager", () => {
     ).toBeDisabled();
   });
 
+  it("keeps workspace tabs in the URL and supports keyboard navigation", () => {
+    window.history.replaceState(
+      null,
+      "",
+      "/sites/example.test/actions?tab=runtime&step=4",
+    );
+    render(
+      <ActionsManager domain="example.test" initialData={dockerData(true)} />,
+    );
+
+    const runtimeTab = screen.getByRole("tab", { name: "Runtime" });
+    expect(runtimeTab).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("heading", { name: "Runtime" })).toBeVisible();
+
+    fireEvent.keyDown(runtimeTab, { key: "ArrowRight" });
+    expect(screen.getByRole("tab", { name: "Advanced tools" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(new URLSearchParams(window.location.search).get("tab")).toBe(
+      "advanced",
+    );
+    expect(new URLSearchParams(window.location.search).get("step")).toBe("4");
+
+    window.history.replaceState(
+      null,
+      "",
+      "/sites/example.test/actions?tab=deployment&step=2",
+    );
+    fireEvent(window, new PopStateEvent("popstate"));
+    expect(screen.getByRole("tab", { name: "Deployment" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByRole("heading", { name: "Prepare" })).toBeVisible();
+  });
+
+  it("opens the Logs tab from deployment verification", () => {
+    render(
+      <ActionsManager
+        domain="example.test"
+        initialData={dockerData(true)}
+        logs={
+          <section aria-label="Loaded application logs">Log content</section>
+        }
+      />,
+    );
+    chooseStep("Verify");
+    fireEvent.click(screen.getByRole("button", { name: "View logs" }));
+
+    expect(screen.getByRole("tab", { name: "Logs" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(
+      screen.getByRole("region", { name: "Loaded application logs" }),
+    ).toBeVisible();
+    expect(new URLSearchParams(window.location.search).get("tab")).toBe("logs");
+    expect(new URLSearchParams(window.location.search).get("step")).toBe("4");
+
+    fireEvent.click(screen.getByRole("tab", { name: "Deployment" }));
+    expect(screen.getByText("Log content")).toBeInTheDocument();
+    expect(screen.getByText("Log content")).not.toBeVisible();
+  });
+
   it("lets Next.js record the step URL without replaying its internal history marker", () => {
-    window.history.replaceState({ __NA: true }, "", "/sites/example.test/actions");
+    window.history.replaceState(
+      { __NA: true },
+      "",
+      "/sites/example.test/actions",
+    );
     const pushState = vi.spyOn(window.history, "pushState");
-    render(<ActionsManager domain="example.test" initialData={dockerData(true)} />);
+    render(
+      <ActionsManager domain="example.test" initialData={dockerData(true)} />,
+    );
     chooseStep("Prepare");
     expect(pushState).toHaveBeenCalledWith(null, "", expect.any(URL));
     expect(window.location.search).toBe("?step=2");

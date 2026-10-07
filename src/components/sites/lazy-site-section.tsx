@@ -1,5 +1,5 @@
 "use client";
-import React, { useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { SiteSectionManager } from "./site-section-manager";
 import { Button } from "@/components/ui/button";
 
@@ -19,8 +19,7 @@ export function LazySiteSection({
   const [data, setData] = useState<Record<string, unknown>>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  async function load() {
-    if (loading) return;
+  const load = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
@@ -41,18 +40,22 @@ export function LazySiteSection({
     } finally {
       setLoading(false);
     }
-  }
+  }, [apiBase, domain, section, title]);
+
+  useEffect(() => {
+    if (canWrite) void load();
+  }, [canWrite, load]);
+
   if (!canWrite) return null;
   return (
-    <details
+    <section
       id={section === "logs" ? "application-logs" : "scheduled-jobs"}
-      className="rounded-2xl border bg-white p-5"
-      onToggle={(event) => {
-        if (event.currentTarget.open && !data && !loading && !error)
-          void load();
-      }}
+      aria-labelledby={`${section}-title`}
+      className="rounded-2xl border bg-white p-5 shadow-card sm:p-6"
     >
-      <summary className="cursor-pointer font-semibold">{title}</summary>
+      <h3 id={`${section}-title`} className="font-bold text-ink">
+        {title}
+      </h3>
       <div className="mt-4">
         {loading && (
           <p role="status" className="text-sm text-slate-500">
@@ -76,6 +79,6 @@ export function LazySiteSection({
           />
         )}
       </div>
-    </details>
+    </section>
   );
 }
