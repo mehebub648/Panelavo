@@ -136,7 +136,7 @@ Profile also issues scoped API tokens for automation. Token secrets are shown on
 
 ### AI assistant (MCP) access
 
-Every signed-in user has a nontechnical **AI access** page at `/ai-access`. It shows the user's current website access, the exact public MCP address, starter prompts, and every connected assistant. The recommended quick setup creates a named 30-, 90-, or 365-day bearer token, reveals it once, and provides copy-ready Windows, macOS/Linux, and generic MCP-client instructions. Codex stores only the environment-variable name in its shared MCP configuration (`bearer_token_env_var`); the user keeps the secret out of `config.toml`. The remote Streamable HTTP endpoint is `https://<panel-domain>/mcp`. OAuth discovery, dynamic client registration, PKCE sign-in, token refresh, and revocation remain available as a browser-sign-in alternative on the same HTTPS origin.
+Every signed-in user has a nontechnical **AI Access** page at `/ai-access`. It shows the user's current website access, starter prompts, a private Panelavo plugin download, and existing compatible connections. The setup flow is download the ZIP, upload it to ChatGPT, choose Connect, and add Panelavo servers independently in the browser. It does not display the MCP address or create/copy bearer tokens. OAuth discovery, dynamic client registration, PKCE sign-in, token refresh, personal-token verification, and revocation remain available underneath for the hosted plugin and existing compatible clients.
 
 An MCP connection is not a second administrator account. Its single `panelavo:access` capability means “act as this Panelavo user”; every request re-fetches the live CloudPanel account by both stable user id and username, and every site tool re-resolves the user's current visible site collection. Role downgrades, assignment removal, account disable/delete, token expiry, or connection revocation therefore take effect on the next request. Password changes and MFA enable/disable revoke every MCP connection for that account. Personal bearer tokens, authorization codes, and OAuth bearer credentials are stored only as keyed HMAC digests in the private `.data` directory. OAuth access tokens are short-lived and refresh tokens rotate with replay-family revocation.
 
@@ -172,7 +172,7 @@ The website list is grouped in the configured Project-category order, with exter
 
 ### Site identity: categories, ids, and domains
 
-panelavo chooses each website's primary system domain. On creation the user picks a project category; the next free id in that category's range becomes the stable site id and site user. Port-based applications use a separate deterministic port (`site id + 10000`) so CloudPanel's PHP-FPM pool in the 20000 range cannot take the same socket:
+panelavo chooses each website's primary system domain. On creation the user picks a project category; the next free id in that category's range becomes the stable site id and site user. New port-based applications default to the same numeric application port as the site id. Existing and custom websites keep their current CloudPanel upstream unless the operator explicitly changes it:
 
 | Category                   | Site id range |
 | -------------------------- | ------------: |
@@ -184,7 +184,7 @@ panelavo chooses each website's primary system domain. On creation the user pick
 | Internal tools             | `25000-25999` |
 | Reserved/Future            | `26000-29999` |
 
-A site with id `23223` is created as `site-23223.<server-ip>.<base domain>` with site user `site-23223`; Node.js, Python, Docker, and an omitted local reverse-proxy target default to loopback port `33223`. In the default sslip.io mode this becomes `site-23223.<server-ip>.sslip.io`; the panel and database manager use `panel.<server-ip>.sslip.io` and `database.<server-ip>.sslip.io`. Custom mode uses the operator's base domain and one wildcard A record. The address mode is reconfigurable later from Settings, and changes apply to future sites. Every hostname receives its own HTTP-01 certificate; site creation waits for the initial Let's Encrypt attempt to finish and reports a visible retry action if DNS or ACME prevents issuance. sslip.io is not used for wildcard certificates. Identity reservations live in `.data/site-meta.json`; changing a runtime port never changes that identity, system domain, or Unix user.
+A site with id `23223` is created as `site-23223.<server-ip>.<base domain>` with site user `site-23223`; a new Node.js, Python, Docker, or local reverse-proxy application defaults to `127.0.0.1:23223`. In the default sslip.io mode this becomes `site-23223.<server-ip>.sslip.io`; the panel and database manager use `panel.<server-ip>.sslip.io` and `database.<server-ip>.sslip.io`. Custom mode uses the operator's base domain and one wildcard A record. The address mode is reconfigurable later from Settings, and changes apply to future sites. Every hostname receives its own HTTP-01 certificate; site creation waits for the initial Let's Encrypt attempt to finish and reports a visible retry action if DNS or ACME prevents issuance. sslip.io is not used for wildcard certificates. Identity reservations live in `.data/site-meta.json`; changing a runtime port never changes that identity, system domain, or Unix user.
 
 Customer-entered domains are aliases: the Domains tab and create form add them to the vhost `server_name`, point DNS through the user's connected Cloudflare token when it manages the zone, and issue Let's Encrypt certificates covering selected domains. Manual issuance includes the system domain and exactly the selected aliases; it does not silently add apex/www companions. Site creation and domain addition expose an explicit Also serve www choice. DNS and SSL preparation operate on exactly the hostnames attached to the website. The system subdomain can be blocked with 403 or redirected to an alias; ACME challenge paths stay reachable so renewals keep working.
 
@@ -208,7 +208,7 @@ Every managed application root also carries an inherited POSIX ACL for its Cloud
 
 ### Site operations
 
-Operations leads with application status, restart, logs, and the shared deployment workflow. Successful checks, detailed runtime information, and maintenance actions are expandable; logs and scheduled jobs load when opened. Container environment drift compares the resolved entry-service environment with that container, excluding interpolation-only `.env` values. Redeploy to apply changed Compose configuration; ordinary restart does not apply it.
+Operations presents one four-step path: **Review website**, **Prepare**, **Deploy**, and **Verify**. Review shows the selected application folder, public document root, assigned/current port, and other plausible application folders found by a bounded structure-aware scan. Prepare keeps blockers, repairs, and advanced commands separate. Deploy shows the server-owned plan and existing deployment controls. Verify separates runtime/application health, listener ownership and port alignment, CloudPanel proxy response, and the public website. Successful checks and deeper runtime details remain expandable; logs and scheduled jobs load when opened. Container environment drift compares the resolved entry-service environment with that container, excluding interpolation-only `.env` values. Redeploy to apply changed Compose configuration; ordinary restart does not apply it.
 
 Operations follow the configured CloudPanel site type; Panelavo's Docker overlay is authoritative when a Docker site is represented by CloudPanel as a reverse proxy. Repository files provide architecture evidence inside that boundary, but a detected manifest does not make an action runnable. The Operations page separates architecture evidence from tool, permission, configuration, and safety preflight checks, translates recognized tool failures into operator-facing explanations with concrete remediation, and presents server-owned deployment plans and action groups only when their prerequisites are satisfied. Missing runtimes remain visible and blocked rather than triggering an automatic installation.
 
@@ -216,7 +216,7 @@ CloudPanel's configured upstream/app port is the required website entry port. Op
 
 A listener counts as ready only when the broker proves it is a safe loopback socket owned by this site's Unix boundary. A foreign listener on the configured number is a blocking collision; start/deploy actions recheck that ownership and the final HTTP probe cannot succeed against another website by accident.
 
-New reverse-proxy sites default their upstream to `http://127.0.0.1:<site-id + 10000>`, matching the separately reserved CloudPanel application port. Operators can still replace it with another HTTP or HTTPS target when required.
+New reverse-proxy sites default their upstream to `http://127.0.0.1:<site-id>`. Existing and custom sites continue to use the current CloudPanel upstream. A custom HTTP or HTTPS upstream is an advanced exception for an application that cannot follow the normal `PORT` and loopback contract, and Panelavo does not migrate one automatically.
 
 ### Project endpoints
 
@@ -384,15 +384,17 @@ The update launcher normalizes shell line endings before execution and records w
 
 When both a domain and its www alias are attached, the Domains tab offers a preferred-address selector: the domain without www, the www address, or both. Redirects preserve the path and query. Both names still need valid certificates. Application-level redirects may also apply.
 
-## Public ChatGPT and Codex plugin
+## Downloadable ChatGPT and Codex plugin
 
-The portable package is in `plugins/panelavo`. It connects to one opt-in Panelavo connection service, where users sign in to multiple servers through each server's existing browser OAuth flow. The included skill and MCP instructions provide Panelavo context automatically. Live account permissions still apply on every source server; passwords remain on those servers. Connections expire after 30 days and can be disconnected in the setup browser or revoked on the originating server's AI access page.
+The source package is in `plugins/panelavo`. A signed-in user downloads a private ZIP from **AI Access**, uploads it to ChatGPT, chooses Connect, and then adds each Panelavo server independently through the hosted browser login. The authenticated download writes the selected panel's verified connection address into the ZIP, so users do not copy MCP URLs or bearer tokens and do not edit `mcp.json`. If the hosted service is disabled, the download returns the required `PANELAVO_PLUGIN_ENABLED=1` administrator action instead of a broken archive. The included skill provides the port, deployment, health, permission, and safety context automatically.
+
+The plugin connection service uses each source server's existing browser OAuth flow. Live account permissions still apply on every request; passwords remain on those servers. Connections expire after 30 days and can be disconnected in the setup browser or revoked on the originating server's AI Access page. Existing compatible OAuth grants and personal-token clients remain supported by the underlying MCP transport, but AI Access no longer presents raw endpoint or token onboarding.
 
 Connected-account labels and the server list include detected server IPs. Read-only accounts remain read-only; website-write accounts can create, host, deploy, edit and delete sites and manage domains, SSL, files, databases, environment, cron and backups within their live permissions. Destructive or disruptive actions retain confirmation.
 
-The service does not call a paid OpenAI API or collect payments. It uses the operator's existing hosting resources; users' ChatGPT/Codex plans and limits still apply. Public directory publication requires OpenAI review and approval; a packaged ZIP or deployed endpoint alone is not publication.
+The service does not call a paid OpenAI API or collect payments. It uses the operator's existing hosting resources; users' ChatGPT/Codex plans and limits still apply. The downloaded ZIP is a private package; it is not a public directory publication.
 
-Deployment diagnostics distinguish application HTTP health from listener verification. A site-owned public listener is reported as a bind-address problem; configure loopback binding before retrying. Creation explains application port = site ID + 10,000. Artifact upload responses include authentication and resume instructions: the URL requires the same MCP credential that created the upload.
+Deployment diagnostics distinguish application HTTP health from listener verification. A site-owned public listener is reported as a bind-address problem; configure loopback binding before retrying. New-site creation explains that the default application port matches the site ID and displays the actual configured upstream; existing sites are not reassigned. Artifact upload responses include authentication and resume instructions: the URL requires the same MCP credential that created the upload.
 
 Removing a domain from a website detaches its alias and related redirect settings. It preserves DNS records; remove provider DNS separately when intended.
 

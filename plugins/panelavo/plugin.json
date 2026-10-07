@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "panelavo-servers",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Connect multiple Panelavo servers and manage the websites available to your accounts.",
   "author": { "name": "S. M. MEHEBUB UL HAQUE MUKUT" },
   "homepage": "https://panel.91.108.104.57.mehebub.com/connect",
@@ -92,7 +92,7 @@
         }
       },
       "publication": {
-        "release_notes": "Initial release: connect multiple Panelavo servers through browser login, identify accounts by server IP, and manage the complete website lifecycle within live account permissions. Supports site creation, hosting, deployment, domains, SSL, files, databases, backups and deletion with server confirmations. Includes built-in Panelavo guidance."
+        "release_notes": "Adds precise application-port guidance and safer deployment checks while retaining the hosted multi-server browser login. Each Panelavo server can be connected independently without copying MCP addresses or access tokens."
       }
     }
   }

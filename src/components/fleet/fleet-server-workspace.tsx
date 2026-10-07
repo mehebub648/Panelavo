@@ -248,7 +248,6 @@ export function FleetServerWorkspace({
       {tab === "ai-access" && mcp && (
         <McpSetupGuide
           user={user}
-          endpoint={mcp.endpoint}
           initialConnections={mcp.connections}
           apiBase={`/api/fleet/servers/${serverId}/proxy/api/profile/mcp-connections`}
         />

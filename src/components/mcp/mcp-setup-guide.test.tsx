@@ -13,8 +13,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CloudPanelUser, PanelRole } from "@/types/cloudpanel";
 import { McpSetupGuide, mcpAccessSummary } from "./mcp-setup-guide";
 
+const toastMocks = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }));
+
 vi.mock("sonner", () => ({
-  toast: { success: vi.fn(), error: vi.fn() },
+  toast: toastMocks,
 }));
 
 vi.mock("@/components/ui/copy-value", () => ({
@@ -26,6 +28,7 @@ vi.mock("@/components/ui/copy-value", () => ({
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  vi.clearAllMocks();
 });
 
 function user(panelRole: PanelRole): CloudPanelUser {
@@ -47,50 +50,38 @@ describe("AI access guide", () => {
     expect(mcpAccessSummary("user").detail).toContain("view-only");
   });
 
-  it("shows friendly setup choices and supports keyboard tab navigation", () => {
+  it("offers the portable plugin without exposing MCP or token setup", () => {
     render(
       <McpSetupGuide
         user={user("admin")}
-        endpoint="https://panel.example.com/mcp"
         initialConnections={[]}
+        pluginDownloadUrl="/download/panelavo-plugin.zip"
       />,
     );
 
-    expect(screen.getByText("Connect an AI assistant")).toBeInTheDocument();
+    expect(screen.getByText("Add Panelavo to ChatGPT")).toBeInTheDocument();
     expect(
-      screen.getByText(
-        /Account security, Panelavo account management, and panel settings/,
-      ),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText("No AI assistants are connected yet"),
-    ).toBeInTheDocument();
-    const windows = screen.getByRole("tab", { name: "Windows" });
-    expect(windows).toHaveAttribute("aria-selected", "true");
-    fireEvent.keyDown(windows, { key: "ArrowRight" });
-    expect(screen.getByRole("tab", { name: "macOS / Linux" })).toHaveAttribute(
-      "aria-selected",
-      "true",
+      screen.getByRole("button", { name: "Download Panelavo plugin" }),
+    ).toBeEnabled();
+    expect(screen.getByText(/server independently/)).toBeInTheDocument();
+    expect(screen.getByText(/site 20004/)).toHaveTextContent(
+      "site 20004 starts on port 20004",
     );
-    expect(screen.getAllByText(/codex mcp add panelavo/)).not.toHaveLength(0);
+    expect(screen.getByText(/Existing sites keep/)).toBeInTheDocument();
+    expect(screen.queryByText(/MCP endpoint/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Generate token/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Bearer token/i)).not.toBeInTheDocument();
   });
 
-  it("reveals a generated bearer token once and inserts it into setup", async () => {
+  it("reports the hosted service prerequisite instead of saving a broken ZIP", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue({
+        ok: false,
         json: async () => ({
-          success: true,
-          data: {
-            token: "pnl_mpat.generated-secret",
-            connection: {
-              id: "3b0c4b0f-e4de-49ba-8aa7-b146675cd752",
-              clientId: "pnl_personal_3b0c4b0f-e4de-49ba-8aa7-b146675cd752",
-              clientName: "My Codex",
-              kind: "personal-token",
-              createdAt: Date.now(),
-              expiresAt: Date.now() + 90 * 86_400_000,
-            },
+          error: {
+            message:
+              "A server administrator must set PANELAVO_PLUGIN_ENABLED=1 and reload Panelavo.",
           },
         }),
       }),
@@ -98,24 +89,55 @@ describe("AI access guide", () => {
     render(
       <McpSetupGuide
         user={user("admin")}
-        endpoint="https://panel.example.com/mcp"
         initialConnections={[]}
+        pluginDownloadUrl="/download/panelavo-plugin.zip"
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /Generate token/ }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Download Panelavo plugin" }),
+    );
 
     await waitFor(() =>
-      expect(
-        screen.getByText(/Panelavo will not show it again/),
-      ).toBeInTheDocument(),
+      expect(toastMocks.error).toHaveBeenCalledWith(
+        expect.stringContaining("PANELAVO_PLUGIN_ENABLED=1"),
+      ),
     );
-    expect(screen.getAllByText(/pnl_mpat\.generated-secret/)).not.toHaveLength(
-      0,
+  });
+
+  it("keeps an existing compatible grant visible and revocable", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      json: async () => ({ success: true, data: [] }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(
+      <McpSetupGuide
+        user={user("admin")}
+        initialConnections={[
+          {
+            id: "3b0c4b0f-e4de-49ba-8aa7-b146675cd752",
+            clientId: "existing-client",
+            clientName: "Existing Codex",
+            kind: "personal-token",
+            createdAt: Date.now(),
+            expiresAt: Date.now() + 86_400_000,
+          },
+        ]}
+      />,
     );
-    expect(fetch).toHaveBeenCalledWith(
+
+    expect(screen.getByText("Existing Codex")).toBeInTheDocument();
+    expect(screen.getByText(/Existing access grant/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
+    const disconnectButtons = screen.getAllByRole("button", {
+      name: "Disconnect",
+    });
+    fireEvent.click(disconnectButtons.at(-1)!);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    expect(fetchMock).toHaveBeenCalledWith(
       "/api/profile/mcp-connections",
-      expect.objectContaining({ method: "POST" }),
+      expect.objectContaining({ method: "DELETE" }),
     );
   });
 });

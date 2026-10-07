@@ -29,4 +29,18 @@ Call `panelavo_available_actions` for that server's exact tool names, descriptio
 - Relay destructive or disruptive confirmations to the user exactly as needed. Never answer an elicitation on their behalf. Cancellation means the action must not proceed.
 - Account security, user administration, sessions, and panel settings remain in Panelavo's browser UI. Do not attempt them through terminal or other tools.
 
+## Application ports and hosting
+
+- For a newly created managed app, the default application port matches the site id: site id `20004` uses application port `20004`. For an existing or custom website, always use the current CloudPanel upstream returned by Panelavo; do not automatically migrate its port. Never derive a replacement port from the hostname, label, or an older convention.
+- For Node.js and similar apps, make the application read `PORT` and listen on `127.0.0.1`. Panelavo supplies the configured `PORT` during its managed start and verifies the listener. Remove hard-coded command-line or process-manager port overrides when they conflict with that value.
+- For Docker apps, publish the entry service only on `127.0.0.1:<application-port>` while keeping the container's internal port unchanged. Use the selected Compose project and the site's rootless Docker daemon.
+- Treat CloudPanel's configured reverse-proxy target as authoritative. A custom upstream is an exceptional fallback for an app that cannot follow the normal `PORT` contract; inspect it explicitly and keep it aligned with the verified listener. Do not invent a port from a hostname, site label, or process id.
+
+## Safe deployment and verification
+
+- Before changing a live website, identify the exact connected server and website, inspect current permissions, hosting type, application root, configured port, listener ownership, Operations preflight, and recent backup state. Ask only when the target remains ambiguous.
+- Prefer a current backup before deployment. Preserve databases, volumes, environment secrets, unrelated files, and every other website on the server. Use the server-owned deployment plan and its exact arguments; do not improvise root commands or broad service restarts.
+- After deployment, verify the expected process or rootless container, the configured loopback listener, application health, CloudPanel proxy response, and public website independently. Report application health separately from any DNS, SSL, ownership, or verification warning. A verification warning does not by itself prove the application failed.
+- When Panelavo reports a permission or confirmation problem, preserve the exact distinction between declined, cancelled, expired, missing permission, and confirmation-system error, then provide the recovery step returned by the server.
+
 For a background job, inspect its final state before claiming completion. Report which server and website changed, the observed result, and any unresolved blocker. A queued job or successful local build alone is not proof of a live deployment.

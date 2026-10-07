@@ -5,7 +5,7 @@ export function pluginUrls(request: Request): McpPublicUrls {
   if (process.env.PANELAVO_PLUGIN_ENABLED !== "1")
     throw new AppError(
       "INVALID_REQUEST",
-      "The Panelavo plugin service is not enabled.",
+      "The hosted Panelavo plugin service is not enabled on this panel. A server administrator must set PANELAVO_PLUGIN_ENABLED=1 and reload Panelavo before the plugin can be downloaded or connected.",
       404,
     );
   const { origin } = getMcpPublicUrls(request);
