@@ -186,6 +186,9 @@ export function CreateSiteForm({
       : null;
   const suggestedProxyUrl = localSiteProxyUrl(previewId);
   const previewPort = managedApplicationPort(previewId);
+  const hasApplicationPort =
+    type !== null &&
+    ["nodejs", "python", "docker", "reverse-proxy"].includes(type);
   const normalizedAliasDraft = normalizeDomain(aliasDraft);
   const canOfferAliasWww =
     normalizedAliasDraft.includes(".") &&
@@ -489,26 +492,26 @@ export function CreateSiteForm({
                     <p className="mt-1 text-xs text-slate-500">
                       Site id <b>{previewId}</b> · site user{" "}
                       <b>site-{previewId}</b>
-                      {type && ["nodejs", "python", "docker"].includes(type)
+                      {hasApplicationPort
                         ? ` · website port ${previewPort}`
                         : ""}{" "}
                       — reserved automatically from this category. A DNS record
                       is created for the system domain when Cloudflare is
                       configured in Settings.
                     </p>
-                    {type && ["nodejs", "python", "docker"].includes(type) && (
+                    {hasApplicationPort && (
                       <p className="mt-1 text-xs text-slate-500">
-                        This is the current default: the site number plus
-                        10,000. Panelavo checks the final port again when the
-                        website is created.
+                        The assigned website port matches the site id. Adapt the
+                        application to this port; Panelavo checks it again when
+                        the website is created.
                       </p>
                     )}
                   </>
                 ) : (
                   <span className="text-slate-500">
                     The next free id becomes the site identity, site user
-                    (site-&lt;id&gt;), and system subdomain. Applications
-                    receive a separate collision-checked loopback port.
+                    (site-&lt;id&gt;), system subdomain, and default private
+                    application port.
                   </span>
                 )}
               </div>
@@ -638,7 +641,8 @@ export function CreateSiteForm({
                 <p className="mt-1.5 text-xs text-slate-400">
                   Operations supplies PORT
                   {previewPort ? `=${previewPort}` : ""} when it starts your
-                  app. For a manual start, listen on{" "}
+                  app. This assigned port matches the site id. For a manual
+                  start, listen on{" "}
                   {previewPort
                     ? `127.0.0.1:${previewPort}`
                     : "the website port"}
@@ -664,7 +668,8 @@ export function CreateSiteForm({
                 <p className="mt-1.5 text-xs text-slate-400">
                   Operations supplies PORT
                   {previewPort ? `=${previewPort}` : ""} when it starts your
-                  app. For a manual start, listen on{" "}
+                  app. This assigned port matches the site id. For a manual
+                  start, listen on{" "}
                   {previewPort
                     ? `127.0.0.1:${previewPort}`
                     : "the website port"}
@@ -680,7 +685,7 @@ export function CreateSiteForm({
                   Map that host port to your container&apos;s internal HTTP port
                   (for example{" "}
                   <code className="rounded bg-white/70 px-1 py-0.5">
-                    docker run -p 127.0.0.1:{previewPort ?? 30000}:80 …
+                    docker run -p 127.0.0.1:{previewPort ?? 20000}:80 …
                   </code>{" "}
                   or a compose file), then use the site&apos;s Actions tab to
                   manage it.
@@ -689,22 +694,39 @@ export function CreateSiteForm({
             )}
             {type === "reverse-proxy" && (
               <div className="sm:col-span-2">
-                <Label htmlFor="reverseProxyUrl">Reverse proxy URL</Label>
-                <Input
-                  id="reverseProxyUrl"
-                  type="url"
-                  value={values.reverseProxyUrl || suggestedProxyUrl}
-                  onChange={(e) => change("reverseProxyUrl", e.target.value)}
-                  placeholder={
-                    suggestedProxyUrl || "http://127.0.0.1:<application port>"
-                  }
-                  required
-                />
-                <p className="mt-1.5 text-xs text-slate-400">
-                  Defaults to this site&apos;s reserved loopback port. Enter a
-                  different HTTP or HTTPS target only when the upstream lives
-                  elsewhere.
+                <p className="rounded-xl bg-rose-50 px-4 py-3 text-xs leading-5 text-rose-800">
+                  Run the upstream on the assigned site-id port{" "}
+                  <b>{suggestedProxyUrl || "http://127.0.0.1:<site id>"}</b>.
+                  This keeps the website id, site user, and private port easy to
+                  align.
                 </p>
+                <details className="mt-3 rounded-lg border border-slate-200 p-4">
+                  <summary className="cursor-pointer text-sm font-medium text-slate-700">
+                    Advanced: use a different upstream
+                  </summary>
+                  <div className="mt-3">
+                    <Label htmlFor="reverseProxyUrl">
+                      Custom reverse proxy URL
+                    </Label>
+                    <Input
+                      id="reverseProxyUrl"
+                      type="url"
+                      value={values.reverseProxyUrl}
+                      onChange={(e) =>
+                        change("reverseProxyUrl", e.target.value)
+                      }
+                      placeholder={
+                        suggestedProxyUrl ||
+                        "http://127.0.0.1:<application port>"
+                      }
+                    />
+                    <p className="mt-1.5 text-xs text-slate-400">
+                      Leave blank to use the assigned site-id port. Use a custom
+                      HTTP or HTTPS target only when the application cannot use
+                      that port or the upstream lives elsewhere.
+                    </p>
+                  </div>
+                </details>
               </div>
             )}
             <div className="sm:col-span-2">

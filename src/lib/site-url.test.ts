@@ -4,13 +4,21 @@ import {
   localSiteProxyUrl,
   managedApplicationPort,
   managedSiteIdForApplicationPort,
+  managedSiteIdsForExistingApplicationPort,
 } from "./site-url";
 
 describe("site URLs", () => {
-  it("keeps the site id separate from the default application port", () => {
-    expect(managedApplicationPort(24000)).toBe(34000);
-    expect(managedSiteIdForApplicationPort(34000)).toBe(24000);
-    expect(localSiteProxyUrl(24000)).toBe("http://127.0.0.1:34000");
+  it("uses the site id as the default application port", () => {
+    expect(managedApplicationPort(24000)).toBe(24000);
+    expect(managedSiteIdForApplicationPort(24000)).toBe(24000);
+    expect(managedSiteIdForApplicationPort(34000)).toBeNull();
+    expect(localSiteProxyUrl(24000)).toBe("http://127.0.0.1:24000");
+  });
+
+  it("keeps legacy id-plus-10000 ports reserved for existing websites", () => {
+    expect(managedSiteIdsForExistingApplicationPort(24000)).toEqual([24000]);
+    expect(managedSiteIdsForExistingApplicationPort(34000)).toEqual([24000]);
+    expect(managedSiteIdsForExistingApplicationPort(8080)).toEqual([]);
   });
 
   it("does not invent a target before a site id is available", () => {

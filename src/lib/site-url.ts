@@ -1,16 +1,21 @@
-export const MANAGED_APPLICATION_PORT_OFFSET = 10_000;
-
 export function managedApplicationPort(siteId: number | null | undefined) {
   return Number.isInteger(siteId) &&
     Number(siteId) >= 20_000 &&
     Number(siteId) <= 29_999
-    ? Number(siteId) + MANAGED_APPLICATION_PORT_OFFSET
+    ? Number(siteId)
     : null;
 }
 
 export function managedSiteIdForApplicationPort(port: number) {
-  const siteId = port - MANAGED_APPLICATION_PORT_OFFSET;
-  return siteId >= 20_000 && siteId <= 29_999 ? siteId : null;
+  return port >= 20_000 && port <= 29_999 ? port : null;
+}
+
+export function managedSiteIdsForExistingApplicationPort(port: number) {
+  const ids: number[] = [];
+  const current = managedSiteIdForApplicationPort(port);
+  if (current !== null) ids.push(current);
+  if (port >= 30_000 && port <= 39_999) ids.push(port - 10_000);
+  return ids;
 }
 
 export function localSiteProxyUrl(siteId: number | null | undefined) {

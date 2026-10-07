@@ -63,6 +63,25 @@ export function SiteSettings({
       ? runtimeVersions
       : [currentRuntime, ...runtimeVersions]
     : null;
+  const assignedPort =
+    typeof site.meta?.id === "number" &&
+    Number.isInteger(site.meta.id) &&
+    site.meta.id >= 1024 &&
+    site.meta.id <= 65535
+      ? site.meta.id
+      : null;
+  const hasAssignedUpstream =
+    assignedPort !== null &&
+    !site.meta?.parent &&
+    ["nodejs", "python", "docker", "reverse-proxy"].includes(site.type ?? "");
+  const assignedUpstream =
+    assignedPort === null ? "" : `http://127.0.0.1:${assignedPort}`;
+  const currentUpstream = ["nodejs", "python"].includes(site.type ?? "")
+    ? typeof site.appPort === "number"
+      ? `http://127.0.0.1:${site.appPort}`
+      : "Not available"
+    : site.reverseProxyUrl || "Not available";
+  const usesAssignedUpstream = currentUpstream === assignedUpstream;
 
   useEffect(() => {
     if (!hasRuntime || !user.canCreateSites) return;
@@ -321,6 +340,32 @@ export function SiteSettings({
               Environment, and backups.
             </p>
           </div>
+          {hasAssignedUpstream && (
+            <div
+              className="border-panel-200 rounded-xl border bg-panel-50/50 p-4 sm:col-span-2"
+              aria-label="Assigned website port"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h4 className="font-semibold text-slate-800">
+                  Assigned website port
+                </h4>
+                <code className="rounded bg-white px-2 py-1 text-sm font-semibold text-panel-700">
+                  {assignedPort}
+                </code>
+              </div>
+              <p className="mt-2 text-sm text-slate-600">
+                This port matches site id {assignedPort}. Configure the
+                application to listen on <b>127.0.0.1:{assignedPort}</b> so the
+                website id, user, and traffic target stay aligned.
+              </p>
+              {!usesAssignedUpstream && (
+                <p className="mt-2 text-xs text-amber-700">
+                  Existing custom upstream: <b>{currentUpstream}</b>. It stays
+                  active unless you deliberately change it in Advanced settings.
+                </p>
+              )}
+            </div>
+          )}
           <details className="rounded-lg border p-4 sm:col-span-2">
             <summary className="cursor-pointer font-medium">
               Advanced: public folder and website routing
@@ -394,7 +439,7 @@ export function SiteSettings({
                     htmlFor="appPort"
                     className="font-medium text-slate-700"
                   >
-                    Website port
+                    Custom website port
                   </Label>
                   <Input
                     id="appPort"
@@ -407,10 +452,10 @@ export function SiteSettings({
                     className="mt-1.5 bg-white/70 transition-all focus:ring-2 focus:ring-panel-500/50"
                   />
                   <p className="mt-1.5 text-xs text-slate-400">
-                    NGINX sends traffic to 127.0.0.1 on this port. Your
-                    application must already use the new loopback port before
-                    changing it here. Operations supplies PORT when it starts
-                    the application.
+                    Keep the assigned site-id port unless the application cannot
+                    use it. Before changing this fallback, start and verify the
+                    application on the new loopback port. Operations supplies
+                    PORT when it starts the application.
                   </p>
                 </div>
               )}
@@ -421,7 +466,7 @@ export function SiteSettings({
                       htmlFor="reverseProxyUrl"
                       className="font-medium text-slate-700"
                     >
-                      Website upstream
+                      Custom website upstream
                     </Label>
                     <Input
                       id="reverseProxyUrl"
@@ -432,10 +477,18 @@ export function SiteSettings({
                     />
                     {site.type === "docker" && (
                       <p className="mt-1.5 text-xs text-slate-400">
-                        Use the container&apos;s published host port on
-                        127.0.0.1, not its internal port. For example, a
-                        127.0.0.1:30004:80 mapping uses http://127.0.0.1:30004
-                        here.
+                        Prefer the assigned site-id port. Use the
+                        container&apos;s published host port on 127.0.0.1, not
+                        its internal port. For example, a 127.0.0.1:
+                        {assignedPort ?? "<site id>"}:80 mapping uses{" "}
+                        {assignedUpstream || "http://127.0.0.1:<site id>"} here.
+                      </p>
+                    )}
+                    {site.type === "reverse-proxy" && (
+                      <p className="mt-1.5 text-xs text-slate-400">
+                        Prefer {assignedUpstream || "the assigned site-id port"}
+                        . Use a different target only when the application
+                        cannot use that port or the upstream lives elsewhere.
                       </p>
                     )}
                   </div>

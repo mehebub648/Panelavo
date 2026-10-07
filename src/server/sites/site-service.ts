@@ -36,6 +36,7 @@ import {
   localSiteProxyUrl,
   managedApplicationPort,
   managedSiteIdForApplicationPort,
+  managedSiteIdsForExistingApplicationPort,
 } from "@/lib/site-url";
 import type { ValidCreateSiteInput } from "@/schemas/sites";
 import type { z } from "zod";
@@ -105,12 +106,12 @@ export async function getSiteCreationDetails(actor: PanelActor) {
   ]);
   const reserved = [
     ...Object.values(meta).map((item) => item.id),
-    ...[
-      ...sites
-        .map((site) => site.appPort)
-        .filter((port): port is number => typeof port === "number"),
-      ...options.reservedPorts,
-    ].flatMap((port) => {
+    ...sites.flatMap((site) =>
+      typeof site.appPort === "number"
+        ? managedSiteIdsForExistingApplicationPort(site.appPort)
+        : [],
+    ),
+    ...options.reservedPorts.flatMap((port) => {
       const siteId = managedSiteIdForApplicationPort(port);
       return siteId === null ? [] : [siteId];
     }),
@@ -153,14 +154,16 @@ export async function createManagedSite(
     client.getSiteCreationOptions(actor.cloudPanel),
   ]);
   const reservedIds = [
-    ...existingSites
-      .map((site) => site.appPort)
-      .filter((port): port is number => typeof port === "number"),
-    ...creationOptions.reservedPorts,
-  ].flatMap((port) => {
-    const siteId = managedSiteIdForApplicationPort(port);
-    return siteId === null ? [] : [siteId];
-  });
+    ...existingSites.flatMap((site) =>
+      typeof site.appPort === "number"
+        ? managedSiteIdsForExistingApplicationPort(site.appPort)
+        : [],
+    ),
+    ...creationOptions.reservedPorts.flatMap((port) => {
+      const siteId = managedSiteIdForApplicationPort(port);
+      return siteId === null ? [] : [siteId];
+    }),
+  ];
   const { id, category } = await allocateSiteId(input.category, reservedIds);
   const appPort = managedApplicationPort(id)!;
   const domain = systemDomainFor(id, serverIp, baseDomain);
@@ -284,7 +287,7 @@ export async function createManagedSite(
     input.type === "python" ||
     input.type === "docker"
       ? {
-          applicationPortGuidance: `Application port ${appPort} is site id ${id} + 10,000. ${input.type === "docker" ? "Publish your container's HTTP port on host" : "Bind your application to"} 127.0.0.1:${appPort}; this is the CloudPanel proxy port. The site id is not the application port.`,
+          applicationPortGuidance: `Application port ${appPort} matches site id ${id}. ${input.type === "docker" ? "Publish your container's HTTP port on host" : "Bind your application to"} 127.0.0.1:${appPort}; this is the CloudPanel proxy port. Adapt the application to this assigned port unless an advanced custom upstream is required.`,
         }
       : {}),
   };

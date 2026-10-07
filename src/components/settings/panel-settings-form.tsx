@@ -123,8 +123,8 @@ export function PanelSettingsForm({
           <h3 className="font-bold">Site id ranges</h3>
           <p className="text-sm text-slate-500">
             Each website reserves one identity from its category and uses the
-            site user name site-&lt;id&gt;. Port-based applications receive a
-            separate collision-checked port in 30000–39999.
+            site user name site-&lt;id&gt;. New port-based applications use that
+            same id as their collision-checked private port.
           </p>
         </div>
         <div className="divide-y divide-slate-100 text-sm">

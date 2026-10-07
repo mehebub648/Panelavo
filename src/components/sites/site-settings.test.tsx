@@ -23,6 +23,7 @@ const site: CloudPanelSite = {
   reverseProxyUrl: "http://127.0.0.1:34000",
   siteUser: "site-user",
   status: "active",
+  meta: { id: 24000 },
 };
 function show() {
   render(
@@ -41,6 +42,16 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 describe("website settings", () => {
+  it("shows the assigned site-id port without replacing an existing custom upstream", () => {
+    show();
+
+    const assigned = screen.getByLabelText("Assigned website port");
+    expect(assigned).toHaveTextContent("24000");
+    expect(assigned).toHaveTextContent(
+      "Existing custom upstream: http://127.0.0.1:34000",
+    );
+  });
+
   it("sends only a label change and leaves traffic settings alone", async () => {
     const fetchMock = vi
       .fn()
@@ -77,7 +88,7 @@ describe("website settings", () => {
     fireEvent.click(
       screen.getByText("Advanced: public folder and website routing"),
     );
-    fireEvent.change(screen.getByLabelText("Website upstream"), {
+    fireEvent.change(screen.getByLabelText("Custom website upstream"), {
       target: { value: "http://127.0.0.1:24000" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
