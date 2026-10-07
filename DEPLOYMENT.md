@@ -194,6 +194,8 @@ Automation remains off until enabled for a configured branch. Use the selected s
 
 Operations uses four user-facing steps: Review website, Prepare, Deploy, and Verify. Review performs a bounded, structure-aware application-folder scan and shows the configured serving root and actual upstream. Prepare contains server-verified blockers and narrowly available repairs. Deploy retains the server-owned plan and bounded job flow. Verify reports application health, listener/port ownership, proxy response, and public reachability separately.
 
+Structure-aware Operations requires trusted broker protocol 29. Install the root-owned broker from the same release before activating the built application; the non-root updater refuses incompatible brokers. Preserve `.data`, `.env.local`, and the existing configured website upstreams.
+
 ## Optional plugin connection service
 
 Enable only the chosen public gateway host with `PANELAVO_PLUGIN_ENABLED=1` and `PANELAVO_PLUGIN_PUBLISHER` set to its public operator name. Keep the existing stable `CREDENTIALS_ENCRYPTION_KEY` or `SESSION_SECRET`: `.data/plugin-connections.enc.json` holds encrypted upstream OAuth credentials and must be preserved with the other private state. This remains a single-process deployment.

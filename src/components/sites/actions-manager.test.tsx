@@ -407,6 +407,16 @@ describe("ActionsManager", () => {
     ).toBeDisabled();
   });
 
+  it("lets Next.js record the step URL without replaying its internal history marker", () => {
+    window.history.replaceState({ __NA: true }, "", "/sites/example.test/actions");
+    const pushState = vi.spyOn(window.history, "pushState");
+    render(<ActionsManager domain="example.test" initialData={dockerData(true)} />);
+    chooseStep("Prepare");
+    expect(pushState).toHaveBeenCalledWith(null, "", expect.any(URL));
+    expect(window.location.search).toBe("?step=2");
+    pushState.mockRestore();
+  });
+
   it("uses the fleet website path for suggested repairs", () => {
     const data = dockerData(true);
     data.guidance = {

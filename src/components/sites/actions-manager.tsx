@@ -249,7 +249,7 @@ export function ActionsManager({
   function chooseWorkflowStep(value: number) {
     const url = new URL(window.location.href);
     url.searchParams.set("step", String(value + 1));
-    window.history.pushState(window.history.state, "", url);
+    window.history.pushState(null, "", url);
     setWorkflowStep(value);
     window.requestAnimationFrame(() => workflowHeadingRef.current?.focus());
   }
