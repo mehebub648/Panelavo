@@ -9,15 +9,20 @@ function check(bool $condition, string $message): void {
 }
 $template = "server {\n  server_name system.example.com;\n}\n";
 $aliases = ['example.com', 'www.example.com'];
-$enabled = applyDomainConfig($template, $aliases, 'none', 'system.example.com', '', ['example.com']);
+$enabled = applyDomainConfig($template, $aliases, 'none', 'system.example.com', '', ['example.com' => 'www']);
 check(str_contains($enabled, 'if ($host = "example.com")'), 'Only the bare host must redirect');
 check(str_contains($enabled, 'return 301 https://www.example.com$request_uri;'), 'Preserve path and query');
 check(str_contains($enabled, 'acme-challenge/'), 'Exempt ACME requests');
 check(!str_contains($enabled, 'if ($host = "www.example.com")'), 'Do not redirect www to itself');
-check(applyDomainConfig($enabled, $aliases, 'none', 'system.example.com', '', ['example.com']) === $enabled, 'Repeated application must be idempotent');
+check(applyDomainConfig($enabled, $aliases, 'none', 'system.example.com', '', ['example.com' => 'www']) === $enabled, 'Repeated application must be idempotent');
 $disabled = applyDomainConfig($enabled, $aliases, 'none', 'system.example.com', '');
 check(!str_contains($disabled, 'panel_www_redirect'), 'Disabling must remove redirect rules');
 check(str_contains($disabled, 'example.com www.example.com;'), 'Both aliases must remain hosted');
-$blocked = applyDomainConfig($enabled, $aliases, 'error', 'system.example.com', '', ['example.com']);
+$apex = applyDomainConfig($enabled, $aliases, 'none', 'system.example.com', '', ['example.com' => 'apex']);
+check(str_contains($apex, 'if ($host = "www.example.com")'), 'The www host must redirect when apex is preferred');
+check(str_contains($apex, 'return 301 https://example.com$request_uri;'), 'The apex redirect must preserve path and query');
+$both = applyDomainConfig($apex, $aliases, 'none', 'system.example.com', '', ['example.com' => 'both']);
+check(!str_contains($both, 'panel_www_redirect'), 'Keeping both addresses must remove canonical redirect rules');
+$blocked = applyDomainConfig($enabled, $aliases, 'error', 'system.example.com', '', ['example.com' => 'www']);
 check(str_contains($blocked, 'return 403;') && str_contains($blocked, 'return 301'), 'System-domain policy must coexist');
 echo "Domain configuration tests passed.\n";

@@ -413,3 +413,5 @@ The website Domains page provides one Recheck DNS & secure action. Adding addres
 Global Cloudflare DNS manages connected provider zones and records. Attach an address to a website through that website's Domains tab; changing DNS alone does not attach it to a website.
 
 HTTPS readiness requires the covering trusted certificate to be active. Panelavo activates an existing matching certificate when possible and reports activation failures instead of claiming success.
+
+For every attached domain/www pair, choose Use domain without www, Use www, or Keep both in website Domains. Redirects preserve the requested path and query string; existing www preferences remain effective.

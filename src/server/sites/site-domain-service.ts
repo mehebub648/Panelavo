@@ -44,6 +44,13 @@ export const siteDomainActionSchema = z.discriminatedUnion("action", [
     .strict(),
   z
     .object({
+      action: z.literal("set-www-canonical"),
+      domain: domainValue,
+      mode: z.enum(["apex", "www", "both"]),
+    })
+    .strict(),
+  z
+    .object({
       action: z.literal("set-block"),
       block: z.enum(["none", "error", "redirect"]),
       redirectTo: domainValue.optional(),
@@ -71,6 +78,18 @@ export type SiteDomainAction = z.infer<typeof siteDomainActionSchema>;
 export type PointSiteDnsInput = z.infer<typeof pointSiteDnsSchema>;
 
 async function syncVhost(actor: PanelActor, domain: string, meta: SiteMeta) {
+  const wwwCanonical = Object.fromEntries(
+    meta.aliases
+      .filter(
+        (name) =>
+          !name.startsWith("www.") && meta.aliases.includes(`www.${name}`),
+      )
+      .map((name) => [
+        name,
+        meta.wwwCanonical?.[name] ??
+          (meta.wwwRedirects?.includes(name) ? "www" : "both"),
+      ]),
+  );
   await writableSiteForActor(actor, domain).then(({ client }) =>
     client.manageSiteSection(actor.cloudPanel, domain, "domains", {
       action: "sync",
@@ -79,6 +98,7 @@ async function syncVhost(actor: PanelActor, domain: string, meta: SiteMeta) {
       block: meta.aliases.length ? meta.block : "none",
       redirectTo: meta.redirectTo,
       wwwRedirects: meta.wwwRedirects ?? [],
+      wwwCanonical,
     }),
   );
 }
@@ -168,6 +188,12 @@ export async function manageSiteDomainsForActor(
       (name) =>
         meta.aliases.includes(name) && meta.aliases.includes(`www.${name}`),
     );
+    meta.wwwCanonical = Object.fromEntries(
+      Object.entries(meta.wwwCanonical ?? {}).filter(
+        ([name]) =>
+          meta.aliases.includes(name) && meta.aliases.includes(`www.${name}`),
+      ),
+    );
     if (meta.redirectTo === input.domain) {
       meta.redirectTo = meta.aliases[0];
       if (meta.block === "redirect" && !meta.redirectTo) meta.block = "none";
@@ -187,6 +213,31 @@ export async function manageSiteDomainsForActor(
       );
     const redirects = new Set(meta.wwwRedirects ?? []);
     if (input.enabled) redirects.add(input.domain);
+    else redirects.delete(input.domain);
+    meta.wwwRedirects = Array.from(redirects);
+    meta.wwwCanonical = {
+      ...(meta.wwwCanonical ?? {}),
+      [input.domain]: input.enabled ? "www" : "both",
+    };
+    await syncVhost(actor, domain, meta);
+    await setSiteMeta(domain, meta);
+  } else if (input.action === "set-www-canonical") {
+    if (
+      input.domain.startsWith("www.") ||
+      !meta.aliases.includes(input.domain) ||
+      !meta.aliases.includes(`www.${input.domain}`)
+    )
+      throw new AppError(
+        "INVALID_REQUEST",
+        "Add both the bare domain and its www domain before choosing a preferred address.",
+        400,
+      );
+    meta.wwwCanonical = {
+      ...(meta.wwwCanonical ?? {}),
+      [input.domain]: input.mode,
+    };
+    const redirects = new Set(meta.wwwRedirects ?? []);
+    if (input.mode === "www") redirects.add(input.domain);
     else redirects.delete(input.domain);
     meta.wwwRedirects = Array.from(redirects);
     await syncVhost(actor, domain, meta);

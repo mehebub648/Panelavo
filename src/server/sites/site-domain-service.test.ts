@@ -130,6 +130,47 @@ describe("actor-aware website domains", () => {
     },
   );
 
+  it.each([
+    ["apex", []],
+    ["www", ["example.com"]],
+    ["both", []],
+  ] as const)(
+    "sets the %s canonical mode while retaining legacy www compatibility",
+    async (mode, legacyRedirects) => {
+      mocks.getSiteMeta.mockResolvedValue({
+        id: 20001,
+        category: "sites",
+        aliases: ["example.com", "www.example.com"],
+        block: "none",
+        wwwRedirects: ["example.com"],
+      });
+
+      await manageSiteDomainsForActor(
+        actor,
+        "site.example.test",
+        { action: "set-www-canonical", domain: "example.com", mode },
+        "203.0.113.10",
+      );
+
+      expect(mocks.manageSiteSection).toHaveBeenCalledWith(
+        actor.cloudPanel,
+        "site.example.test",
+        "domains",
+        expect.objectContaining({
+          wwwCanonical: { "example.com": mode },
+          wwwRedirects: legacyRedirects,
+        }),
+      );
+      expect(mocks.setSiteMeta).toHaveBeenCalledWith(
+        "site.example.test",
+        expect.objectContaining({
+          wwwCanonical: { "example.com": mode },
+          wwwRedirects: legacyRedirects,
+        }),
+      );
+    },
+  );
+
   it("rejects redirects without both aliases", async () => {
     await expect(
       manageSiteDomainsForActor(

@@ -183,3 +183,5 @@ Domain addition and website creation await certificate issuance and return nonfa
 The global /domains route and connected-server domains tab retain their URLs but are labeled Cloudflare DNS. Site-scoped Domains remains the routing/alias and HTTPS workflow.
 
 Certificate reuse activates a matching unexpired trusted certificate. Issuance selects only certificates covering the complete requested hostname set and propagates default-activation failures.
+
+Broker protocol 28 accepts an explicit per-domain wwwCanonical map (bare/www/both) while retaining legacy wwwRedirects. Both attached names are required. The vhost transformer removes the prior managed redirect block, recreates the chosen direction and preserves ACME challenges and request URI.

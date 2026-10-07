@@ -26,6 +26,7 @@ type Meta = {
   aliases: string[];
   block: "none" | "error" | "redirect";
   redirectTo?: string;
+  wwwCanonical?: Record<string, "apex" | "www" | "both">;
   wwwRedirects?: string[];
 };
 type DnsEntry = { name: string; ip: string | null; pointed: boolean };
@@ -506,36 +507,41 @@ export function DomainsManager({
             key={name}
             className="rounded-2xl border border-slate-200 bg-white p-5 shadow-card sm:p-6"
           >
-            <label className="flex items-center justify-between gap-4">
+            <div className="flex flex-wrap items-center justify-between gap-4">
               <span>
                 <span className="block font-bold">
-                  Redirect {name} to www.{name}
+                  Preferred public address
                 </span>
                 <span className="mt-1 block text-sm text-slate-500">
-                  Off: both addresses serve this website without a redirect. On:
-                  visitors use www, keeping the page path and query. Both
-                  addresses need valid SSL for HTTPS.
+                  Choose the address visitors should keep. Redirects preserve
+                  the page path and query. Both addresses remain secured.
                 </span>
               </span>
-              <input
-                type="checkbox"
-                role="switch"
-                className="h-5 w-5 shrink-0 accent-panel-600"
-                checked={(meta.wwwRedirects ?? []).includes(name)}
+              <Select
+                aria-label={`Preferred address for ${name}`}
+                className="w-full sm:w-auto sm:min-w-64"
+                value={
+                  meta.wwwCanonical?.[name] ??
+                  ((meta.wwwRedirects ?? []).includes(name) ? "www" : "both")
+                }
                 disabled={!canWrite || busy !== ""}
                 onChange={(event) =>
                   void act(
                     {
-                      action: "set-www-redirect",
+                      action: "set-www-canonical",
                       domain: name,
-                      enabled: event.target.checked,
+                      mode: event.target.value,
                     },
                     `www-${name}`,
-                    "Domain redirect updated",
+                    "Preferred address updated",
                   )
                 }
-              />
-            </label>
+              >
+                <option value="apex">Use {name}</option>
+                <option value="www">Use www.{name}</option>
+                <option value="both">Keep both addresses</option>
+              </Select>
+            </div>
           </section>
         ))}
       <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-card">

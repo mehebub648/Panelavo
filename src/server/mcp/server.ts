@@ -95,6 +95,11 @@ const siteDomainOperationToolSchema = z.discriminatedUnion("action", [
   }),
   z.object({ action: z.literal("remove-alias"), domain: domainSchema }),
   z.object({
+    action: z.literal("set-www-canonical"),
+    domain: domainSchema,
+    mode: z.enum(["apex", "www", "both"]),
+  }),
+  z.object({
     action: z.literal("set-block"),
     block: z.enum(["none", "error", "redirect"]),
     redirectTo: domainSchema.optional(),

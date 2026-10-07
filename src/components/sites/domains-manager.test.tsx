@@ -58,4 +58,56 @@ describe("website domains", () => {
     );
     expect(screen.queryByText(/port 21001/)).not.toBeInTheDocument();
   });
+
+  it("preserves the legacy www preference and lets the user choose apex", async () => {
+    const data = {
+      meta: {
+        id: 21001,
+        category: "personal",
+        aliases: ["example.com", "www.example.com"],
+        block: "none",
+        wwwRedirects: ["example.com"],
+      },
+      serverIp: "203.0.113.10",
+      dns: [
+        { name: "site.example.test", ip: "203.0.113.10", pointed: true },
+        { name: "example.com", ip: "203.0.113.10", pointed: true },
+        { name: "www.example.com", ip: "203.0.113.10", pointed: true },
+      ],
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        json: async () => ({ success: true, data }),
+      })
+      .mockResolvedValueOnce({
+        json: async () => ({
+          success: true,
+          data: {
+            ...data,
+            meta: {
+              ...data.meta,
+              wwwCanonical: { "example.com": "apex" },
+              wwwRedirects: [],
+            },
+          },
+        }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<DomainsManager domain="site.example.test" canWrite={true} />);
+
+    const preferred = await screen.findByLabelText(
+      "Preferred address for example.com",
+    );
+    expect(preferred).toHaveValue("www");
+    fireEvent.change(preferred, { target: { value: "apex" } });
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({
+      action: "set-www-canonical",
+      domain: "example.com",
+      mode: "apex",
+    });
+  });
 });

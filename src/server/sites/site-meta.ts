@@ -30,6 +30,7 @@ export const SITE_CATEGORIES: SiteCategory[] = [
 ];
 
 export type SubdomainBlockMode = "none" | "error" | "redirect";
+export type WwwCanonicalMode = "apex" | "www" | "both";
 
 export type SiteMeta = {
   id: number;
@@ -37,6 +38,9 @@ export type SiteMeta = {
   aliases: string[];
   block: SubdomainBlockMode;
   redirectTo?: string;
+  /** Preferred address for each served bare/www pair. */
+  wwwCanonical?: Record<string, WwwCanonicalMode>;
+  /** Legacy bare-to-www settings retained while metadata migrates in place. */
   wwwRedirects?: string[];
   // Linked-service sites: real CloudPanel reverse-proxy sites that the panel
   // groups under a parent site (e.g. api.app.com under app.com). `parent` is

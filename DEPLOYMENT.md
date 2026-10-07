@@ -213,3 +213,5 @@ A successful website/domain creation can include a DNS or HTTPS warning. Read th
 Use website Domains to attach an address; use Cloudflare DNS for provider record administration. Both local and connected-server navigation use these names.
 
 If a covering certificate is installed but inactive, Recheck DNS & secure activates it without another issuance. Activation failures are shown for recovery.
+
+Broker protocol 28 adds both canonical-address redirect directions. Install the trusted root-owned broker from this release before the application; the ordinary updater refuses an incompatible broker. Existing bare-to-www preferences remain compatible.
