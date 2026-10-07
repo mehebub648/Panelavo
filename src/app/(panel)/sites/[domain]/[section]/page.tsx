@@ -59,6 +59,8 @@ const descriptions: Record<string, string> = {
   "cron-jobs": "Create and review recurring background commands.",
   logs: "Inspect available log files and clear them when needed.",
 };
+const certificateStatusDescription =
+  "Review installed certificates, their covered domains, expiry, and active status.";
 
 export default async function SiteSectionPage({
   params,
@@ -182,7 +184,7 @@ export default async function SiteSectionPage({
         />
         <SectionBlock
           title="Installed certificates"
-          description={descriptions.certificates}
+          description={certificateStatusDescription}
         >
           <SiteSectionManager
             domain={domain}

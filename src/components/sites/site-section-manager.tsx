@@ -458,9 +458,9 @@ export function SiteSectionManager({
       return (
         <div className="grid gap-5">
           <section className={card}>
-            <div className="mb-4 flex items-center justify-between gap-3">
-              <h2 className="font-bold">Installed certificates</h2>
-              {!displayOnly && (
+            {!displayOnly && (
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <h2 className="font-bold">Installed certificates</h2>
                 <Button
                   size="sm"
                   onClick={() =>
@@ -471,8 +471,8 @@ export function SiteSectionManager({
                 >
                   <Shield className="h-4 w-4" /> Issue certificate
                 </Button>
-              )}
-            </div>
+              </div>
+            )}
             <div className="space-y-3">
               {(() => {
                 const items = data.items as CertificateItem[];

@@ -61,6 +61,8 @@ const titles: Record<string, string> = {
   "cron-jobs": "Cron Jobs",
   logs: "Logs",
 };
+const certificateStatusDescription =
+  "Review installed certificates, their covered domains, expiry, and active status.";
 
 export default async function FleetSiteSectionPage({
   params,
@@ -125,13 +127,21 @@ export default async function FleetSiteSectionPage({
     return (
       <Section title="Domains">
         <DomainsManager domain={domain} canWrite apiBase={apiBase} />
-        <SiteSectionManager
-          domain={domain}
-          section="certificates"
-          initialData={(certificates ?? {}) as Record<string, unknown>}
-          apiBase={apiBase}
-          displayOnly
-        />
+        <div className="space-y-3">
+          <div>
+            <h3 className="font-bold text-ink">Installed certificates</h3>
+            <p className="mt-1 text-sm text-slate-500">
+              {certificateStatusDescription}
+            </p>
+          </div>
+          <SiteSectionManager
+            domain={domain}
+            section="certificates"
+            initialData={(certificates ?? {}) as Record<string, unknown>}
+            apiBase={apiBase}
+            displayOnly
+          />
+        </div>
       </Section>
     );
   }

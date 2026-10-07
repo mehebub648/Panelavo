@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   CheckCircle2,
   Globe2,
@@ -73,6 +74,7 @@ export function DomainsManager({
   canWrite: boolean;
   apiBase?: string;
 }) {
+  const router = useRouter();
   const [data, setData] = useState<Data | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -137,6 +139,7 @@ export function DomainsManager({
         [])
         toast.warning(warning, { duration: 12000 });
       toast.success(success);
+      router.refresh();
     } catch (reason) {
       toast.error(
         reason instanceof Error

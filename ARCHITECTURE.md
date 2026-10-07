@@ -191,3 +191,5 @@ Root listener inspection carries an explicit availability verdict through Operat
 Actor-scoped DNS readiness uses resolveDnsOriginStatus. A direct public answer to the server is sufficient, including wildcard DNS; otherwise a public answer plus a connected proxied A/CNAME chain must prove this origin. Provider failures are contained per hostname and cannot replace missing evidence. SSL planning and domain reads share this verdict.
 
 Update-site diagnostics use an exact message-pattern and bridge-code allowlist before reaching the browser. Unrecognized privileged output remains generic, preserving the credential boundary.
+
+DomainsManager refreshes server components after successful domain POST actions so the sibling certificate status receives fresh CloudPanel data; failed actions preserve the current page state.

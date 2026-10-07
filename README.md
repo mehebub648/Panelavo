@@ -423,3 +423,5 @@ DNS preparation preserves a valid www CNAME that already leads to this server. A
 Domains distinguishes direct DNS from Cloudflare proxy DNS with a verified origin. Proxy edge addresses do not have to match the server address: connected provider records must prove the origin and the hostname must resolve publicly. HTTPS and application health are checked separately.
 
 Settings shows the exact safe reason when a port is reserved, owned by another project, cannot be inspected, or fails health checks. A failed upstream change explains whether the previous proxy setting was restored.
+
+After a successful domain change, installed certificate coverage and active status refresh immediately on the same page.

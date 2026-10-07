@@ -5,9 +5,16 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DomainsManager } from "./domains-manager";
 
+const routerMocks = vi.hoisted(() => ({ refresh: vi.fn() }));
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ refresh: routerMocks.refresh }),
+}));
+
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  vi.clearAllMocks();
 });
 
 describe("website domains", () => {
@@ -109,6 +116,46 @@ describe("website domains", () => {
       domain: "example.com",
       mode: "apex",
     });
+    expect(routerMocks.refresh).toHaveBeenCalledOnce();
+  });
+
+  it("does not refresh certificate data when a domain action fails", async () => {
+    const data = {
+      meta: {
+        id: 21001,
+        category: "personal",
+        aliases: ["example.com", "www.example.com"],
+        block: "none",
+      },
+      serverIp: "203.0.113.10",
+      dns: [
+        { name: "site.example.test", ip: "203.0.113.10", pointed: true },
+        { name: "example.com", ip: "203.0.113.10", pointed: true },
+        { name: "www.example.com", ip: "203.0.113.10", pointed: true },
+      ],
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        json: async () => ({ success: true, data }),
+      })
+      .mockResolvedValueOnce({
+        json: async () => ({
+          success: false,
+          error: { message: "Certificate activation failed." },
+        }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<DomainsManager domain="site.example.test" canWrite={true} />);
+
+    fireEvent.change(
+      await screen.findByLabelText("Preferred address for example.com"),
+      { target: { value: "www" } },
+    );
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(routerMocks.refresh).not.toHaveBeenCalled();
   });
 
   it("distinguishes a verified Cloudflare proxy from a provider lookup failure", async () => {
