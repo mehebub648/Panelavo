@@ -16,6 +16,7 @@ vi.mock("./uptime-settings", () => ({ UptimeSettings: () => null }));
 const site: CloudPanelSite = {
   id: "1",
   domain: "site.test",
+  url: "https://site.test",
   type: "docker",
   rootDirectory: "site.test",
   applicationRootDirectory: "site.test/app",
