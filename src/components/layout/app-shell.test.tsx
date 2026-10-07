@@ -63,7 +63,7 @@ describe("Fleet navigation visibility", () => {
     );
     for (const label of [
       "Websites",
-      "Domains",
+      "Cloudflare DNS",
       "AI access",
       "Resources",
       "Information",
@@ -78,6 +78,9 @@ describe("Fleet navigation visibility", () => {
       "href",
       "/settings",
     );
+    expect(
+      screen.getByRole("link", { name: "Cloudflare DNS" }),
+    ).toHaveAttribute("href", "/domains");
     expect(screen.getByRole("link", { name: "Switch server" })).toHaveAttribute(
       "href",
       "/switch-server?from=%2Fsites",
@@ -143,7 +146,7 @@ describe("Fleet navigation visibility", () => {
     );
     for (const label of [
       "Websites",
-      "Domains",
+      "Cloudflare DNS",
       "AI access",
       "Resources",
       "Information",
@@ -158,6 +161,33 @@ describe("Fleet navigation visibility", () => {
       "href",
       "/servers/node-a?tab=settings",
     );
+    expect(
+      screen.getByRole("link", { name: "Cloudflare DNS" }),
+    ).toHaveAttribute("href", "/servers/node-a?tab=domains");
+  });
+
+  it("uses the Cloudflare DNS title locally and on connected servers", () => {
+    navigation.pathname = "/domains";
+    const local = render(
+      <AppShell user={user("super-admin")}>
+        <p>DNS content</p>
+      </AppShell>,
+    );
+    expect(
+      screen.getByRole("heading", { name: "Cloudflare DNS", level: 1 }),
+    ).toBeVisible();
+    local.unmount();
+
+    navigation.pathname = "/servers/node-a";
+    navigation.tab = "domains";
+    render(
+      <AppShell user={user("super-admin")}>
+        <p>Remote DNS content</p>
+      </AppShell>,
+    );
+    expect(
+      screen.getByRole("heading", { name: "Cloudflare DNS", level: 1 }),
+    ).toBeVisible();
   });
 
   it("keeps local management available if discovery fails", async () => {

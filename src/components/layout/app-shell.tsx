@@ -90,15 +90,17 @@ export function AppShell({
         ? "Website workspace"
         : section === "ai-access"
           ? "AI access"
-          : section === "settings"
-            ? "Panel settings"
-            : section[0].toUpperCase() + section.slice(1)
+          : section === "domains"
+            ? "Cloudflare DNS"
+            : section === "settings"
+              ? "Panel settings"
+              : section[0].toUpperCase() + section.slice(1)
     : pathname === "/switch-server"
       ? "Switch server"
       : pathname.startsWith("/fleet")
         ? "Fleet"
         : pathname === "/domains"
-          ? "Domains & DNS"
+          ? "Cloudflare DNS"
           : pathname === "/ai-access"
             ? "AI access"
             : pathname === "/settings"
@@ -132,7 +134,7 @@ export function AppShell({
         },
         {
           href: fleetSectionHref(serverId, "domains"),
-          label: "Domains",
+          label: "Cloudflare DNS",
           icon: Cloud,
         },
         {
@@ -174,7 +176,7 @@ export function AppShell({
       ]
     : [
         { href: "/sites", label: "Websites", icon: Globe2 },
-        { href: "/domains", label: "Domains", icon: Cloud },
+        { href: "/domains", label: "Cloudflare DNS", icon: Cloud },
         { href: "/ai-access", label: "AI access", icon: Bot },
         ...(elevated
           ? [{ href: "/resources", label: "Resources", icon: Activity }]

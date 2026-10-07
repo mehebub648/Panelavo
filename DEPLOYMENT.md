@@ -209,3 +209,5 @@ When changing a website port to an already-running site-owned listener, start an
 Save automatic deployment settings before generating a CI workflow or token. Pending branch edits do not change the workflow until saved. Use the normal deployment action when build and restart hooks are needed; Update files only is an advanced Git action.
 
 A successful website/domain creation can include a DNS or HTTPS warning. Read that result and use Recheck DNS & secure after correcting DNS; the attached website remains available through its system domain. No generated site id is presented as an application port.
+
+Use website Domains to attach an address; use Cloudflare DNS for provider record administration. Both local and connected-server navigation use these names.

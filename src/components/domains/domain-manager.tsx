@@ -194,9 +194,12 @@ export function DomainManager({ apiBase = "" }: { apiBase?: string }) {
     <div className="mx-auto max-w-7xl space-y-8 animate-in fade-in duration-300">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h2 className="text-3xl font-bold tracking-tight text-slate-900">Domains & DNS</h2>
+          <h2 className="text-3xl font-bold tracking-tight text-slate-900">
+            Cloudflare DNS
+          </h2>
           <p className="mt-2 text-slate-500 max-w-2xl">
-            Manage your Cloudflare domains, DNS records, and connected accounts from a single unified interface.
+            Manage Cloudflare zones, DNS records, and connected accounts. To
+            attach an address to a website, open that website&apos;s Domains tab.
           </p>
         </div>
         <div className="flex items-center gap-3">

@@ -409,3 +409,5 @@ Website Settings can align the proxy with an already-running application owned b
 Git & Deploy presents the deployment workflow first. Advanced tools contain Update files only, which skips build, migrations and application restart and can immediately change PHP/static pages. Automatic deployment tokens and generated workflows are available only after saving enablement; workflows use the saved branch.
 
 The website Domains page provides one Recheck DNS & secure action. Adding addresses and creating websites wait for their certificate attempt and report any remaining DNS/HTTPS work. Installed certificates are displayed below without competing issuance controls. Alias metadata reflects the addresses CloudPanel successfully accepted.
+
+Global Cloudflare DNS manages connected provider zones and records. Attach an address to a website through that website's Domains tab; changing DNS alone does not attach it to a website.
