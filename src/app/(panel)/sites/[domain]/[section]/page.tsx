@@ -188,6 +188,7 @@ export default async function SiteSectionPage({
             domain={domain}
             section="certificates"
             initialData={(certificates ?? {}) as Record<string, unknown>}
+            displayOnly
           />
         </SectionBlock>
       </div>

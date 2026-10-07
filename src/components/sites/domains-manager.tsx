@@ -2,14 +2,12 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
-  Ban,
   CheckCircle2,
   Globe2,
   LoaderCircle,
   Lock,
   Plus,
   RefreshCw,
-  ShieldCheck,
   Trash2,
   TriangleAlert,
 } from "lucide-react";
@@ -49,12 +47,12 @@ export function DomainsManager({
 }) {
   const [data, setData] = useState<Data | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [busy, setBusy] = useState<string>("");
   const [aliasDraft, setAliasDraft] = useState("");
   const [includeWwwChoice, setIncludeWwwChoice] = useState<boolean | null>(
     null,
   );
-  const [sslSelection, setSslSelection] = useState<string[]>([domain]);
   const [confirm, setConfirm] = useState<{
     title: string;
     message: string;
@@ -64,11 +62,22 @@ export function DomainsManager({
   const base = `${apiBase}/api/sites/${encodeURIComponent(domain)}/domains`;
 
   const refresh = useCallback(async () => {
+    setLoadError("");
     try {
       const result = await fetch(base, { cache: "no-store" }).then((r) =>
         r.json(),
       );
-      if (result.success) setData(result.data);
+      if (!result.success)
+        throw new Error(
+          result.error?.message || "Domain settings could not be loaded.",
+        );
+      setData(result.data);
+    } catch (reason) {
+      setLoadError(
+        reason instanceof Error
+          ? reason.message
+          : "Domain settings could not be loaded.",
+      );
     } finally {
       setLoading(false);
     }
@@ -187,6 +196,27 @@ export function DomainsManager({
       <div className="h-72 animate-pulse rounded-2xl border border-slate-200 bg-white" />
     );
 
+  if (loadError && !data)
+    return (
+      <div className="rounded-2xl border border-red-200 bg-red-50 p-6 text-sm text-red-800">
+        <p className="flex items-center gap-2 font-semibold">
+          <TriangleAlert className="h-5 w-5" /> Domain settings unavailable
+        </p>
+        <p className="mt-2">{loadError}</p>
+        <Button
+          className="mt-4"
+          size="sm"
+          variant="outline"
+          onClick={() => {
+            setLoading(true);
+            void refresh();
+          }}
+        >
+          <RefreshCw className="h-4 w-4" /> Retry
+        </Button>
+      </div>
+    );
+
   const meta = data?.meta ?? null;
   const dnsFor = (name: string) =>
     data?.dns.find((entry) => entry.name === name);
@@ -213,10 +243,16 @@ export function DomainsManager({
     );
 
   const systemDns = dnsFor(domain);
-  const allNames = [domain, ...meta.aliases];
-
   return (
     <div className="w-full space-y-5">
+      {loadError && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          <span>{loadError}</span>
+          <Button size="sm" variant="outline" onClick={() => void refresh()}>
+            <RefreshCw className="h-4 w-4" /> Retry
+          </Button>
+        </div>
+      )}
       {/* System domain */}
       <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-card">
         <div className="flex items-center gap-3 border-b border-slate-100 bg-slate-50/60 px-5 py-4 sm:px-6">
@@ -226,7 +262,7 @@ export function DomainsManager({
           <div>
             <h3 className="font-bold">System domain</h3>
             <p className="text-sm text-slate-500">
-              Site id {meta.id} · category {meta.category} · port {meta.id}
+              Site id {meta.id} · category {meta.category}
             </p>
           </div>
         </div>
@@ -508,71 +544,21 @@ export function DomainsManager({
             <Lock className="h-5 w-5" />
           </span>
           <div>
-            <h3 className="font-bold">SSL certificate</h3>
+            <h3 className="font-bold">HTTPS readiness</h3>
             <p className="text-sm text-slate-500">
-              Issue one Let&apos;s Encrypt certificate covering the selected
-              domains. Every selected domain must already point to this server.
+              Check every served address and update one trusted certificate.
             </p>
           </div>
         </div>
         <div className="space-y-4 p-5 sm:p-6">
-          <div className="flex flex-wrap gap-2">
-            {allNames.map((name) => {
-              const selected = sslSelection.includes(name);
-              const pointed = dnsFor(name)?.pointed;
-              return (
-                <button
-                  key={name}
-                  type="button"
-                  disabled={!canWrite || name === domain}
-                  onClick={() => {
-                    if (name === domain) return;
-                    setSslSelection((current) =>
-                      selected
-                        ? current.filter((item) => item !== name)
-                        : [...current, name],
-                    );
-                  }}
-                  className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm font-medium transition ${
-                    selected
-                      ? "border-panel-400 bg-panel-50 text-panel-700"
-                      : "border-slate-200 text-slate-600 hover:bg-slate-50"
-                  } ${name === domain ? "cursor-not-allowed opacity-75" : ""}`}
-                >
-                  {selected ? (
-                    <CheckCircle2 className="h-4 w-4" />
-                  ) : (
-                    <Ban className="h-4 w-4 opacity-30" />
-                  )}
-                  <span className="break-all">{name}</span>
-                  {!pointed && (
-                    <TriangleAlert className="h-3.5 w-3.5 text-amber-500" />
-                  )}
-                </button>
-              );
-            })}
+          <div className="rounded-xl bg-slate-50 px-4 py-3 text-sm text-slate-600">
+            Panelavo includes the system domain and every address listed above
+            that points to this server. Addresses still waiting for DNS remain
+            attached and are reported clearly.
           </div>
           {canWrite && (
             <div className="flex flex-wrap items-center gap-2">
               <Button
-                disabled={busy !== "" || !sslSelection.length}
-                onClick={() =>
-                  void act(
-                    { action: "issue-ssl", domains: sslSelection },
-                    "ssl",
-                    "Certificate issued",
-                  )
-                }
-              >
-                {busy === "ssl" ? (
-                  <LoaderCircle className="h-4 w-4 animate-spin" />
-                ) : (
-                  <ShieldCheck className="h-4 w-4" />
-                )}
-                Issue certificate
-              </Button>
-              <Button
-                variant="outline"
                 disabled={busy !== ""}
                 onClick={() =>
                   void act(
@@ -593,9 +579,8 @@ export function DomainsManager({
           )}
           <p className="text-xs text-slate-400">
             Installed certificates are shown below on this page. Issuing can
-            take up to a minute. &quot;Recheck DNS &amp; secure&quot; re-points
-            what it can, then extends the certificate to every domain that
-            points here.
+            take up to a minute. This action re-points connected Cloudflare
+            records where possible, then covers every ready address.
           </p>
         </div>
       </section>

@@ -207,13 +207,14 @@ export async function createManagedSite(
 
   const site = await client.createSite(actor.cloudPanel, createInput);
   const warnings: string[] = [];
+  let servedAliases: string[] = [];
   try {
     if (actor.user.panelRole === "admin")
       await client.assignSite(actor.cloudPanel, domain);
     await setSiteMeta(domain, {
       id,
       category: category.id,
-      aliases,
+      aliases: [],
       block: "none",
     });
     await setSiteLabel(domain, site.id, input.label ?? "");
@@ -232,9 +233,24 @@ export async function createManagedSite(
         aliases,
         block: "none",
       });
+      await setSiteMeta(domain, {
+        id,
+        category: category.id,
+        aliases,
+        block: "none",
+      });
+      servedAliases = aliases;
     } catch {
+      await client
+        .manageSiteSection(actor.cloudPanel, domain, "domains", {
+          action: "sync",
+          systemDomain: domain,
+          aliases: [],
+          block: "none",
+        })
+        .catch(() => undefined);
       warnings.push(
-        "Website was created, but failed to configure your domain aliases. Try saving them again from the Settings tab.",
+        "Website was created, but your domains could not be attached. Open the Domains tab and add them again.",
       );
     }
   }
@@ -242,7 +258,7 @@ export async function createManagedSite(
     ...(await secureCreatedSite(actor.cloudPanel, {
       userId: actor.user.id,
       systemDomain: domain,
-      aliases,
+      aliases: servedAliases,
       serverIp,
     })),
   );
@@ -256,7 +272,12 @@ export async function createManagedSite(
       categoryOrder: SITE_CATEGORIES.findIndex(
         (item) => item.id === category.id,
       ),
-      meta: { id, category: category.id, aliases, block: "none" },
+      meta: {
+        id,
+        category: category.id,
+        aliases: servedAliases,
+        block: "none",
+      },
     },
     warnings,
     ...(input.type === "nodejs" ||

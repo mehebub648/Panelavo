@@ -130,6 +130,7 @@ export default async function FleetSiteSectionPage({
           section="certificates"
           initialData={(certificates ?? {}) as Record<string, unknown>}
           apiBase={apiBase}
+          displayOnly
         />
       </Section>
     );

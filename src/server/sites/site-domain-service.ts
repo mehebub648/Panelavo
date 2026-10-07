@@ -104,7 +104,7 @@ export async function manageSiteDomainsForActor(
   submitted: unknown,
   serverIp: string,
 ) {
-  const { site, client } = await writableSiteForActor(actor, requestedDomain);
+  const { site } = await writableSiteForActor(actor, requestedDomain);
   const domain = site.domain;
   const input = siteDomainActionSchema.parse(submitted);
   const meta = await getSiteMeta(domain);
@@ -148,11 +148,14 @@ export async function manageSiteDomainsForActor(
       autoPoint: true,
     });
     warnings.push(...plan.warnings);
-    void issueSiteSsl(actor.cloudPanel, domain, plan.san).catch(
-      (error: unknown) => {
-        console.error(`Let's Encrypt issuance failed for ${domain}:`, error);
-      },
-    );
+    try {
+      await issueSiteSsl(actor.cloudPanel, domain, plan.san);
+    } catch (error) {
+      console.error(`Let's Encrypt issuance failed for ${domain}:`, error);
+      warnings.push(
+        'The domain is attached, but HTTPS could not be updated. Fix any DNS warning, then use "Recheck DNS & secure" to retry.',
+      );
+    }
   } else if (input.action === "remove-alias") {
     if (!meta.aliases.includes(input.domain))
       throw new AppError(
@@ -222,14 +225,7 @@ export async function manageSiteDomainsForActor(
       (status) =>
         `${status.name} must point to this server (${serverIp}) before a certificate can be issued.`,
     );
-    await client.manageSiteSection(
-      actor.cloudPanel,
-      domain,
-      "certificates",
-      san.length
-        ? { action: "lets-encrypt", subjectAlternativeName: san.join(",") }
-        : { action: "lets-encrypt" },
-    );
+    await issueSiteSsl(actor.cloudPanel, domain, san);
   } else {
     const plan = await planSiteSsl({
       userId: actor.user.id,
@@ -321,7 +317,15 @@ export async function pointSiteDnsForActor(
     replace: input.replace === true,
     proxied: input.proxied === true,
   });
-  if (!outcome.primaryOk) throw pointDnsError(outcome);
+  if (!outcome.primaryOk)
+    throw (
+      pointDnsError(outcome) ??
+      new AppError(
+        "INVALID_REQUEST",
+        `No connected Cloudflare zone can manage ${target}. Connect its zone or update DNS at your provider.`,
+        409,
+      )
+    );
   const records = outcome.outcomes.flatMap((item) =>
     item.record ? [item.record] : [],
   );
@@ -329,5 +333,6 @@ export async function pointSiteDnsForActor(
     records,
     record: records[0],
     changed: outcome.changed,
+    outcomes: outcome.outcomes.map(({ name, status }) => ({ name, status })),
   };
 }

@@ -46,7 +46,10 @@ vi.mock("@/server/sites/site-meta", () => ({
   setSiteMeta: mocks.setSiteMeta,
 }));
 
-import { manageSiteDomainsForActor } from "./site-domain-service";
+import {
+  manageSiteDomainsForActor,
+  pointSiteDnsForActor,
+} from "./site-domain-service";
 
 const actor: PanelActor = {
   user: {
@@ -68,6 +71,9 @@ describe("actor-aware website domains", () => {
     };
     mocks.writableSiteForActor.mockResolvedValue(access);
     mocks.accessibleSiteForActor.mockResolvedValue(access);
+    mocks.accessibleDomainTargetForActor.mockResolvedValue({
+      target: "example.com",
+    });
     mocks.getSiteMeta.mockResolvedValue({
       id: 20001,
       category: "sites",
@@ -80,6 +86,18 @@ describe("actor-aware website domains", () => {
     mocks.planSiteSsl.mockResolvedValue({ san: [], warnings: [] });
     mocks.issueSiteSsl.mockResolvedValue(undefined);
     mocks.autoDeleteDns.mockResolvedValue(undefined);
+    mocks.pointDns.mockResolvedValue({
+      managed: true,
+      primaryOk: true,
+      changed: true,
+      outcomes: [
+        {
+          name: "example.com",
+          status: "created",
+          record: { id: "record-1", name: "example.com" },
+        },
+      ],
+    });
   });
 
   it.each([true, false])(
@@ -215,11 +233,10 @@ describe("actor-aware website domains", () => {
         "203.0.113.10",
         expect.any(Function),
       );
-      expect(mocks.manageSiteSection).toHaveBeenCalledWith(
+      expect(mocks.issueSiteSsl).toHaveBeenCalledWith(
         actor.cloudPanel,
         "site.example.test",
-        "certificates",
-        { action: "lets-encrypt", subjectAlternativeName: alias },
+        [alias],
       );
     },
   );
@@ -251,6 +268,49 @@ describe("actor-aware website domains", () => {
     expect(result.meta).toEqual(
       expect.objectContaining({ aliases: ["www.example.test"] }),
     );
+  });
+
+  it("waits for automatic HTTPS before reporting an attached domain complete", async () => {
+    let finishIssuance!: () => void;
+    mocks.issueSiteSsl.mockImplementation(
+      () => new Promise<void>((resolve) => (finishIssuance = resolve)),
+    );
+    let settled = false;
+    const result = manageSiteDomainsForActor(
+      actor,
+      "site.example.test",
+      { action: "add-alias", domain: "www.example.test" },
+      "203.0.113.10",
+    ).then((value) => {
+      settled = true;
+      return value;
+    });
+
+    await vi.waitFor(() => expect(mocks.issueSiteSsl).toHaveBeenCalledOnce());
+    expect(settled).toBe(false);
+    finishIssuance();
+
+    await expect(result).resolves.toEqual(
+      expect.objectContaining({ warnings: [] }),
+    );
+  });
+
+  it("keeps the attached domain and returns a retry warning when HTTPS fails", async () => {
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+    mocks.issueSiteSsl.mockRejectedValueOnce(new Error("ACME failed"));
+
+    const result = await manageSiteDomainsForActor(
+      actor,
+      "site.example.test",
+      { action: "add-alias", domain: "www.example.test" },
+      "203.0.113.10",
+    );
+
+    expect(result.meta).toEqual(
+      expect.objectContaining({ aliases: ["www.example.test"] }),
+    );
+    expect(result.warnings.at(-1)).toContain("Recheck DNS & secure");
+    expect(errorLog).toHaveBeenCalledOnce();
   });
 
   it("serves the www companion when an apex add request uses the compatible default", async () => {
@@ -337,5 +397,36 @@ describe("actor-aware website domains", () => {
     expect(mocks.manageSiteSection).not.toHaveBeenCalled();
     expect(mocks.setSiteMeta).not.toHaveBeenCalled();
     expect(mocks.autoDeleteDns).not.toHaveBeenCalled();
+  });
+
+  it("returns the exact DNS hostname outcome", async () => {
+    const result = await pointSiteDnsForActor(
+      actor,
+      "example.com",
+      { credentialId: "credential-1", zoneId: "zone-1" },
+      "203.0.113.10",
+    );
+
+    expect(result.outcomes).toEqual([
+      { name: "example.com", status: "created" },
+    ]);
+  });
+
+  it("explains when no connected Cloudflare zone can manage the hostname", async () => {
+    mocks.pointDns.mockResolvedValueOnce({
+      managed: false,
+      primaryOk: false,
+      changed: false,
+      outcomes: [{ name: "example.com", status: "failed" }],
+    });
+
+    await expect(
+      pointSiteDnsForActor(
+        actor,
+        "example.com",
+        { credentialId: "credential-1", zoneId: "zone-1" },
+        "203.0.113.10",
+      ),
+    ).rejects.toThrow("Connect its zone or update DNS at your provider");
   });
 });

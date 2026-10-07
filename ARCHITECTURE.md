@@ -177,3 +177,5 @@ Domain addition accepts an optional includeWww choice and attaches the selected 
 Settings port changes reuse the root-owned endpoint inventory and HTTP probe. A requested occupied port requires same-site ownership, loopback-only bindings, no competing listener or CloudPanel reservation, and a post-update health check with proxy rollback on failure.
 
 The deployment settings UI tracks saved configuration separately from form edits. CI controls require saved automation enablement, and workflow generation uses the saved branch until a successful settings save.
+
+Domain addition and website creation await certificate issuance and return nonfatal HTTPS warnings. Creation persists aliases only after successful vhost synchronization and removes rejected alias routing before issuing SSL. The Domains page hides generic certificate mutation controls while retaining installed-certificate status.
