@@ -401,3 +401,5 @@ Website Settings shows the project folder separately from the advanced public we
 Environment edits prompt before file switches or page navigation discard them. If Environment cannot load, Settings shows a retryable error card instead of hiding the section.
 
 After creating an application website, the website list shows its exact assigned website port and next steps. Docker examples publish to 127.0.0.1 only; the website port is the host side of the mapping, separate from the container's internal port.
+
+Website navigation keeps common tasks visible and groups Vhost, Git & Deploy and Terminal under Developer tools. The same direct URLs and browser Back/Forward behavior remain available.
