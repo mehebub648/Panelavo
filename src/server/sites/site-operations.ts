@@ -1832,6 +1832,129 @@ function planFor(
   return undefined;
 }
 
+function guidanceFor(
+  raw: RawOperationsData,
+  type: string,
+  architecture: OperationsData["architecture"],
+): NonNullable<OperationsData["guidance"]> {
+  const recommendations: NonNullable<
+    OperationsData["guidance"]
+  >["recommendations"] = [];
+  const rootManifest =
+    raw.hasPackageJson ||
+    raw.hasComposer ||
+    raw.hasWordPress ||
+    raw.hasRequirements ||
+    raw.hasPyproject ||
+    raw.hasPipfile ||
+    raw.hasIndexHtml ||
+    raw.hasCompose;
+  if (!rootManifest && raw.structure?.candidates.length) {
+    recommendations.push({
+      id: "application-folder",
+      title: "Check which folder contains your application",
+      detail: `Application files were found in ${raw.structure.candidates.map((item) => `${item.path} (${item.kinds.join(" / ")})`).join(", ")}. Choose the intended application folder in Settings, then recheck. Panelavo will keep using the current folder until you change it.`,
+      section: "settings",
+    });
+  }
+  if (raw.hasWorkspace)
+    recommendations.push({
+      id: "workspace",
+      title: "Choose the website’s workspace entry point",
+      detail:
+        "This project contains a workspace. Its build and start scripts must target the intended website. Panelavo does not choose between frontend, API, or worker packages; keep the workspace root if its scripts coordinate them.",
+      section: "file-manager",
+    });
+  if (type === "static" && raw.hasPackageJson)
+    recommendations.push({
+      id: "static-output",
+      title: "Serve the generated website folder",
+      detail:
+        "The deployment builds the declared frontend scripts. Set the public document root in Settings to the framework’s generated output folder, such as dist or out. A Node.js server application needs a Node.js website instead.",
+      section: "settings",
+    });
+  if (type === "php" && raw.hasArtisan)
+    recommendations.push({
+      id: "laravel-public",
+      title: "Keep Laravel’s public folder separate from application files",
+      detail:
+        "Operations runs from the folder containing artisan and composer.json. The public document root should point to its public subfolder. Database migrations require a separate reviewed action and a backup.",
+      section: "settings",
+    });
+  if (raw.hasComposer && raw.hasPackageJson && type === "php")
+    recommendations.push({
+      id: "php-assets",
+      title: "Build PHP dependencies and frontend assets together",
+      detail:
+        "This website has both Composer and Node.js manifests. The PHP deployment uses both dependency definitions and runs the declared frontend build; Node.js files alone do not change how the website serves traffic.",
+    });
+  if (raw.hasCompose && type !== "docker")
+    recommendations.push({
+      id: "compose-site-type",
+      title: "Check the website type before using containers",
+      detail:
+        "A Compose file was found, but this website is configured for another runtime. Detection does not change its serving type or enable container operations. Use a Docker website for a managed Compose deployment.",
+      section: "settings",
+    });
+  if (
+    type === "docker" &&
+    raw.compose?.entryService &&
+    raw.compose.containerPort &&
+    (raw.expectedPort ?? raw.compose.expectedPort)
+  )
+    recommendations.push({
+      id: "container-port",
+      title: "Use the assigned port outside the container",
+      detail: `The ${raw.compose.entryService} service uses container port ${raw.compose.containerPort}. Keep that internal port and publish it privately as 127.0.0.1:${raw.expectedPort ?? raw.compose.expectedPort}:${raw.compose.containerPort}. Other service ports remain separate.`,
+      section: "file-manager",
+    });
+  const expected = raw.port?.expected ?? raw.expectedPort;
+  if (
+    expected &&
+    ["nodejs", "python", "docker", "reverse-proxy"].includes(type)
+  ) {
+    recommendations.push({
+      id: "application-port",
+      title: "Make the application match its website port",
+      detail: `${raw.assignedPort ? `Panelavo assigns port ${raw.assignedPort}, matching the site ID. ` : ""}This website currently sends traffic to 127.0.0.1:${expected}. ${type === "docker" ? "Use that host port in the Compose mapping." : `Make your application read PORT=${expected} and bind to 127.0.0.1.`} ${raw.assignedPort && expected !== raw.assignedPort ? "The existing custom or legacy upstream is preserved; review it in Settings before changing either side." : "If the application cannot use this port, Settings offers an advanced custom proxy fallback."}`,
+      section: type === "docker" ? "file-manager" : "env",
+    });
+  }
+  if (type === "python")
+    recommendations.push({
+      id: "python-entry",
+      title: "Check the production Python entry point",
+      detail:
+        "Panelavo prepares the detected Python environment and Django checks when available. Confirm the production server command and website port in Settings before starting it; a dependency file does not prove the application is running.",
+      section: "settings",
+    });
+  if (
+    (raw.runtime?.env ?? []).some(
+      (item) => item.status === "differs" || item.status === "missing",
+    )
+  )
+    recommendations.push({
+      id: "environment-restart",
+      title: "Apply the saved environment changes",
+      detail: raw.hasCompose
+        ? "The running containers use older environment values. Deploy the current files to recreate them with the saved configuration."
+        : "The running application uses older environment values. Restart it after reviewing the saved configuration.",
+      section: "env",
+    });
+  if (!rootManifest && !raw.structure?.candidates.length)
+    recommendations.push({
+      id: "add-files",
+      title: "Add the website files or choose the correct folder",
+      detail:
+        "No supported application manifest was found in the current folder. Upload your project in Files or connect its Git repository, then choose the folder containing its production configuration and recheck.",
+      section: "file-manager",
+    });
+  return {
+    summary: `${architecture.primary.label} detected${raw.hasWorkspace ? " in a workspace" : ""}. Panelavo checks this project’s files, available tools, permissions, and live runtime separately.`,
+    recommendations,
+  };
+}
+
 export function normalizeOperationsData(
   raw: RawOperationsData,
   options: NormalizeOptions = {},
@@ -1864,6 +1987,7 @@ export function normalizeOperationsData(
     type,
     path: raw.path ?? "",
     architecture,
+    guidance: guidanceFor(normalizedRaw, type, architecture),
     preflight: {
       status: !permissions.manage
         ? "unauthorized"

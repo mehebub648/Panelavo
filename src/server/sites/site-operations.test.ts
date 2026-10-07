@@ -41,6 +41,134 @@ const rootlessReady = {
 };
 
 describe("normalizeOperationsData", () => {
+  it("suggests a nested application folder without making an absent root manifest runnable", () => {
+    const data = normalizeOperationsData({
+      ...base,
+      structure: {
+        manifests: [],
+        candidates: [
+          { path: "apps/web", kinds: ["Node.js"], evidence: ["package.json"] },
+        ],
+        scannedDirectories: 3,
+        truncated: false,
+      },
+    });
+    expect(
+      data.guidance?.recommendations.find(
+        (item) => item.id === "application-folder",
+      )?.detail,
+    ).toContain("apps/web");
+    expect(data.preflight.status).toBe("blocked");
+    expect(data.plan).toBeUndefined();
+    expect(data.path).toBe(base.path);
+  });
+
+  it("explains workspace selection and preserves the explicit start-script requirement", () => {
+    const data = normalizeOperationsData({
+      ...base,
+      hasPackageJson: true,
+      hasWorkspace: true,
+      packageManager: { id: "npm", label: "npm", available: true },
+    });
+    expect(
+      data.guidance?.recommendations.find((item) => item.id === "workspace")
+        ?.detail,
+    ).toContain("frontend, API, or worker");
+    expect(data.plan?.status).toBe("blocked");
+  });
+
+  it("distinguishes the site ID assignment from a preserved existing upstream", () => {
+    const data = normalizeOperationsData({
+      ...base,
+      hasPackageJson: true,
+      hasStartScript: true,
+      assignedPort: 21001,
+      expectedPort: 31001,
+    });
+    const advice = data.guidance?.recommendations.find(
+      (item) => item.id === "application-port",
+    )?.detail;
+    expect(advice).toContain("assigns port 21001");
+    expect(advice).toContain("127.0.0.1:31001");
+    expect(advice).toContain("existing custom or legacy upstream is preserved");
+    expect(data.expectedPort).toBe(31001);
+  });
+
+  it("suggests the public output folder for frontend builds and PHP public roots", () => {
+    const staticData = normalizeOperationsData({
+      ...base,
+      type: "static",
+      hasPackageJson: true,
+      hasBuildScript: true,
+    });
+    expect(
+      staticData.guidance?.recommendations.some(
+        (item) => item.id === "static-output",
+      ),
+    ).toBe(true);
+    const phpData = normalizeOperationsData({
+      ...base,
+      type: "php",
+      hasComposer: true,
+      hasArtisan: true,
+      hasPackageJson: true,
+    });
+    expect(
+      phpData.guidance?.recommendations.some(
+        (item) => item.id === "laravel-public",
+      ),
+    ).toBe(true);
+    expect(
+      phpData.guidance?.recommendations.some(
+        (item) => item.id === "php-assets",
+      ),
+    ).toBe(true);
+  });
+
+  it("does not reinterpret a Compose manifest as permission to change the serving runtime", () => {
+    const data = normalizeOperationsData({ ...base, hasCompose: true });
+    expect(
+      data.guidance?.recommendations.find(
+        (item) => item.id === "compose-site-type",
+      )?.detail,
+    ).toContain("Detection does not change");
+    expect(data.type).toBe("nodejs");
+    expect(data.plan).toBeUndefined();
+  });
+
+  it("explains the container host mapping without suggesting an internal port change", () => {
+    const data = normalizeOperationsData({
+      ...base,
+      type: "docker",
+      hasCompose: true,
+      expectedPort: 24001,
+      compose: {
+        cliAvailable: true,
+        pluginAvailable: true,
+        daemonAvailable: true,
+        entryService: "web",
+        containerPort: 3000,
+      },
+    });
+    expect(
+      data.guidance?.recommendations.find(
+        (item) => item.id === "container-port",
+      )?.detail,
+    ).toContain("127.0.0.1:24001:3000");
+  });
+
+  it("suggests applying environment changes without revealing their values", () => {
+    const data = normalizeOperationsData({
+      ...base,
+      runtime: { env: [{ key: "API_KEY", status: "differs" }] },
+    });
+    expect(
+      data.guidance?.recommendations.some(
+        (item) => item.id === "environment-restart",
+      ),
+    ).toBe(true);
+    expect(JSON.stringify(data.guidance)).not.toContain("API_KEY");
+  });
   it("keeps a detected Compose project visible but blocks deployment when Docker is missing", () => {
     const data = normalizeOperationsData(
       {

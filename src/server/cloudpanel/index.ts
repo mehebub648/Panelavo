@@ -10,7 +10,7 @@ import {
   removeSiteTypeOverride,
   setSiteTypeOverride,
 } from "@/server/sites/site-type-overlay";
-import { removeSiteMeta } from "@/server/sites/site-meta";
+import { getSiteMeta, removeSiteMeta } from "@/server/sites/site-meta";
 import { removeSiteRootOverride } from "@/server/sites/site-root-overlay";
 import { setDeployHooks } from "@/server/deploy/hooks";
 import { isPanelSelfDomain } from "@/server/sites/panel-self";
@@ -56,10 +56,22 @@ async function withSiteSectionType(
   if (section !== "actions" || !data || typeof data !== "object") return data;
   const overrides = await getSiteTypeOverrides();
   const type = overrides[domain.toLowerCase()];
-  return normalizeOperationsData(data as RawOperationsData, {
-    typeOverride: type,
-    panelAdmin,
-  });
+  const meta = await getSiteMeta(domain);
+  const assignedPort =
+    meta &&
+    !meta.parent &&
+    Number.isInteger(meta.id) &&
+    meta.id >= 1024 &&
+    meta.id <= 65535
+      ? meta.id
+      : undefined;
+  return normalizeOperationsData(
+    { ...(data as RawOperationsData), assignedPort },
+    {
+      typeOverride: type,
+      panelAdmin,
+    },
+  );
 }
 
 async function assertActionAllowedForSiteType(

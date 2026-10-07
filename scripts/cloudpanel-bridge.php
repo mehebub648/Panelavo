@@ -32,7 +32,7 @@ use App\Site\Updater\StaticSite as StaticSiteUpdater;
 use Symfony\Component\Dotenv\Dotenv;
 
 const CLOUDPANEL_ROOT = '/home/clp/htdocs/app/files';
-const PANELAVO_BROKER_PROTOCOL_VERSION = 28;
+const PANELAVO_BROKER_PROTOCOL_VERSION = 29;
 const PANELAVO_BROKER_MAX_INPUT_BYTES = 100663296;
 const PANELAVO_ROOTLESS_MIGRATION_ROOT = '/var/lib/panelavo/rootless-migrations';
 const PANELAVO_ROOTLESS_MIGRATION_TTL = 86400;
@@ -1332,6 +1332,57 @@ function findComposeFile(string $root): ?string
     return null;
 }
 
+function inspectApplicationStructure(string $root): array
+{
+    $markers = [
+        'compose.yaml' => 'Docker', 'compose.yml' => 'Docker',
+        'docker-compose.yaml' => 'Docker', 'docker-compose.yml' => 'Docker',
+        'package.json' => 'Node.js', 'composer.json' => 'PHP', 'artisan' => 'Laravel',
+        'wp-load.php' => 'WordPress', 'requirements.txt' => 'Python',
+        'pyproject.toml' => 'Python', 'Pipfile' => 'Python', 'manage.py' => 'Django',
+        'index.html' => 'Static HTML',
+    ];
+    $ignored = ['node_modules', 'vendor', '.git', 'backups', 'storage', 'cache', 'tmp',
+        'uploads', 'media', 'logs', 'tests', 'test', '__tests__'];
+    $scanRoot = realpath($root);
+    $result = ['manifests' => [], 'candidates' => [], 'scannedDirectories' => 0, 'truncated' => false];
+    if ($scanRoot === false || !is_dir($scanRoot)) return $result;
+    $queue = [['path' => $scanRoot, 'relative' => '', 'depth' => 0]];
+    while ($queue) {
+        $node = array_shift($queue);
+        $result['scannedDirectories']++;
+        $evidence = [];
+        $kinds = [];
+        foreach ($markers as $marker => $kind) {
+            $file = $node['path'] . '/' . $marker;
+            if (!is_link($file) && is_file($file)) {
+                $evidence[] = $marker;
+                $kinds[] = $kind;
+            }
+        }
+        if ($node['relative'] === '') $result['manifests'] = $evidence;
+        elseif ($evidence) $result['candidates'][] = [
+            'path' => $node['relative'], 'kinds' => array_values(array_unique($kinds)), 'evidence' => $evidence,
+        ];
+        if ($node['depth'] >= 2) continue;
+        $entries = @scandir($node['path']);
+        if ($entries === false) continue;
+        foreach ($entries as $entry) {
+            if ($entry[0] === '.' || in_array($entry, $ignored, true)) continue;
+            $path = $node['path'] . '/' . $entry;
+            if (is_link($path) || !is_dir($path)) continue;
+            $real = realpath($path);
+            if ($real === false || !str_starts_with($real, $scanRoot . '/')) continue;
+            if ($result['scannedDirectories'] + count($queue) >= 40) {
+                $result['truncated'] = true;
+                continue;
+            }
+            $queue[] = ['path' => $real, 'relative' => ltrim($node['relative'] . '/' . $entry, '/'), 'depth' => $node['depth'] + 1];
+        }
+    }
+    return $result;
+}
+
 function detectFramework(string $root, ?array $package = null): string
 {
     $package ??= is_file($root . '/package.json') ? json_decode((string) file_get_contents($root . '/package.json'), true) : null;
@@ -2307,6 +2358,9 @@ function operationsState(Site $site, User $user): array
     return [
         'type' => $site->getType(),
         'path' => $root,
+        'structure' => array_merge(inspectApplicationStructure($root), [
+            'servingRoot' => $home . '/htdocs/' . trim((string) $site->getRootDirectory(), '/'),
+        ]),
         'framework' => detectFramework($root, $package),
         'domain' => $site->getDomainName(),
         'processName' => preg_replace('/[^a-zA-Z0-9._-]/', '-', $site->getDomainName()),

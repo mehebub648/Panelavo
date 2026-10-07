@@ -189,6 +189,14 @@ export type RawOperationsData = {
   processName?: string;
   reverseProxyUrl?: string;
   expectedPort?: number;
+  assignedPort?: number;
+  structure?: {
+    servingRoot?: string;
+    manifests: string[];
+    candidates: { path: string; kinds: string[]; evidence: string[] }[];
+    scannedDirectories: number;
+    truncated: boolean;
+  };
   port?: SitePortCapability;
   portRepair?: PortRepairCapability;
   checkedAt?: string;
@@ -342,4 +350,13 @@ export type OperationsData = RawOperationsData & {
   };
   plan?: DeploymentPlan;
   groups: OperationActionGroup[];
+  guidance?: {
+    summary: string;
+    recommendations: {
+      id: string;
+      title: string;
+      detail: string;
+      section?: "settings" | "file-manager" | "env" | "git";
+    }[];
+  };
 };
