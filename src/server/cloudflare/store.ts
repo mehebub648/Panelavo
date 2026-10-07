@@ -81,8 +81,18 @@ export async function getRecords(userId: string, credentialId: string, zoneId: s
   for (let page = 1; page <= 50; page++) { const batch = await cf<CloudflareRecord[]>(cred.token, `/zones/${encodeURIComponent(zoneId)}/dns_records?per_page=100&page=${page}`); records.push(...batch); if (batch.length < 100) break; }
   return records;
 }
+export async function getAddressRecords(userId: string, credentialId: string, zoneId: string, name: string) {
+  const cred = await credential(userId, credentialId);
+  const normalized = name.toLowerCase().replace(/\.$/, "");
+  const records = await cf<CloudflareRecord[]>(cred.token, `/zones/${encodeURIComponent(zoneId)}/dns_records?name=${encodeURIComponent(normalized)}`);
+  return records.filter((record) =>
+    ["A", "CNAME"].includes(record.type.toUpperCase()) &&
+    record.name.toLowerCase().replace(/\.$/, "") === normalized,
+  );
+}
 export async function checkARecord(userId: string, credentialId: string, zoneId: string, name: string) {
-  const cred = await credential(userId, credentialId); const records = await cf<CloudflareRecord[]>(cred.token, `/zones/${encodeURIComponent(zoneId)}/dns_records?type=A&name=${encodeURIComponent(name)}`); return records[0] ?? null;
+  const records = await getAddressRecords(userId, credentialId, zoneId, name);
+  return records.find((record) => record.type.toUpperCase() === "A") ?? null;
 }
 export async function setARecord(userId: string, input: { credentialId: string; zoneId: string; name: string; ip: string; replace?: boolean; proxied?: boolean }) {
   const cred = await credential(userId, input.credentialId); const existing = await checkARecord(userId, input.credentialId, input.zoneId, input.name);

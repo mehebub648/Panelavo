@@ -217,3 +217,5 @@ If a covering certificate is installed but inactive, Recheck DNS & secure activa
 Broker protocol 28 adds both canonical-address redirect directions. Install the trusted root-owned broker from this release before the application; the ordinary updater refuses an incompatible broker. Existing bare-to-www preferences remain compatible.
 
 Use Website traffic in Operations to compare the configured proxy port with detected application listeners. Resolve an inspection-unavailable warning before relying on ownership verification or port repair.
+
+Existing CNAME aliases can be kept when they reach this origin. For a conflicting CNAME, change or remove the exact record in Cloudflare and retry website DNS setup.

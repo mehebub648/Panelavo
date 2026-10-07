@@ -1,10 +1,12 @@
 import { AppError } from "@/server/cloudpanel/errors";
 import {
-  checkARecord,
+  getAddressRecords,
   getZones,
   setARecord,
   type CloudflareRecord,
 } from "@/server/cloudflare/store";
+import { traceDnsOrigin } from "@/server/network/dns-origin";
+import { resolveDnsStatus } from "@/server/network/dns";
 
 export type PointDnsOutcome = {
   name: string;
@@ -94,14 +96,35 @@ export async function pointDns(
     const outcomes = await Promise.all(
       names.map(async (name): Promise<PointDnsOutcome> => {
         try {
-          const existing = await checkARecord(
+          const existing = await getAddressRecords(
             userId,
             selectedCredentialId,
             selectedZoneId,
             name,
           );
-          if (existing?.content === serverIp)
-            return { name, status: "unchanged", record: existing };
+          const trace = await traceDnsOrigin(name, serverIp, (target) =>
+            getAddressRecords(
+              userId,
+              selectedCredentialId,
+              selectedZoneId,
+              target,
+            ),
+          );
+          if (trace.verified)
+            return { name, status: "unchanged", record: trace.record };
+          const cname = existing.find(
+            (record) => record.type.toUpperCase() === "CNAME",
+          );
+          if (cname) {
+            const [publicStatus] = await resolveDnsStatus([name], serverIp);
+            if (publicStatus?.ips.includes(serverIp))
+              return { name, status: "unchanged", record: cname };
+            throw new AppError(
+              "DOMAIN_ALREADY_EXISTS",
+              `${name} has a CNAME to ${cname.content} that does not lead to this server. Change or remove that CNAME in Cloudflare, then retry.`,
+              409,
+            );
+          }
 
           const record = await setARecord(userId, {
             credentialId: selectedCredentialId,
@@ -113,7 +136,7 @@ export async function pointDns(
           });
           return {
             name,
-            status: existing ? "updated" : "created",
+            status: existing.length ? "updated" : "created",
             record,
           };
         } catch (error) {

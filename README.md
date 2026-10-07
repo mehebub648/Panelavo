@@ -417,3 +417,5 @@ HTTPS readiness requires the covering trusted certificate to be active. Panelavo
 For every attached domain/www pair, choose Use domain without www, Use www, or Keep both in website Domains. Redirects preserve the requested path and query string; existing www preferences remain effective.
 
 Operations always displays Website traffic with the configured private port and any detected website-owned ports. If listener inspection is unavailable, Panelavo reports that uncertainty and blocks ownership-dependent actions instead of claiming the application is stopped.
+
+DNS preparation preserves a valid www CNAME that already leads to this server. A conflicting CNAME is reported with instructions to change it in Cloudflare; Panelavo does not overwrite it automatically.

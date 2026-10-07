@@ -12,6 +12,12 @@ export type DnsStatus = {
   ip: string | null;
   ips: string[];
   pointed: boolean;
+  publicResolved?: boolean;
+  managed?: boolean;
+  originVerified?: boolean;
+  proxied?: boolean;
+  chain?: string[];
+  providerError?: string;
 };
 
 function withTimeout<T>(promise: Promise<T>, ms = 4000): Promise<T> {
