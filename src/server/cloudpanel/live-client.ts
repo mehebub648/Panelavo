@@ -392,22 +392,38 @@ export function siteSectionBridgeError(result: BridgeResult) {
   if (result.code === "DIRECTORY_NOT_EMPTY")
     return new AppError(
       "INVALID_REQUEST",
-      "The website root is not empty. Initialize Git there or remove the existing files before cloning.",
+      result.message || "The application folder contains existing files. Review the listed files and preserve them before cloning, or choose an empty application folder in Settings.",
       409,
     );
   if (result.code === "GIT_CONFLICT") return new AppError("INVALID_REQUEST", result.message || "Resolve the repository conflict before deploying.", 409);
   if (result.code === "GIT_FAILED") {
     const detail = result.message ?? "";
-    const message =
-      /permission denied|publickey|authentication failed|could not read username/i.test(
-        detail,
-      )
-        ? "Repository authentication failed. Add this website's public deployment key to the repository and try again."
-        : /repository not found|not found|does not exist/i.test(detail)
-          ? "The repository or branch was not found. Check the URL, access, and branch name."
-          : /host key verification failed/i.test(detail)
-            ? "The Git host identity could not be verified. Try the connection again."
-            : "Git could not access the repository. Check the URL, deployment key, and branch name.";
+    const remedies: ReadonlyArray<readonly [RegExp, string]> = [
+      [/publickey|authentication failed|could not read username|permission denied.*(?:git@|publickey)/i,
+        "Repository authentication failed. Add this website's public deployment key in Connection, or check the HTTPS repository credentials."],
+      [/CONFLICT|unmerged files|resolve your current index|you have not concluded your merge|merging is not possible/i,
+        "Git needs conflict recovery. Open Recovery, resolve each listed file, then continue or abort the operation."],
+      [/would be overwritten|local changes|unstaged changes|untracked working tree files|index contains uncommitted/i,
+        "Git stopped to protect your local files. Open Changes, review and commit them, then retry the branch switch or update."],
+      [/not possible to fast-forward|non-fast-forward|fetch first|divergent branches|histories.*diverged/i,
+        "The local and remote branches have different commits. Fetch the latest branches, review History, then merge the appropriate branch in Branches before pushing."],
+      [/no tracking information|no upstream branch|upstream.*(?:not set|does not exist)|no such ref was fetched/i,
+        "This branch has no usable upstream. Fetch the repository, then select a fetched remote branch in Branches to set its upstream."],
+      [/unable to auto-detect email|author identity unknown|empty ident name/i,
+        "Git has no commit identity. Set this website user's name and email through its Terminal, then retry the commit."],
+      [/does not have any commits|ambiguous argument ['"]?HEAD|bad revision ['"]?HEAD|not a valid object name.*HEAD/i,
+        "This repository has no first commit. Open Changes and create the initial commit before creating or merging branches."],
+      [/host key verification failed|remote host identification has changed/i,
+        "The Git server's SSH identity could not be verified. Check its published fingerprint and this website user's known_hosts file before reconnecting."],
+      [/could not resolve host|could not resolve hostname|connection timed out|failed to connect/i,
+        "The website could not reach the Git server. Check the repository host and server network connection, then retry in Connection."],
+      [/repository not found|not found|does not exist|invalid reference|unknown revision|pathspec.*did not match/i,
+        "The repository or branch was not found. Check repository access in Connection, then fetch and choose an available branch in Branches."],
+      [/nothing to commit/i, "There are no new changes to commit. Refresh Changes to see the current working tree."],
+      [/permission denied/i, "Git could not write this website's files. Check application-folder access for the website user in Operations."],
+    ];
+    const message = remedies.find(([pattern]) => pattern.test(detail))?.[1] ||
+      "Git could not finish the operation. Refresh the repository, then review Connection and Recovery for the next step.";
     return new AppError("SITE_UPDATE_FAILED", message, 422);
   }
   if (result.code === "OPERATION_BUSY")

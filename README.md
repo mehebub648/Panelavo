@@ -427,3 +427,5 @@ Domains distinguishes direct DNS from Cloudflare proxy DNS with a verified origi
 Settings shows the exact safe reason when a port is reserved, owned by another project, cannot be inspected, or fails health checks. A failed upstream change explains whether the previous proxy setting was restored.
 
 After a successful domain change, installed certificate coverage and active status refresh immediately on the same page.
+
+Git failures distinguish authentication, dirty working trees, diverged history, missing upstreams, missing identity, empty history, SSH host identity, and network failures. Recovery messages identify the relevant repository view without exposing raw command output or recommending deletion of existing application files.

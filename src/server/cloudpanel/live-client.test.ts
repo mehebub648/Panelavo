@@ -72,7 +72,8 @@ describe("siteSectionBridgeError", () => {
       code: "DIRECTORY_NOT_EMPTY",
     });
     expect(error.status).toBe(409);
-    expect(error.message).toContain("root is not empty");
+    expect(error.message).toContain("preserve them before cloning");
+    expect(error.message).not.toContain("remove the existing files");
   });
 
   it("turns Git authentication output into a safe action", () => {
@@ -93,6 +94,22 @@ describe("siteSectionBridgeError", () => {
     });
     expect(error.status).toBe(409);
     expect(error.message).toContain("already running");
+  });
+
+  it.each([
+    ["error: Your local changes would be overwritten by checkout", "protect your local files"],
+    ["fatal: Not possible to fast-forward, aborting.", "different commits"],
+    ["fatal: The current branch main has no upstream branch", "no usable upstream"],
+    ["error: you need to resolve your current index first", "conflict recovery"],
+    ["fatal: unable to auto-detect email address", "commit identity"],
+    ["fatal: ambiguous argument 'HEAD': unknown revision", "no first commit"],
+    ["Host key verification failed.", "published fingerprint"],
+    ["fatal: Could not resolve host: example.test", "could not reach"],
+    ["fatal: invalid reference: missing", "choose an available branch"],
+  ])("classifies %s without exposing command output", (message, recovery) => {
+    const error = siteSectionBridgeError({ ok: false, code: "GIT_FAILED", message });
+    expect(error.message).toContain(recovery);
+    expect(error.message).not.toContain("fatal:");
   });
 
   it("surfaces the bridge's specific reason for a failed change", () => {

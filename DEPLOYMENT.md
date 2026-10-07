@@ -233,3 +233,5 @@ A rejected port change now reports its specific ownership, reservation or health
 Certificate coverage and activation shown beneath Domains refresh after successful changes, so users do not need to reload the page manually.
 
 Operations uses separate Deployment, Runtime, Advanced tools, Scheduled jobs, and Logs tabs on local and connected-server routes. Tab and step URL parameters survive refresh and browser history. Jobs and logs load on first selection and remain mounted after switching.
+
+Git failures distinguish authentication, dirty working trees, diverged history, missing upstreams, missing identity, empty history, SSH host identity, and network failures. Recovery messages identify the relevant repository view without exposing raw command output or recommending deletion of existing application files.

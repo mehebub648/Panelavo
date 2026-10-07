@@ -195,3 +195,5 @@ Update-site diagnostics use an exact message-pattern and bridge-code allowlist b
 DomainsManager refreshes server components after successful domain POST actions so the sibling certificate status receives fresh CloudPanel data; failed actions preserve the current page state.
 
 Operations uses separate Deployment, Runtime, Advanced tools, Scheduled jobs, and Logs tabs on local and connected-server routes. Tab and step URL parameters survive refresh and browser history. Jobs and logs load on first selection and remain mounted after switching.
+
+Git failures distinguish authentication, dirty working trees, diverged history, missing upstreams, missing identity, empty history, SSH host identity, and network failures. Recovery messages identify the relevant repository view without exposing raw command output or recommending deletion of existing application files.
