@@ -6417,7 +6417,7 @@ function gitSection(Site $site, ?array $selectedChange = null, ?string $notice =
     $counts = $upstream ? preg_split('/\s+/', trim(runGit($site, ['rev-list', '--left-right', '--count', 'HEAD...@{upstream}'], true)['stdout'])) : [];
     $branchesRaw = trim(runGit($site, ['branch', '--format=%(refname:short)'], true)['stdout']);
     $logRaw = trim(runGit($site, ['log', '-20', '--pretty=format:%h%x09%an%x09%ar%x09%s'], true)['stdout']);
-    $graphRaw = runGit($site, ['log', '--all', '-50', '-z', '--date=iso-strict', '--pretty=format:%H%x00%h%x00%P%x00%an%x00%aI%x00%s'], true)['stdout'];
+    $graphRaw = runGit($site, ['log', '--all', '--topo-order', '-50', '-z', '--date=iso-strict', '--pretty=format:%H%x00%h%x00%P%x00%an%x00%aI%x00%s'], true)['stdout'];
     $data = ['isRepository' => true, 'path' => $root, 'branch' => $branch, 'head' => $head, 'upstream' => $upstream, 'ahead' => (int) ($counts[0] ?? 0), 'behind' => (int) ($counts[1] ?? 0),
         'cloneReadiness' => ['status' => 'blocked', 'files' => [], 'detail' => 'This application folder is already a Git repository.'],
         'remotes' => array_values(array_filter(array_map(fn($line) => preg_split('/\s+/', $line), explode("\n", $remotesRaw)))),
@@ -7418,7 +7418,7 @@ function runGitBrokerSelfTest(string $user): never
         $assert(in_array('origin/main', $remoteBranches, true) && in_array('origin/feature', $remoteBranches, true), 'exact fetched remote refs must be returned');
         $assert(classifyGitBranchSelection('origin/main', ['origin/main'], $remoteBranches) === 'ambiguous', 'a colliding local and remote short ref must be rejected as ambiguous');
         $assert(classifyGitBranchSelection('origin/feature', ['main', 'feature'], $remoteBranches) === 'remote', 'an exact fetched remote ref must remain selectable');
-        $raw = $run(['log', '--all', '-50', '-z', '--date=iso-strict', '--pretty=format:%H%x00%h%x00%P%x00%an%x00%aI%x00%s'], $temporary . '/repo')['stdout'];
+        $raw = $run(['log', '--all', '--topo-order', '-50', '-z', '--date=iso-strict', '--pretty=format:%H%x00%h%x00%P%x00%an%x00%aI%x00%s'], $temporary . '/repo')['stdout'];
         $head = trim($run(['rev-parse', 'HEAD'], $temporary . '/repo')['stdout']);
         $graph = parseGitGraph($raw, [$head => ['main']]);
         $assert(count($graph) === 3 && count($graph[0]['parents']) === 1, 'structured graph parsing must preserve commits and parents');
