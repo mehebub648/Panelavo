@@ -10,12 +10,36 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
-import { DeploymentManager } from "./deployment-manager";
+import { DeploymentManager, DeploymentOutput } from "./deployment-manager";
 import { DeployHookManager } from "./deploy-hook-manager";
 import { LazySiteSection } from "./lazy-site-section";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
 describe("deployment browser workflow", () => {
+  it("distinguishes a responding application from failed listener verification", () => {
+    render(
+      <DeploymentOutput
+        result={{
+          deployment: {
+            exitCode: 1,
+            steps: [
+              {
+                command: "runtime-port-verify",
+                label: "Verify upstream",
+                exitCode: 1,
+                output: "Bind to loopback",
+                applicationHealth: "healthy",
+                portVerification: "failed",
+              },
+            ],
+          },
+        }}
+      />,
+    );
+    expect(
+      screen.getByText(/Application HTTP health: healthy/),
+    ).toHaveTextContent("Listener verification: failed");
+  });
   beforeEach(() => {
     vi.stubGlobal("fetch", vi.fn());
   });

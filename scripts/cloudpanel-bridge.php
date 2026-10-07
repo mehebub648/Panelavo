@@ -32,7 +32,7 @@ use App\Site\Updater\StaticSite as StaticSiteUpdater;
 use Symfony\Component\Dotenv\Dotenv;
 
 const CLOUDPANEL_ROOT = '/home/clp/htdocs/app/files';
-const PANELAVO_BROKER_PROTOCOL_VERSION = 26;
+const PANELAVO_BROKER_PROTOCOL_VERSION = 27;
 const PANELAVO_BROKER_MAX_INPUT_BYTES = 100663296;
 const PANELAVO_ROOTLESS_MIGRATION_ROOT = '/var/lib/panelavo/rootless-migrations';
 const PANELAVO_ROOTLESS_MIGRATION_TTL = 86400;
@@ -1689,10 +1689,12 @@ function sitePortCapability(Site $site, array $listeners): array
     ));
     $occupied = count($matching) > 0;
     $listening = count($owned) > 0;
+    $projectOwned = $occupied && count(array_filter($matching, static fn(array $item): bool => !empty($item['siteOwned']))) === count($matching);
     $conflict = $occupied && !$listening;
     if ($expected === null) $detail = 'This CloudPanel site is served directly and has no application upstream port.';
     elseif ($listening) $detail = "This site's process owns the configured loopback upstream port $expected.";
-    elseif ($conflict) $detail = "CloudPanel expects port $expected, but another website or system process already owns it.";
+    elseif ($projectOwned) $detail = "This site's process owns port $expected, but it is not bound to loopback. Configure the application to listen on 127.0.0.1:$expected and restart it.";
+    elseif ($conflict) $detail = "Port $expected is occupied, but Panelavo could not verify a site-owned loopback listener. Check the listener's Unix user and bind address before retrying; do not stop an unrelated process.";
     elseif ($sitePorts) $detail = 'CloudPanel expects port ' . $expected . ', but site-owned processes currently listen on ' . implode(', ', $sitePorts) . '.';
     else $detail = "CloudPanel expects port $expected, but no process is listening there yet.";
     return [
@@ -1700,6 +1702,7 @@ function sitePortCapability(Site $site, array $listeners): array
         'listening' => $listening,
         'occupied' => $occupied,
         'owned' => $listening,
+        'projectOwned' => $projectOwned,
         'conflict' => $conflict,
         'detected' => $sitePorts,
         'detail' => $detail,
@@ -2758,6 +2761,8 @@ function executeOperationSteps(Site $site, array $steps): array
 {
     $results = [];
     foreach ($steps as $stepIndex => $stepDefinition) {
+        $applicationHealth = null;
+        $portVerification = null;
         deploymentEvent(['type' => 'step', 'index' => $stepIndex, 'label' => $stepDefinition['label'], 'status' => 'running']);
         $args = $stepDefinition['args'];
         $displayArgs = $args;
@@ -2809,6 +2814,13 @@ function executeOperationSteps(Site $site, array $steps): array
                     usleep(5000000);
                 }
                 if (!empty($capability['conflict']) || empty($capability['listening'])) {
+                    $portVerification = 'failed';
+                    $applicationHealth = 'not_checked';
+                    // Probe only a proven site-owned listener, even when its bind address fails policy.
+                    if (!empty($capability['projectOwned'])) {
+                        $probe = runSiteCommand($site, $args, $stepDefinition['timeout'], false, (array) ($stepDefinition['env'] ?? []));
+                        $applicationHealth = $probe['code'] === 0 && deploymentHttpSucceeded($probe['stdout']) ? 'healthy' : 'unhealthy';
+                    }
                     $result = [
                         'code' => 1,
                         'timedOut' => false,
@@ -2816,7 +2828,9 @@ function executeOperationSteps(Site $site, array $steps): array
                         'stderr' => (string) ($capability['detail'] ?? ('Port ' . $expectedPort . ' did not become site-owned.')),
                     ];
                 } else {
+                    $portVerification = 'passed';
                     $result = runSiteCommand($site, $args, $stepDefinition['timeout'], !empty($stepDefinition['asRoot']), (array) ($stepDefinition['env'] ?? []));
+                    $applicationHealth = $result['code'] === 0 && deploymentHttpSucceeded($result['stdout']) ? 'healthy' : 'unhealthy';
                 }
             } else {
                 $result = runSiteCommand($site, $args, $stepDefinition['timeout'], !empty($stepDefinition['asRoot']), (array) ($stepDefinition['env'] ?? []));
@@ -2829,6 +2843,7 @@ function executeOperationSteps(Site $site, array $steps): array
             'command' => $stepDefinition['command'], 'label' => $stepDefinition['label'],
             'display' => implode(' ', $displayArgs), 'exitCode' => $result['code'],
             'timedOut' => $result['timedOut'],
+            ...($applicationHealth === null ? [] : ['applicationHealth' => $applicationHealth, 'portVerification' => $portVerification]),
             'output' => redactDeploymentText(trim($result['stdout'] . ($result['stderr'] !== '' ? "\n" . $result['stderr'] : ''))),
         ];
         deploymentEvent(['type' => 'step', 'index' => $stepIndex, 'label' => $stepDefinition['label'], 'status' => $result['code'] === 0 ? 'succeeded' : 'failed', 'exitCode' => $result['code'], 'output' => substr(redactDeploymentText((string) end($results)['output']), 0, 8000), 'truncated' => strlen((string) end($results)['output']) > 8000]);
@@ -7269,7 +7284,92 @@ function vpnPublicDnsAddress(string $address): bool
     return false;
 }
 
-function vpnFirewallMode(): array
+// Only the standard Docker forwarding layout is eligible for automatic integration.
+// Custom DOCKER-USER rules remain authoritative and require manual review.
+function vpnDockerLayout(string $forward, string $users, array $owned = []): bool
+{
+    $lines = preg_split('/\R/', trim($forward)) ?: [];
+    if (count($lines) !== 3 || !in_array($lines[0], ['-P FORWARD DROP', '-P FORWARD ACCEPT'], true)
+        || $lines[1] !== '-A FORWARD -j DOCKER-USER' || $lines[2] !== '-A FORWARD -j DOCKER-FORWARD') return false;
+    $userLines = preg_split('/\R/', trim($users)) ?: [];
+    if (count($userLines) !== count(array_unique($userLines))) return false;
+    foreach ($userLines as $index => $line) {
+        if (!in_array($line, array_merge(['-N DOCKER-USER', '-A DOCKER-USER -j RETURN'], $owned), true)) return false;
+        if ($line === '-A DOCKER-USER -j RETURN' && $index !== count($userLines) - 1) return false;
+    }
+    return str_starts_with(trim($users), '-N DOCKER-USER');
+}
+
+function vpnDockerRules(array $state, bool $ipv6): array
+{
+    $interface = (string) $state['egressInterface'];
+    $cidr = (string) $state[$ipv6 ? 'ipv6Cidr' : 'ipv4Cidr'];
+    if (preg_match('/^[A-Za-z0-9_.:-]{1,15}$/', $interface) !== 1
+        || ($ipv6 ? preg_match('/^fd[0-9a-f:]+::\/64$/', $cidr) !== 1 : !vpnPrivate24($cidr))) {
+        throw new VpnOperationException('VPN_CONFLICT', 'The VPN forwarding configuration is invalid.');
+    }
+    if ($ipv6 && empty($state['ipv6Egress'])) return [];
+    return [
+        ['-s', $cidr, '-i', 'pnlwg0', '-o', $interface, '-m', 'comment', '--comment', PANELAVO_VPN_MARKER, '-j', 'ACCEPT'],
+        ['-d', $cidr, '-i', $interface, '-o', 'pnlwg0', '-m', 'conntrack', '--ctstate', 'RELATED,ESTABLISHED', '-m', 'comment', '--comment', PANELAVO_VPN_MARKER, '-j', 'ACCEPT'],
+    ];
+}
+
+function vpnDockerCompatible(?array $state): bool
+{
+    if (vpnCommand(['/usr/bin/systemctl', 'is-active', '--quiet', 'docker.service'], 5)['code'] !== 0) return false;
+    foreach (['iptables', 'ip6tables'] as $name) {
+        $tool = vpnExecutable(['/usr/sbin/' . $name, '/sbin/' . $name]);
+        if (!$tool || !str_contains(vpnCommand([$tool, '--version'], 5)['stdout'], 'nf_tables')) return false;
+        $forward = vpnCommand([$tool, '-w', '5', '-S', 'FORWARD'], 8);
+        $users = vpnCommand([$tool, '-w', '5', '-S', 'DOCKER-USER'], 8);
+        $owned = $state ? array_map(static fn($rule) => '-A DOCKER-USER ' . implode(' ', $rule), vpnDockerRules($state, $name === 'ip6tables')) : [];
+        // iptables-save may quote comment values even when they contain no spaces.
+        $userText = str_replace('"' . PANELAVO_VPN_MARKER . '"', PANELAVO_VPN_MARKER, $users['stdout']);
+        if ($forward['code'] !== 0 || $users['code'] !== 0 || !vpnDockerLayout($forward['stdout'], $userText, $owned)) return false;
+        foreach (['INPUT', 'OUTPUT'] as $chain) {
+            $result = vpnCommand([$tool, '-w', '5', '-S', $chain], 8);
+            if ($result['code'] !== 0 || trim($result['stdout']) !== '-P ' . $chain . ' ACCEPT') return false;
+        }
+    }
+    return true;
+}
+
+function vpnForeignDropChains(array $ruleset): array
+{
+    $drops = [];
+    foreach ($ruleset['nftables'] ?? [] as $entry) {
+        $chain = $entry['chain'] ?? null;
+        if (!$chain || !in_array($chain['hook'] ?? '', ['input', 'forward'], true)) continue;
+        // Our presence must never hide an unrelated default-drop chain.
+        if (($chain['policy'] ?? '') === 'drop') $drops[] = $chain;
+    }
+    return $drops;
+}
+
+function vpnDockerForwarding(array $state, string $action): bool
+{
+    if (($state['firewallMode'] ?? '') !== 'docker') return true;
+    if (!in_array($action, ['start', 'stop', 'check'], true)) throw new VpnOperationException('INVALID_REQUEST', 'Invalid VPN firewall action.');
+    if ($action === 'start' && vpnFirewallMode($state)['mode'] !== 'docker') {
+        throw new VpnOperationException('VPN_CONFLICT', 'Docker firewall rules changed. Review the firewall before starting VPN.');
+    }
+    foreach (['iptables', 'ip6tables'] as $name) {
+        $tool = vpnExecutable(['/usr/sbin/' . $name, '/sbin/' . $name]);
+        if (!$tool) return false;
+        foreach (vpnDockerRules($state, $name === 'ip6tables') as $rule) {
+            $code = vpnCommand(array_merge([$tool, '-w', '5', '-C', 'DOCKER-USER'], $rule), 8)['code'];
+            if (!in_array($code, [0, 1], true)) return false;
+            $exists = $code === 0;
+            if ($action === 'check' && !$exists) return false;
+            if ($action === 'start' && !$exists) vpnRun(array_merge([$tool, '-w', '5', '-I', 'DOCKER-USER', '1'], $rule), 8, 'Could not add the VPN-only Docker forwarding rule.');
+            if ($action === 'stop' && $exists) vpnRun(array_merge([$tool, '-w', '5', '-D', 'DOCKER-USER'], $rule), 8, 'Could not remove the VPN-only Docker forwarding rule.');
+        }
+    }
+    return true;
+}
+
+function vpnFirewallMode(?array $state = null): array
 {
     $ufw = vpnExecutable(['/usr/sbin/ufw', '/usr/bin/ufw']);
     $ufwActive = false;
@@ -7279,7 +7379,8 @@ function vpnFirewallMode(): array
     }
     $ufwIpv6 = !$ufwActive || preg_match('/^\s*IPV6\s*=\s*yes\s*$/im', (string) @file_get_contents('/etc/default/ufw')) === 1;
     $nft = vpnExecutable(['/usr/sbin/nft', '/sbin/nft', '/usr/bin/nft']);
-    $rules = $nft ? vpnCommand([$nft, 'list', 'ruleset'], 8)['stdout'] : '';
+    $rules = $nft ? vpnCommand([$nft, '-j', 'list', 'ruleset'], 8) : null;
+    $ruleset = $rules && $rules['code'] === 0 ? json_decode($rules['stdout'], true) : null;
     $systemctl = vpnExecutable(['/usr/bin/systemctl', '/bin/systemctl']);
     $unexpectedManager = '';
     if ($systemctl) {
@@ -7290,15 +7391,29 @@ function vpnFirewallMode(): array
             }
         }
     }
-    $foreignDrop = !$ufwActive && $unexpectedManager === ''
-        && preg_match('/hook\s+(?:input|forward)[^;]*;[^}]*policy\s+drop/is', $rules) === 1
-        && !str_contains($rules, 'panelavo_wireguard_');
+    $drops = is_array($ruleset) ? vpnForeignDropChains($ruleset) : [];
+    $docker = !$ufwActive && $unexpectedManager === '' && count($drops) > 0;
+    foreach ($drops as $chain) {
+        if (!in_array($chain['family'] ?? '', ['ip', 'ip6'], true) || ($chain['table'] ?? '') !== 'filter'
+            || ($chain['name'] ?? '') !== 'FORWARD' || ($chain['hook'] ?? '') !== 'forward') $docker = false;
+    }
+    foreach ($ruleset['nftables'] ?? [] as $entry) {
+        $chain = $entry['chain'] ?? [];
+        if (($chain['hook'] ?? '') !== 'forward') continue;
+        $standard = in_array($chain['family'] ?? '', ['ip', 'ip6'], true)
+            && ($chain['table'] ?? '') === 'filter' && ($chain['name'] ?? '') === 'FORWARD';
+        $owned = $state && ($chain['family'] ?? '') === 'inet' && ($chain['table'] ?? '') === 'panelavo_wireguard_filter';
+        if (!$standard && !$owned) $docker = false;
+    }
+    $docker = $docker && vpnDockerCompatible($state);
+    $inspectionFailed = $nft !== null && !is_array($ruleset['nftables'] ?? null);
+    $foreignDrop = !$ufwActive && count($drops) > 0 && !$docker;
     return [
-        'mode' => $foreignDrop || $unexpectedManager !== '' ? 'unsupported' : ($ufwActive ? 'ufw' : 'nftables'),
+        'mode' => $inspectionFailed || $foreignDrop || $unexpectedManager !== '' ? 'unsupported' : ($ufwActive ? 'ufw' : ($docker ? 'docker' : 'nftables')),
         'ufwActive' => $ufwActive,
         'ipv6Ready' => $ufwIpv6,
         'nftInstalled' => $nft !== null,
-        'unsupportedReason' => $unexpectedManager !== '' ? $unexpectedManager . ' is active.' : ($foreignDrop ? 'An unmanaged default-drop ruleset is active.' : ''),
+        'unsupportedReason' => $inspectionFailed ? 'The firewall rules could not be inspected safely.' : ($unexpectedManager !== '' ? $unexpectedManager . ' is active.' : ($foreignDrop ? 'A custom default-drop firewall needs review; automatic VPN integration is unavailable.' : '')),
     ];
 }
 
@@ -7427,12 +7542,17 @@ function vpnPreflight(?array $requested = null, ?array $state = null): array
     $wgQuick = vpnExecutable(['/usr/bin/wg-quick', '/usr/sbin/wg-quick']);
     $modinfo = vpnExecutable(['/usr/sbin/modinfo', '/sbin/modinfo']);
     $moduleReady = is_dir('/sys/module/wireguard') || ($modinfo && vpnCommand([$modinfo, 'wireguard'], 5)['code'] === 0);
-    $firewall = vpnFirewallMode();
+    $firewall = vpnFirewallMode($state);
     $diagnostics = [];
     $diagnostics[] = vpnDiagnostic('os', 'Supported operating system', $os['supported'] ? 'pass' : 'blocked', $os['name'], 'Panelavo supports its documented Ubuntu and Debian releases.');
     $diagnostics[] = vpnDiagnostic('kernel', 'WireGuard kernel support', $moduleReady ? 'pass' : 'blocked', $moduleReady ? 'The WireGuard kernel module is available.' : 'The running kernel does not expose the WireGuard module.', 'Install a supported distribution kernel before enabling the VPN.');
     $diagnostics[] = vpnDiagnostic('tools', 'WireGuard tools', $wg && $wgQuick ? 'pass' : 'warning', $wg && $wgQuick ? 'The distribution WireGuard tools are installed.' : 'Panelavo will install wireguard-tools from the operating-system repository.');
-    $diagnostics[] = vpnDiagnostic('firewall', 'Firewall compatibility', $firewall['mode'] === 'unsupported' ? 'blocked' : 'pass', $firewall['mode'] === 'ufw' ? 'Active UFW will receive only tagged Panelavo rules.' : ($firewall['mode'] === 'nftables' ? 'Panelavo can use an isolated nftables ruleset.' : $firewall['unsupportedReason']), 'Review the existing firewall manually before installation.');
+    $diagnostics[] = vpnDiagnostic('firewall', 'Firewall compatibility', $firewall['mode'] === 'unsupported' ? 'blocked' : 'pass', match ($firewall['mode']) {
+        'ufw' => 'Active UFW will receive only tagged Panelavo rules.',
+        'docker' => 'Docker forwarding protection detected. Install VPN will add only VPN-to-internet rules; Docker policy and website rules stay unchanged.',
+        'nftables' => 'Panelavo can use an isolated nftables ruleset.',
+        default => $firewall['unsupportedReason'],
+    }, $firewall['mode'] === 'unsupported' ? 'Keep the current firewall enabled. Custom rules need administrator review; refresh this check after they are reviewed.' : '');
     $resourceConflict = vpnResourceConflict($state);
     $diagnostics[] = vpnDiagnostic('ownership', 'Panelavo VPN resources', $resourceConflict ? 'blocked' : 'pass', $resourceConflict ? 'The pnlwg0 interface, files, or nftables names conflict with resources Panelavo cannot own.' : 'The namespaced pnlwg0 resources are available.', 'Remove or rename the conflicting third-party resource manually; Panelavo will never adopt it.');
     $diagnostics[] = vpnDiagnostic('egress', 'IPv4 internet route', $route4['interface'] && $publicIpv4 ? 'pass' : 'blocked', $route4['interface'] && $publicIpv4 ? 'Egress is available through ' . $route4['interface'] . ' with public address ' . $publicIpv4 . '.' : 'Panelavo could not verify a public IPv4 route.');
@@ -7548,13 +7668,18 @@ function vpnWriteRuntimeFiles(array $state): void
     if (!empty($state['ipv6Egress'])) $sysctl .= "net.ipv6.conf.all.forwarding = 1\n";
     vpnWriteFile(PANELAVO_VPN_SYSCTL, $sysctl, 0644);
     $nft = vpnExecutable(['/usr/sbin/nft', '/sbin/nft', '/usr/bin/nft']) ?? '/usr/sbin/nft';
-    $unit = '# ' . PANELAVO_VPN_MARKER . "\n[Unit]\nDescription=Panelavo WireGuard firewall\nBefore=wg-quick@pnlwg0.service\nPartOf=wg-quick@pnlwg0.service\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\n"
+    $docker = ($state['firewallMode'] ?? '') === 'docker';
+    $unit = '# ' . PANELAVO_VPN_MARKER . "\n[Unit]\nDescription=Panelavo WireGuard firewall\nBefore=wg-quick@pnlwg0.service\nPartOf=wg-quick@pnlwg0.service\n"
+        . ($docker ? "After=docker.service\nBindsTo=docker.service\nPartOf=docker.service\n" : '')
+        . "\n[Service]\nType=oneshot\nRemainAfterExit=yes\n"
         . 'ExecStart=' . $nft . ' -f ' . PANELAVO_VPN_NFT_RULES . "\n"
+        . ($docker ? "ExecStartPost=/usr/bin/php /usr/local/libexec/panelavo/cloudpanel-bridge.php --vpn-docker-firewall start\nExecStopPost=/usr/bin/php /usr/local/libexec/panelavo/cloudpanel-bridge.php --vpn-docker-firewall stop\n" : '')
         . 'ExecStop=-' . $nft . " delete table inet panelavo_wireguard_filter\n"
         . 'ExecStop=-' . $nft . " delete table ip panelavo_wireguard_nat4\n"
         . 'ExecStop=-' . $nft . " delete table ip6 panelavo_wireguard_nat6\n\n[Install]\nWantedBy=multi-user.target\n";
     vpnWriteFile(PANELAVO_VPN_FIREWALL_UNIT, $unit, 0644);
-    $dropin = '# ' . PANELAVO_VPN_MARKER . "\n[Unit]\nRequires=panelavo-wireguard-firewall.service\nAfter=network-online.target panelavo-wireguard-firewall.service\n";
+    $dropin = '# ' . PANELAVO_VPN_MARKER . "\n[Unit]\nRequires=panelavo-wireguard-firewall.service\nAfter=network-online.target panelavo-wireguard-firewall.service\n"
+        . ($docker ? "After=docker.service\nBindsTo=docker.service\nPartOf=docker.service\n" : '');
     vpnWriteFile(PANELAVO_VPN_WG_DROPIN, $dropin, 0644);
 }
 
@@ -7643,6 +7768,7 @@ function vpnCleanup(?array $state, bool $removeState = true, bool $strict = fals
         throw new VpnOperationException('VPN_OPERATION_FAILED', 'UFW is unavailable, so Panelavo cannot verify removal of its tagged rules.');
     }
     if (!vpnUfwRemove() && $strict) throw new VpnOperationException('VPN_OPERATION_FAILED', 'Could not remove all Panelavo UFW rules.');
+    if ($state && !vpnDockerForwarding($state, 'stop')) throw new VpnOperationException('VPN_OPERATION_FAILED', 'Could not verify removal of VPN Docker rules.');
     if (!vpnDeleteNftTables() && $strict) throw new VpnOperationException('VPN_OPERATION_FAILED', 'Could not remove all Panelavo nftables rules.');
     if ($state && !vpnRestoreForwarding($state) && $strict) throw new VpnOperationException('VPN_OPERATION_FAILED', 'Could not restore the prior forwarding state.');
     foreach ([PANELAVO_VPN_CONFIG, PANELAVO_VPN_SYSCTL, PANELAVO_VPN_FIREWALL_UNIT, PANELAVO_VPN_WG_DROPIN, PANELAVO_VPN_NFT_RULES] as $file) {
@@ -7769,6 +7895,7 @@ function vpnInstall(array $operation): array
         vpnRun([$systemctl, 'enable', '--now', 'wg-quick@pnlwg0.service'], 45, 'Could not start the WireGuard gateway.');
         $wg = vpnExecutable(['/usr/bin/wg', '/usr/sbin/wg']);
         vpnRun([$wg, 'show', 'pnlwg0'], 8, 'The WireGuard interface did not become ready.');
+        if (!vpnFirewallRuntimeReady($state)) throw new VpnOperationException('VPN_OPERATION_FAILED', 'VPN firewall verification failed.');
         return ['state' => vpnStatus()];
     } catch (Throwable $error) {
         vpnCleanup($state);
@@ -7915,6 +8042,7 @@ function vpnServiceState(string $verb): bool
 
 function vpnFirewallRuntimeReady(array $state): bool
 {
+    if (!vpnDockerForwarding($state, 'check')) return false;
     $tables = [['inet', 'panelavo_wireguard_filter'], ['ip', 'panelavo_wireguard_nat4']];
     if (!empty($state['ipv6Egress'])) $tables[] = ['ip6', 'panelavo_wireguard_nat6'];
     foreach ($tables as [$family, $table]) {
@@ -8006,6 +8134,7 @@ function vpnManage(array $operation): array
         $systemctl = vpnExecutable(['/usr/bin/systemctl', '/bin/systemctl']);
         if (!$systemctl) throw new VpnOperationException('VPN_OPERATION_FAILED', 'systemd is unavailable.');
         if ($action === 'start') {
+            if (($state['firewallMode'] ?? '') === 'docker' && vpnFirewallMode($state)['mode'] !== 'docker') throw new VpnOperationException('VPN_CONFLICT', 'Docker firewall rules changed. Review the firewall before starting VPN.');
             $sysctl = vpnExecutable(['/usr/sbin/sysctl', '/sbin/sysctl']);
             if ($sysctl) vpnRun([$sysctl, '--load', PANELAVO_VPN_SYSCTL], 15, 'Could not enable VPN forwarding.');
             vpnUfwAdd($state);
@@ -8017,6 +8146,7 @@ function vpnManage(array $operation): array
             return ['state' => vpnStatus()];
         }
         if ($action === 'restart') {
+            if (($state['firewallMode'] ?? '') === 'docker' && vpnFirewallMode($state)['mode'] !== 'docker') throw new VpnOperationException('VPN_CONFLICT', 'Docker firewall rules changed. Review the firewall before restarting VPN.');
             vpnRun([$systemctl, 'restart', 'wg-quick@pnlwg0.service'], 45, 'Could not restart the WireGuard gateway.');
             return ['state' => vpnStatus()];
         }
@@ -8119,6 +8249,15 @@ function brokerDirectWrapperDenied(): bool
     return $result['code'] !== 0;
 }
 
+// Fixed root-only systemd lifecycle hook. Never accepts a command or host path.
+if (($argv[1] ?? '') === '--vpn-docker-firewall') {
+    if (!function_exists('posix_geteuid') || posix_geteuid() !== 0 || count($argv) !== 3
+        || !in_array($argv[2], ['start', 'stop'], true)) exit(77);
+    $state = vpnLoadState();
+    if (!$state || ($state['firewallMode'] ?? '') !== 'docker') exit(78);
+    vpnAssertOwnedInstallation($state);
+    exit(vpnDockerForwarding($state, $argv[2]) ? 0 : 1);
+}
 if (($argv[1] ?? '') === '--self-test-ports') runComposePortSelfTest();
 if (($argv[1] ?? '') === '--self-test-scaffold') runFreshSiteScaffoldSelfTest();
 if (($argv[1] ?? '') === '--self-test-env') runEnvSelfTest();

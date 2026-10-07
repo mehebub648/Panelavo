@@ -85,6 +85,8 @@ export type DeploymentResult = {
       exitCode: number;
       output: string;
       timedOut?: boolean;
+      applicationHealth?: "healthy" | "unhealthy" | "not_checked";
+      portVerification?: "passed" | "failed";
     }[];
   };
 };

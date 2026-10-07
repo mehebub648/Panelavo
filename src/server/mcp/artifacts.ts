@@ -40,6 +40,8 @@ export type ArtifactUpload = Omit<
 > & {
   uploadPath: string;
   maximumChunkBytes: number;
+  authentication: string;
+  protocol: string;
 };
 
 type ArtifactStore = { uploads: ArtifactUploadRecord[] };
@@ -86,6 +88,10 @@ function publicUpload(record: ArtifactUploadRecord): ArtifactUpload {
     ...value,
     uploadPath: `/api/mcp/artifacts/${record.id}`,
     maximumChunkBytes: MAX_CHUNK_BYTES,
+    authentication:
+      "Every PUT, HEAD, GET and DELETE requires Authorization: Bearer <MCP access token> from the same Panelavo credential that created this upload. The URL is not a signed public upload URL. A browser cookie, deployment token or another MCP credential will not work. If your client cannot access its connector token, use panelavo_upload_file for files up to 64 MiB, or create a new upload through a client that controls its own MCP credential. Never paste tokens into chat.",
+    protocol:
+      "PUT raw binary chunks with Content-Type: application/octet-stream and Content-Range: bytes <start>-<end>/<total>. Each chunk must be at most 32 MiB. Use authenticated HEAD (Upload-Offset) or panelavo_get_artifact_upload (receivedBytes) to resume. On HTTP 401 refresh or reconnect the creating credential; on 403 restore website-write access. Recreate the upload if reconnecting changes the credential.",
   };
 }
 

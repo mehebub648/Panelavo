@@ -259,6 +259,13 @@ export async function createManagedSite(
       meta: { id, category: category.id, aliases, block: "none" },
     },
     warnings,
+    ...(input.type === "nodejs" ||
+    input.type === "python" ||
+    input.type === "docker"
+      ? {
+          applicationPortGuidance: `Application port ${appPort} is site id ${id} + 10,000. ${input.type === "docker" ? "Publish your container's HTTP port on host" : "Bind your application to"} 127.0.0.1:${appPort}; this is the CloudPanel proxy port. The site id is not the application port.`,
+        }
+      : {}),
   };
 }
 

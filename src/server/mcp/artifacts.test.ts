@@ -60,6 +60,8 @@ describe("MCP artifact uploads", () => {
       total: content.length,
       body: chunks(content.subarray(0, 8)),
     });
+    expect(upload.authentication).toContain("same Panelavo credential");
+    expect(upload.protocol).toContain("Content-Range");
     expect(first).toMatchObject({ status: "uploading", receivedBytes: 8 });
 
     const complete = await writeArtifactChunk(actor(), upload.id, {

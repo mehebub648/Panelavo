@@ -2,14 +2,17 @@
 
 import React from "react";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { VpnState } from "@/types/vpn";
 import { VpnManager } from "./vpn-manager";
 
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 function state(installed: boolean): VpnState {
   const diagnostic = {
@@ -75,6 +78,55 @@ function state(installed: boolean): VpnState {
 }
 
 describe("VpnManager", () => {
+  it.each([true, false])("blocks repeated installation and releases controls after success=%s", async (success) => {
+    let finish!: (response: unknown) => void;
+    const fetchMock = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<VpnManager initialState={state(false)} />);
+    fireEvent.click(screen.getByRole("button", { name: "Install WireGuard" }));
+    const phrase = screen.getByLabelText(/Type INSTALL VPN to continue/);
+    fireEvent.change(phrase, { target: { value: "INSTALL VPN" } });
+    const install = screen.getByRole("button", { name: "Install VPN" });
+    fireEvent.click(install);
+    expect(screen.getByRole("button", { name: "Installing…" })).toBeDisabled();
+    expect(phrase).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    fireEvent.click(install);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.getByRole("dialog")).toHaveAttribute("aria-busy", "true");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      finish({ json: async () => success
+        ? { success: true, data: { state: state(true) } }
+        : { success: false, error: { message: "Installation failed." } } });
+    });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    if (success) {
+      expect(screen.getByRole("button", { name: "Uninstall" })).toBeEnabled();
+    } else {
+      fireEvent.click(screen.getByRole("button", { name: "Install WireGuard" }));
+      fireEvent.change(screen.getByLabelText(/Type INSTALL VPN to continue/), { target: { value: "INSTALL VPN" } });
+      expect(screen.getByRole("button", { name: "Install VPN" })).toBeEnabled();
+    }
+  });
+
+  it("explains safe Docker integration in the existing install confirmation", () => {
+    const initial = state(false);
+    initial.preflight.firewallMode = "docker";
+    render(<VpnManager initialState={initial} />);
+    fireEvent.click(screen.getByRole("button", { name: "Install WireGuard" }));
+    expect(screen.getByText(/default firewall policy, website rules and containers will stay unchanged/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Install VPN" })).toBeDisabled();
+  });
+
+  it("keeps unknown firewall configurations blocked", () => {
+    const initial = state(false);
+    initial.preflight.firewallMode = "unsupported";
+    initial.preflight.diagnostics.push({ id: "firewall", label: "Firewall compatibility", status: "blocked", detail: "Custom firewall needs review." });
+    render(<VpnManager initialState={initial} />);
+    expect(screen.getByRole("button", { name: "Install WireGuard" })).toBeDisabled();
+  });
   it("shows the bounded installation form and preflight", () => {
     render(<VpnManager initialState={state(false)} />);
     expect(screen.getByText("Install VPN gateway")).toBeInTheDocument();

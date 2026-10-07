@@ -16,7 +16,7 @@ export interface VpnPreflight {
   wireguardVersion?: string | null;
   kernelModuleReady: boolean;
   nftablesInstalled: boolean;
-  firewallMode: "ufw" | "nftables" | "unsupported";
+  firewallMode: "ufw" | "nftables" | "docker" | "unsupported";
   publicIpv4?: string | null;
   publicIpv6?: string | null;
   egressInterface?: string | null;
@@ -52,7 +52,7 @@ export interface VpnConfiguration {
   dns: string[];
   egressInterface: string;
   ipv6Egress: boolean;
-  firewallMode: "ufw" | "nftables";
+  firewallMode: "ufw" | "nftables" | "docker";
 }
 
 export interface VpnState {

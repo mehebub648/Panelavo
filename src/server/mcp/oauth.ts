@@ -1644,130 +1644,157 @@ async function resolveLiveMcpActor(
   };
 }
 
-export const mcpTokenVerifier: OAuthTokenVerifier = {
-  async verifyAccessToken(value) {
-    const now = Date.now();
-    const snapshot = await readStore((state): TokenSnapshot | undefined => {
-      const personalToken = matchingToken(
-        state.personalTokens,
-        "personal",
-        value,
-      );
-      if (personalToken) {
+export function createMcpTokenVerifier(connectionGroup?: {
+  resource: string;
+  resolve: (groupId: string) => Promise<void>;
+}): OAuthTokenVerifier {
+  return {
+    async verifyAccessToken(value) {
+      const now = Date.now();
+      const snapshot = await readStore((state): TokenSnapshot | undefined => {
+        const personalToken = matchingToken(
+          state.personalTokens,
+          "personal",
+          value,
+        );
+        if (personalToken) {
+          if (
+            typeof personalToken.username !== "string" ||
+            typeof personalToken.userId !== "string" ||
+            typeof personalToken.resource !== "string" ||
+            !Array.isArray(personalToken.scopes) ||
+            !personalToken.scopes.every((scope) => typeof scope === "string") ||
+            personalToken.revokedAt ||
+            personalToken.expiresAt <= now
+          )
+            return undefined;
+          return {
+            kind: "personal-token",
+            id: personalToken.id,
+            hash: personalToken.hash,
+            grantId: personalToken.id,
+            clientId: `pnl_personal_${personalToken.id}`,
+            username: personalToken.username,
+            userId: personalToken.userId,
+            resource: personalToken.resource,
+            scopes: [...personalToken.scopes],
+            expiresAt: personalToken.expiresAt,
+          };
+        }
+        const token = matchingToken(state.accessTokens, "access", value);
+        const grant = token
+          ? state.grants.find((candidate) => candidate.id === token.grantId)
+          : undefined;
         if (
-          typeof personalToken.username !== "string" ||
-          typeof personalToken.userId !== "string" ||
-          typeof personalToken.resource !== "string" ||
-          !Array.isArray(personalToken.scopes) ||
-          !personalToken.scopes.every((scope) => typeof scope === "string") ||
-          personalToken.revokedAt ||
-          personalToken.expiresAt <= now
+          !token ||
+          typeof token.clientId !== "string" ||
+          typeof token.username !== "string" ||
+          typeof token.userId !== "string" ||
+          typeof token.resource !== "string" ||
+          !Array.isArray(token.scopes) ||
+          !token.scopes.every((scope) => typeof scope === "string") ||
+          token.revokedAt ||
+          token.expiresAt <= now ||
+          !grant ||
+          grant.revokedAt ||
+          grant.expiresAt <= now
         )
           return undefined;
         return {
-          kind: "personal-token",
-          id: personalToken.id,
-          hash: personalToken.hash,
-          grantId: personalToken.id,
-          clientId: `pnl_personal_${personalToken.id}`,
-          username: personalToken.username,
-          userId: personalToken.userId,
-          resource: personalToken.resource,
-          scopes: [...personalToken.scopes],
-          expiresAt: personalToken.expiresAt,
+          kind: "oauth",
+          id: token.id,
+          hash: token.hash,
+          grantId: token.grantId,
+          clientId: token.clientId,
+          username: token.username,
+          userId: token.userId,
+          resource: token.resource,
+          scopes: [...token.scopes],
+          expiresAt: token.expiresAt,
         };
+      });
+      if (!snapshot) invalidBearer();
+      let resource: URL;
+      try {
+        resource = new URL(snapshot.resource);
+      } catch {
+        invalidBearer();
       }
-      const token = matchingToken(state.accessTokens, "access", value);
-      const grant = token
-        ? state.grants.find((candidate) => candidate.id === token.grantId)
-        : undefined;
-      if (
-        !token ||
-        typeof token.clientId !== "string" ||
-        typeof token.username !== "string" ||
-        typeof token.userId !== "string" ||
-        typeof token.resource !== "string" ||
-        !Array.isArray(token.scopes) ||
-        !token.scopes.every((scope) => typeof scope === "string") ||
-        token.revokedAt ||
-        token.expiresAt <= now ||
-        !grant ||
-        grant.revokedAt ||
-        grant.expiresAt <= now
-      )
-        return undefined;
-      return {
-        kind: "oauth",
-        id: token.id,
-        hash: token.hash,
-        grantId: token.grantId,
-        clientId: token.clientId,
-        username: token.username,
-        userId: token.userId,
-        resource: token.resource,
-        scopes: [...token.scopes],
-        expiresAt: token.expiresAt,
-      };
-    });
-    if (!snapshot) invalidBearer();
-    let resource: URL;
-    try {
-      resource = new URL(snapshot.resource);
-    } catch {
-      invalidBearer();
-    }
 
-    const actor = await resolveLiveMcpActor(snapshot);
-    const confirmed = await mutateStore((state) => {
-      if (snapshot.kind === "personal-token") {
-        const token = state.personalTokens.find(
+      let actor: PanelActor | undefined;
+      let groupId: string | undefined;
+      if (connectionGroup) {
+        if (
+          snapshot.kind !== "oauth" ||
+          snapshot.resource !== connectionGroup.resource ||
+          !/^plugin:[0-9a-f-]{36}$/.test(snapshot.userId)
+        )
+          invalidBearer();
+        groupId = snapshot.userId.slice(7);
+        await connectionGroup.resolve(groupId);
+      } else {
+        // Gateway grants can never be treated as local CloudPanel identities.
+        if (snapshot.userId.startsWith("plugin:")) invalidBearer();
+        actor = await resolveLiveMcpActor(snapshot);
+      }
+      const confirmed = await mutateStore((state) => {
+        if (snapshot.kind === "personal-token") {
+          const token = state.personalTokens.find(
+            (candidate) =>
+              candidate.id === snapshot.id &&
+              typeof candidate.hash === "string" &&
+              safeEqual(candidate.hash, snapshot.hash),
+          );
+          if (!token || token.revokedAt || token.expiresAt <= Date.now())
+            return false;
+          token.lastUsedAt = Date.now();
+          token.username = actor?.user.username ?? snapshot.username;
+          return true;
+        }
+        const token = state.accessTokens.find(
           (candidate) =>
             candidate.id === snapshot.id &&
             typeof candidate.hash === "string" &&
             safeEqual(candidate.hash, snapshot.hash),
         );
-        if (!token || token.revokedAt || token.expiresAt <= Date.now())
+        const grant = state.grants.find(
+          (candidate) => candidate.id === snapshot.grantId,
+        );
+        if (
+          !token ||
+          token.revokedAt ||
+          token.expiresAt <= Date.now() ||
+          !grant ||
+          grant.revokedAt ||
+          grant.expiresAt <= Date.now()
+        )
           return false;
         token.lastUsedAt = Date.now();
-        token.username = actor.user.username;
+        token.username = actor?.user.username ?? snapshot.username;
+        grant.lastUsedAt = token.lastUsedAt;
+        grant.username = actor?.user.username ?? snapshot.username;
         return true;
-      }
-      const token = state.accessTokens.find(
-        (candidate) =>
-          candidate.id === snapshot.id &&
-          typeof candidate.hash === "string" &&
-          safeEqual(candidate.hash, snapshot.hash),
-      );
-      const grant = state.grants.find(
-        (candidate) => candidate.id === snapshot.grantId,
-      );
-      if (
-        !token ||
-        token.revokedAt ||
-        token.expiresAt <= Date.now() ||
-        !grant ||
-        grant.revokedAt ||
-        grant.expiresAt <= Date.now()
-      )
-        return false;
-      token.lastUsedAt = Date.now();
-      token.username = actor.user.username;
-      grant.lastUsedAt = token.lastUsedAt;
-      grant.username = actor.user.username;
-      return true;
-    });
-    if (!confirmed) invalidBearer();
+      });
+      if (!confirmed) invalidBearer();
 
-    return {
-      token: value,
-      clientId: snapshot.clientId,
-      scopes: snapshot.scopes,
-      expiresAt: Math.floor(snapshot.expiresAt / 1000),
-      resource,
-      extra: { panelavoActor: actor },
-    } satisfies AuthInfo;
-  },
-};
+      return {
+        token: value,
+        clientId: snapshot.clientId,
+        scopes: snapshot.scopes,
+        expiresAt: Math.floor(snapshot.expiresAt / 1000),
+        resource,
+        extra: actor
+          ? { panelavoActor: actor }
+          : {
+              panelavoConnectionGroup: groupId,
+              panelavoGrantId: snapshot.grantId,
+            },
+      } satisfies AuthInfo;
+    },
+  };
+}
+
+export const mcpTokenVerifier = createMcpTokenVerifier();
 
 export function resolveMcpActor(authInfo: AuthInfo): PanelActor {
   const actor = authInfo.extra?.panelavoActor;

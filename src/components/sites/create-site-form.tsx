@@ -463,7 +463,7 @@ export function CreateSiteForm({
                       Site id <b>{previewId}</b> · site user{" "}
                       <b>site-{previewId}</b>
                       {type && ["nodejs", "python", "docker"].includes(type)
-                        ? ` · application port ${previewPort}`
+                        ? ` · application port ${previewPort} (site id + 10,000; use this port in your application)`
                         : ""}{" "}
                       — reserved automatically from this category. A DNS record
                       is created for the system domain when Cloudflare is

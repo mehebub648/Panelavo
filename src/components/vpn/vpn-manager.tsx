@@ -126,6 +126,7 @@ export function VpnManager({
   }, [apiBase]);
 
   async function execute(input: VpnManageInput) {
+    if (busy) return;
     setBusy(input.action);
     try {
       const response = await fetch(`${apiBase}/api/vpn`, {
@@ -185,7 +186,9 @@ export function VpnManager({
       },
       title: "Install WireGuard on this server?",
       message:
-        "Panelavo will install distribution packages when needed, add only namespaced networking rules, and start pnlwg0. Hosted websites and private application ports stay outside the VPN.",
+        state.preflight.firewallMode === "docker"
+          ? "Panelavo will install WireGuard and add VPN-only forwarding rules alongside Docker. The default firewall policy, website rules and containers will stay unchanged. Removing VPN will remove only Panelavo’s rules."
+          : "Panelavo will install distribution packages when needed, add only namespaced networking rules, and start pnlwg0. Hosted websites and private application ports stay outside the VPN.",
       confirmText: "Install VPN",
       confirmationPhrase: "INSTALL VPN",
     });
@@ -682,7 +685,8 @@ export function VpnManager({
         <ConfirmDialog
           title={pending.title}
           message={pending.message}
-          confirmText={pending.confirmText}
+          busy={Boolean(busy)}
+          confirmText={busy === "install" ? "Installing…" : busy ? "Working…" : pending.confirmText}
           confirmationPhrase={pending.confirmationPhrase}
           variant={pending.danger ? "danger" : "default"}
           onCancel={() => setPending(undefined)}

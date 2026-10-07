@@ -310,6 +310,26 @@ describe("MCP role-aware tool surface", () => {
       { action: "exec", command: "pwd", cwd: undefined },
     );
   });
+  it.each(["user", "admin", "manager", "super-admin"] as PanelRole[])(
+    "reports the server IP and live %s permissions without changing access",
+    async (role) => {
+      const client = await connect(createPanelavoMcpServer(actor(role)));
+      connected.push(client);
+      const response = await client.callTool("panelavo_whoami", {});
+      expect(response.isError).not.toBe(true);
+      expect(response.structuredContent).toMatchObject({
+        id: `user-${role}`,
+        serverIp: "203.0.113.10",
+        role,
+        capabilities: {
+          readWebsites: true,
+          manageWebsites: role !== "user",
+          createWebsites: role !== "user",
+          hostWebsiteRepairs: role === "super-admin",
+        },
+      });
+    },
+  );
 
   it("writes new and replacement text through the create-or-replace file operation", async () => {
     const client = await connect(createPanelavoMcpServer(actor("admin")));

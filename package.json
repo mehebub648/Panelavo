@@ -1,6 +1,6 @@
 {
   "name": "panelavo",
-  "version": "0.1.138",
+  "version": "0.1.143",
   "private": true,
   "engines": {
     "node": ">=20.9.0"
@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "3.1114.0",
+    "@modelcontextprotocol/client": "2.0.0",
     "@modelcontextprotocol/server": "2.0.0",
     "@monaco-editor/react": "^4.7.0",
     "@radix-ui/react-dropdown-menu": "^2.1.15",
@@ -64,7 +65,7 @@
   },
   "packageManager": "pnpm@10.12.1",
   "panelavo": {
-    "brokerProtocolVersion": 26,
+    "brokerProtocolVersion": 27,
     "fleetProtocolVersion": 1
   }
 }

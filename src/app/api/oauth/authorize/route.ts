@@ -9,6 +9,7 @@ import {
 } from "@/server/mcp/oauth";
 import { getMcpPublicUrls } from "@/server/mcp/public-url";
 import { rateLimit } from "@/server/security/request";
+import { mcpBrowserRedirect } from "@/server/mcp/browser-redirect";
 
 export const runtime = "nodejs";
 
@@ -69,13 +70,7 @@ export async function POST(request: NextRequest) {
       decision as "approve" | "deny",
       user,
     );
-    return new Response(null, {
-      status: 303,
-      headers: {
-        location,
-        "cache-control": "no-store",
-      },
-    });
+    return mcpBrowserRedirect(location);
   } catch (error) {
     return mcpOAuthErrorResponse(error);
   }

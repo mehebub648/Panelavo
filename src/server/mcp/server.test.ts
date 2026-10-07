@@ -135,6 +135,37 @@ describe("MCP website action confirmation", () => {
     expect(state.nonce).toMatch(/^[0-9a-f-]{36}$/i);
   });
 
+  it.each(["cancel", "decline"] as const)(
+    "rejects a %s response and reports the client response accurately",
+    async (action) => {
+      const manager = createMcpConfirmationManager(actor);
+      const tool = "panelavo_run_site_operation";
+      const args = {
+        domain: "example.com",
+        fix: "initialize-rootless-runtime",
+      };
+      const { state } = await beginConfirmation(manager, tool, args);
+
+      await expect(
+        manager.require({
+          context: context({
+            requestState: state,
+            inputResponses: {
+              panelavo_confirmation: { action },
+            },
+          }),
+          tool,
+          arguments: args,
+          message: "Start rootless runtime?",
+        }),
+      ).rejects.toThrow(
+        action === "cancel"
+          ? "The MCP client returned a cancelled confirmation. This website action was not run."
+          : "The MCP client returned a declined confirmation. This website action was not run.",
+      );
+    },
+  );
+
   it("rejects a confirmation replayed for another tool", async () => {
     const manager = createMcpConfirmationManager(actor);
     const { state } = await beginConfirmation(manager, "panelavo_deploy_site", {
@@ -204,6 +235,44 @@ describe("MCP website action confirmation", () => {
     await expect(manager.require(request)).rejects.toThrow(
       /expired or was already used/i,
     );
+  });
+
+  it("explains a missing client response without claiming user rejection", async () => {
+    const manager = createMcpConfirmationManager(actor);
+    const args = { domain: "example.com" };
+    const { state } = await beginConfirmation(
+      manager,
+      "panelavo_delete_site",
+      args,
+    );
+    await expect(
+      manager.require({
+        context: context({ requestState: state }),
+        tool: "panelavo_delete_site",
+        arguments: args,
+        message: "Delete?",
+      }),
+    ).rejects.toThrow(/confirmation-system error, not a user rejection/);
+  });
+
+  it("gives recovery instructions when a verified confirmation has expired", async () => {
+    vi.useFakeTimers();
+    const manager = createMcpConfirmationManager(actor);
+    const args = { domain: "example.com" };
+    const { state } = await beginConfirmation(
+      manager,
+      "panelavo_delete_site",
+      args,
+    );
+    vi.advanceTimersByTime(121_000);
+    await expect(
+      manager.require({
+        context: acceptedContext(state),
+        tool: "panelavo_delete_site",
+        arguments: args,
+        message: "Delete?",
+      }),
+    ).rejects.toThrow(/expired. Request a new confirmation/);
   });
 
   it("binds deletion approval to the exact action, domain, and phrase", async () => {

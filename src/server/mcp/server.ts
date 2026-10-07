@@ -488,7 +488,7 @@ export function createPanelavoMcpServer(actor: PanelActor) {
     {
       title: "Show my Panelavo access",
       description:
-        "Show the live Panelavo role and effective website capabilities for this connection.",
+        "Show the server IP, stable account ID, live Panelavo role, and effective website capabilities for this connection.",
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -503,6 +503,8 @@ export function createPanelavoMcpServer(actor: PanelActor) {
         { type: "account", id: actor.user.id },
         {},
         async () => ({
+          id: actor.user.id,
+          serverIp: await getServerPublicIp(),
           username: actor.user.username,
           displayName: actor.user.displayName,
           role: actor.user.panelRole,
@@ -994,8 +996,6 @@ export function createPanelavoMcpServer(actor: PanelActor) {
               uploadUrl: self
                 ? `https://${self}${upload.uploadPath}`
                 : upload.uploadPath,
-              protocol:
-                "PUT raw binary chunks with Content-Range: bytes <start>-<end>/<total>; use HEAD or this status tool to resume from Upload-Offset.",
             };
           },
         ),

@@ -29,6 +29,19 @@ export function DeploymentOutput({ result }: { result: DeploymentResult }) {
           <summary className="cursor-pointer text-sm font-medium">
             {step.exitCode === 0 ? "Completed" : "Failed"}: {step.label}
           </summary>
+          {step.applicationHealth && (
+            <p className="mt-2 text-sm">
+              Application HTTP health:{" "}
+              {step.applicationHealth === "not_checked"
+                ? "not checked"
+                : step.applicationHealth}
+              . Listener verification: {step.portVerification}.
+              {step.applicationHealth === "healthy" &&
+              step.portVerification === "failed"
+                ? " The application responds, but deployment verification needs attention."
+                : ""}
+            </p>
+          )}
           <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words rounded bg-slate-950 p-3 text-xs text-slate-100">
             {step.output || "No output."}
           </pre>

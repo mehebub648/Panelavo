@@ -1,0 +1,9 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "panelavo": {
+      "type": "streamable-http",
+      "url": "https://panel.91.108.104.57.mehebub.com/connect/openai/mcp"
+    }
+  }
+}

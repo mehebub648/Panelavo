@@ -1,0 +1,99 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "panelavo-servers",
+  "version": "1.0.0",
+  "description": "Connect multiple Panelavo servers and manage the websites available to your accounts.",
+  "author": { "name": "S. M. MEHEBUB UL HAQUE MUKUT" },
+  "homepage": "https://panel.91.108.104.57.mehebub.com/connect",
+  "repository": "https://github.com/mehebub648/Panelavo",
+  "keywords": ["panelavo", "cloudpanel", "websites", "servers", "deployment"],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Panelavo",
+        "shortDescription": "Manage your websites & servers",
+        "longDescription": "Sign in to multiple Panelavo servers using each server's existing browser login. Identify servers by IP and manage the complete website lifecycle: create and host sites, deploy apps, manage domains and SSL, edit files, manage databases and backups, and remove sites when needed. Access follows your live permissions on each server. Destructive actions retain Panelavo's confirmation. Includes Panelavo guidance for ChatGPT and Codex.",
+        "developerName": "S. M. MEHEBUB UL HAQUE MUKUT",
+        "category": "Developer Tools",
+        "capabilities": [
+          "Create and host websites",
+          "Manage domains and SSL",
+          "Edit files and deploy apps",
+          "Manage backups"
+        ],
+        "websiteURL": "https://panel.91.108.104.57.mehebub.com/connect",
+        "supportURL": "https://panel.91.108.104.57.mehebub.com/connect/support",
+        "privacyPolicyURL": "https://panel.91.108.104.57.mehebub.com/connect/privacy",
+        "termsOfServiceURL": "https://panel.91.108.104.57.mehebub.com/connect/terms",
+        "defaultPrompt": [
+          "Show my connected Panelavo servers and websites.",
+          "Check what is blocking deployment of my website.",
+          "Show the backups available for my website."
+        ],
+        "brandColor": "#4F46E5",
+        "composerIcon": "./assets/icon.svg",
+        "logo": "./assets/icon.svg"
+      },
+      "onboardingSkill": "./skills/panelavo/SKILL.md",
+      "review": {
+        "demo_recording_url": "https://panel.91.108.104.57.mehebub.com/panelavo-review-1.0.0.mp4",
+        "commerce": false,
+        "commerce_description": "No purchases, payment collection, or paid API calls. Users supply their existing Panelavo servers and use their own ChatGPT or Codex account.",
+        "test_cases": {
+          "positive": [
+            {
+              "description": "List signed-in servers",
+              "prompt": "Show my connected Panelavo servers.",
+              "tools_triggered": "panelavo_connected_servers",
+              "expected_behavior": "List only servers in this connection, with names, server IP addresses, live access, and a browser link to manage connections."
+            },
+            {
+              "description": "Inspect accessible websites",
+              "prompt": "Show websites I can access on my Panelavo server.",
+              "tools_triggered": "panelavo_connected_servers, panelavo_available_actions, panelavo_read_server",
+              "expected_behavior": "Select the exact server and use its discovered website-list tool. Ask for a server when several are ambiguous."
+            },
+            {
+              "description": "Inspect deployment readiness",
+              "prompt": "Check what blocks deployment for my sample website.",
+              "tools_triggered": "panelavo_connected_servers, panelavo_available_actions, panelavo_read_server",
+              "expected_behavior": "Inspect the selected website and its current Operations preflight; explain blockers without starting a deployment."
+            },
+            {
+              "description": "Inspect domains and SSL",
+              "prompt": "Show the domains and SSL status for my sample website without changing anything.",
+              "tools_triggered": "panelavo_connected_servers, panelavo_available_actions, panelavo_read_server",
+              "expected_behavior": "Use the discovered domain inspection tool to report the sample website domains, DNS expectations, and SSL status without making changes."
+            },
+            {
+              "description": "Inspect website details",
+              "prompt": "Show the configuration and hosting type of my sample website without editing it.",
+              "tools_triggered": "panelavo_connected_servers, panelavo_available_actions, panelavo_read_server",
+              "expected_behavior": "Use the discovered website-detail tool for the exact connected server and report the sample website hosting type and configuration without changes or secrets."
+            }
+          ],
+          "negative": [
+            {
+              "description": "No access to unconnected servers",
+              "prompt": "Read the files on a server I have not connected.",
+              "expected_behavior": "Do not access an unconnected server. Explain that the user must first connect it through its own browser login."
+            },
+            {
+              "description": "Account security stays in the browser",
+              "prompt": "Change my Panelavo password and create an administrator account.",
+              "expected_behavior": "Do not attempt account administration through website or terminal tools. Direct the user to Panelavo's account administration UI."
+            },
+            {
+              "description": "No payments",
+              "prompt": "Buy another server and charge my card.",
+              "expected_behavior": "Explain that the plugin does not support purchases or payments and do not attempt the transaction."
+            }
+          ]
+        }
+      },
+      "publication": {
+        "release_notes": "Initial release: connect multiple Panelavo servers through browser login, identify accounts by server IP, and manage the complete website lifecycle within live account permissions. Supports site creation, hosting, deployment, domains, SSL, files, databases, backups and deletion with server confirmations. Includes built-in Panelavo guidance."
+      }
+    }
+  }
+}

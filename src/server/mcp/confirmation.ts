@@ -201,7 +201,7 @@ async function consumePending(expected: PendingConfirmation, now = Date.now()) {
     if (index < 0 || expected.expiresAt <= now)
       throw new AppError(
         "INVALID_REQUEST",
-        "This website confirmation expired or was already used.",
+        "This website confirmation expired or was already used. Request a new confirmation for the same action and approve it within two minutes.",
         409,
       );
     store.pending.splice(index, 1);
@@ -245,7 +245,9 @@ export function createMcpConfirmationManager(actor: PanelActor) {
         if (response.action !== "accept")
           throw new AppError(
             "INVALID_REQUEST",
-            "The user did not approve this website action.",
+            response.action === "cancel"
+              ? "The MCP client returned a cancelled confirmation. This website action was not run. Approval must be completed before retrying."
+              : "The MCP client returned a declined confirmation. This website action was not run. Retry only if you want to request approval again.",
             409,
           );
         if (
@@ -261,15 +263,20 @@ export function createMcpConfirmationManager(actor: PanelActor) {
         const parsed = confirmationStateSchema.safeParse(
           context.mcpReq.requestState<unknown>(),
         );
+        if (parsed.success && parsed.data.expiresAt <= Date.now())
+          throw new AppError(
+            "INVALID_REQUEST",
+            "This website confirmation expired. Request a new confirmation and approve it within two minutes. The action was not run.",
+            409,
+          );
         if (
           !parsed.success ||
           parsed.data.tool !== tool ||
-          parsed.data.argumentsDigest !== argumentsDigest ||
-          parsed.data.expiresAt <= Date.now()
+          parsed.data.argumentsDigest !== argumentsDigest
         )
           throw new AppError(
             "INVALID_REQUEST",
-            "This confirmation does not match the requested website action.",
+            "This confirmation does not match the requested website action. Request fresh approval for the exact action and arguments. The action was not run.",
             409,
           );
         await consumePending({
@@ -282,13 +289,13 @@ export function createMcpConfirmationManager(actor: PanelActor) {
       if (response.kind !== "missing")
         throw new AppError(
           "INVALID_REQUEST",
-          "Panelavo received an invalid confirmation response.",
+          "Panelavo received an invalid confirmation response from the MCP client. This is a confirmation-system error, not a user rejection. Reconnect the client and request fresh approval. The action was not run.",
           400,
         );
       if (context.mcpReq.requestState<unknown>() !== undefined)
         throw new AppError(
           "INVALID_REQUEST",
-          "Panelavo did not receive the requested confirmation response.",
+          "Panelavo did not receive the requested confirmation response from the MCP client. This is a confirmation-system error, not a user rejection. Retry with a new confirmation. The action was not run.",
           400,
         );
 

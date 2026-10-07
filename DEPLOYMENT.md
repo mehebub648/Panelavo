@@ -1,5 +1,7 @@
 # Deployment & Operations (PM2)
 
+For v0.1.139, install trusted broker protocol 27 before activating the app. The panel update does not change firewall rules. The existing VPN install confirmation supports standard Docker iptables-nft forwarding; custom layouts remain blocked. Run `php scripts/test-vpn-firewall.php` for non-mutating classification, drift, isolation, lifecycle and rollback fixtures. Live firewall/reboot/client-handshake acceptance still requires provider-console recovery and the disposable-VM procedure. Preserve hosted-site HTTP/container baselines; never change the global FORWARD policy to unblock VPN.
+
 panelavo runs as a **production** Next.js server managed by
 [PM2](https://pm2.keymetrics.io/). Process name: **`panelavo`** — private
 listener **`127.0.0.1:10443`**, proxied only through the HTTPS CloudPanel vhost.
@@ -174,7 +176,7 @@ PHP creation checks the selected runtime's next CloudPanel pool port against res
 
 The self-updater resolves PM2 from the panel site user's PATH before staging and uses that executable to reload only Panelavo. Both shared /usr/local/bin and distribution /usr/bin installations are supported; missing PM2 blocks before deployment.
 
-Legacy MCP clients use credential- and live-actor-bound in-memory HTTP sessions so negotiated elicitation capabilities and confirmation replies survive across requests. Sessions expire after 30 minutes of inactivity, are capped globally and per credential, and are lost on a Panelavo restart; clients must initialize again. Every HTTP request still authenticates against live CloudPanel access. Routine site-user terminal commands, deployments and non-destructive file-manager work do not require elicitation; live permissions and broker restrictions still apply. Other sensitive actions retain their one-use confirmation checks.
+Legacy MCP clients use credential- and live-actor-bound in-memory HTTP sessions so negotiated elicitation capabilities and confirmation replies survive across requests. Sessions expire after 30 minutes of inactivity, are capped globally and per credential, and are lost on a Panelavo restart; clients must initialize again. Every HTTP request still authenticates against live CloudPanel access. Routine site-user terminal commands, deployments and non-destructive file-manager work do not require elicitation; live permissions and broker restrictions still apply. Other sensitive actions retain their one-use confirmation checks. Cancelled and declined MCP confirmations are reported separately as client responses; both prevent execution.
 
 Direct MCP tools are available for common website work: `panelavo_list_files`, `panelavo_read_file`, `panelavo_write_file`, `panelavo_upload_file`, `panelavo_read_site_log`, and `panelavo_restart_site` (PM2 or rootless Compose). They reuse the validated File Manager, Logs and Operations services, including live website-write authorization, contained paths, size limits and restart preflight. Generic section and terminal tools remain available. Reconnect an existing MCP client if it caches the tool list.
 
@@ -189,3 +191,13 @@ Protocol 26 is required for shared jobs, exact-commit updates, sequence validati
 Preserve `.data` and `.env.local`, build the staged release, and reload only the `panelavo` PM2 process. Setup now updates existing nested proxy read/send timeouts in the panel vhost to 1900 seconds, preserving comments and validating/restoring on failure. Applying that correction requires a validated Nginx reload. Check existing site HTTP and process continuity around the targeted rollout.
 
 Automation remains off until enabled for a configured branch. Use the selected server's HTTPS deployment URL and a website-specific token in CI secrets. Submit the tested full commit plus an idempotency key and poll the saved result. A panel restart marks unfinished jobs interrupted without replay.
+
+## Optional plugin connection service
+
+Enable only the chosen public gateway host with `PANELAVO_PLUGIN_ENABLED=1` and `PANELAVO_PLUGIN_PUBLISHER` set to its public operator name. Keep the existing stable `CREDENTIALS_ENCRYPTION_KEY` or `SESSION_SECRET`: `.data/plugin-connections.enc.json` holds encrypted upstream OAuth credentials and must be preserved with the other private state. This remains a single-process deployment.
+
+The service uses `/connect/openai/mcp`, issuer `/connect`, discovery under `/.well-known/oauth-authorization-server/connect` and `/.well-known/oauth-protected-resource/connect/openai/mcp`, and `/connect` for browser setup and disconnection. Source servers need v0.1.142 or equivalent backports of the OAuth browser handoff fix and the stable account ID/server IP fields in `panelavo_whoami`. Older sources fail profile validation with an update message. Preserve the encrypted profile-ID associations across deployments and reconnects. The gateway flag stays off on those servers. Publish only an HTTPS hostname whose DNS resolves exclusively to public addresses on port 443. Outgoing OAuth/MCP requests pin DNS, validate TLS, and reject redirects and private addresses.
+
+Set `PANELAVO_OPENAI_APPS_CHALLENGE` only to the domain-verification text provided by the OpenAI plugin portal; the enabled gateway serves it at `/.well-known/openai-apps-challenge`. Reload only Panelavo after environment changes. The plugin's configured endpoint must match the intended permanent gateway before uploading its ZIP. Keep test-account credentials out of the ZIP and provide a dedicated, restricted review account and actual demo recording through the portal before review submission.
+
+For v0.1.143 listener diagnostics, install the updated root-owned bridge through trusted setup.sh. Existing ports are not reassigned. Healthy HTTP responses do not override failed ownership or loopback verification. Artifact binary requests need the creating MCP credential's bearer token; connector-managed tokens may be unavailable to shell tools, so use the direct file-upload tool for files up to 64 MiB or create the session with a client controlling its own credential.

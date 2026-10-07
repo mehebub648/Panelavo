@@ -56,7 +56,7 @@ export async function writableSiteForActor(actor: PanelActor, domain: string) {
   if (!canWriteSites(actor.user))
     throw new AppError(
       "FORBIDDEN",
-      "You do not have permission to modify websites.",
+      "You do not have permission to modify websites. Ask a Panelavo administrator to grant website-write access, then retry. Confirmation cannot grant missing permissions.",
       403,
     );
   return access;
@@ -84,7 +84,7 @@ export async function accessibleDomainTargetForActor(
   if (options.write && !canWriteSites(actor.user))
     throw new AppError(
       "FORBIDDEN",
-      "You do not have permission to modify websites.",
+      "You do not have permission to modify websites. Ask a Panelavo administrator to grant website-write access, then retry. Confirmation cannot grant missing permissions.",
       403,
     );
   return { actor, site, sites, client, target };
@@ -112,7 +112,7 @@ export async function requireWritableSite(
   if (!canWriteSites(access.session.user))
     throw new AppError(
       "FORBIDDEN",
-      "You do not have permission to modify websites.",
+      "You do not have permission to modify websites. Ask a Panelavo administrator to grant website-write access, then retry. Confirmation cannot grant missing permissions.",
       403,
     );
   return access;

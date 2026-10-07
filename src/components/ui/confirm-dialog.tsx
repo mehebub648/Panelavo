@@ -10,6 +10,7 @@ export function ConfirmDialog({
   confirmText = "Confirm",
   cancelText = "Cancel",
   confirmationPhrase,
+  busy = false,
   onConfirm,
   onCancel,
   variant = "danger",
@@ -19,12 +20,15 @@ export function ConfirmDialog({
   confirmText?: string;
   cancelText?: string;
   confirmationPhrase?: string;
+  busy?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
   variant?: "danger" | "default";
 }) {
   const [confirmation, setConfirmation] = useState("");
-  const dialogRef = useDialogFocus(onCancel);
+  const dialogRef = useDialogFocus(() => {
+    if (!busy) onCancel();
+  });
   const confirmed =
     confirmationPhrase === undefined || confirmation === confirmationPhrase;
 
@@ -34,6 +38,7 @@ export function ConfirmDialog({
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
+        aria-busy={busy}
         aria-label={title}
         className="animate-in zoom-in-95 max-h-[90vh] w-full max-w-md overflow-auto rounded-2xl bg-white p-6 shadow-2xl duration-200"
       >
@@ -47,18 +52,21 @@ export function ConfirmDialog({
               autoFocus
               className="focus:border-brand focus:ring-brand/15 mt-2 h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:ring-2"
               value={confirmation}
+              disabled={busy}
               onChange={(event) => setConfirmation(event.target.value)}
             />
           </label>
         )}
         <div className="mt-6 flex justify-end gap-3">
-          <Button variant="outline" onClick={onCancel}>
+          <Button variant="outline" onClick={onCancel} disabled={busy}>
             {cancelText}
           </Button>
           <Button
             variant={variant === "danger" ? "danger" : "default"}
-            disabled={!confirmed}
-            onClick={onConfirm}
+            disabled={!confirmed || busy}
+            onClick={() => {
+              if (confirmed && !busy) onConfirm();
+            }}
           >
             {confirmText}
           </Button>
