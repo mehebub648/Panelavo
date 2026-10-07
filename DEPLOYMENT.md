@@ -241,3 +241,5 @@ Broker protocol 30 adds preserved Git imports, exact branch/upstream actions, st
 Git & Deploy uses accessible tabs with a persistent `gitTab` URL. Failed mutations refresh server state and keep an actionable error visible; conflict results show a recovery notice. Branch switching, merging, version replacement and abort require explicit review. The history graph uses the broker's exact commit hashes and parent links; read-only users retain status, branches and history.
 
 Connection & Recovery exposes the website public deployment key before cloning. Failed key reads offer a read-only Retry without creating credentials. Conflict Files links open the actual File Manager route.
+
+When clone preserves an existing root ACME directory, its private Git exclusion keeps `/.well-known/` from making the new checkout dirty. Nested application files remain visible, existing exclusions are preserved, and unsafe exclusion paths fail before promotion. Preserved-file import results show the retained backup location and recovery layout. Broker protocol remains 30.

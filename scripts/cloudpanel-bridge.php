@@ -5868,6 +5868,33 @@ function restorePreservedGitFiles(string $root, array $inventory, string $backup
     return $restored;
 }
 
+function addGitPrivateExclude(string $repositoryRoot, string $entry, string $user): void
+{
+    if ($entry !== '/.well-known/') throw new RuntimeException('The private Git exclusion is not allowed.');
+    $root = realpath($repositoryRoot);
+    $gitPath = $root ? $root . '/.git' : '';
+    $git = $gitPath !== '' && !is_link($gitPath) && is_dir($gitPath) ? realpath($gitPath) : false;
+    $infoPath = $git ? $git . '/info' : '';
+    $info = $infoPath !== '' && !is_link($infoPath) && is_dir($infoPath) ? realpath($infoPath) : false;
+    if (!$root || !$git || !$info || !str_starts_with($git, $root . '/') || !str_starts_with($info, $git . '/')) {
+        throw new RuntimeException('The cloned repository exclusion path could not be validated.');
+    }
+    $exclude = $info . '/exclude';
+    if (is_link($exclude) || !is_file($exclude)) throw new RuntimeException('The cloned repository exclusion file could not be validated.');
+    $content = (string) @file_get_contents($exclude);
+    foreach (preg_split('/\R/', $content) ?: [] as $line) if (trim($line) === $entry) return;
+    $updated = ($content === '' || str_ends_with($content, "\n") ? $content : $content . "\n") . $entry . "\n";
+    $temporary = $info . '/.panelavo-exclude-' . bin2hex(random_bytes(6));
+    if (file_put_contents($temporary, $updated, LOCK_EX) === false) throw new RuntimeException('The private Git exclusion could not be written.');
+    $mode = @fileperms($exclude);
+    chmod($temporary, is_int($mode) ? ($mode & 0777) : 0644);
+    applySiteFileOwnership($temporary, $user);
+    if (realpath($info) !== $info || is_link($exclude) || !@rename($temporary, $exclude)) {
+        @unlink($temporary);
+        throw new RuntimeException('The private Git exclusion could not be activated.');
+    }
+}
+
 function gitChanges(Site $site): array
 {
     $raw = runGit($site, ['status', '--porcelain=v1', '-z', '--untracked-files=all'])['stdout'];
@@ -7357,6 +7384,31 @@ function runGitBrokerSelfTest(string $user): never
         $assert(classifyGitOperation(['MERGE_HEAD' => true, 'rebase-merge' => true]) === 'rebase', 'rebase markers must take priority over merge internals');
         $assert(classifyGitOperation([], "pick deadbeef next\n") === 'cherry-pick', 'sequencer pick state must remain visible between cherry-pick steps');
         $assert(classifyGitOperation([], "revert deadbeef next\n") === 'revert', 'sequencer revert state must remain visible between revert steps');
+        $exclude = $temporary . '/repo/.git/info/exclude';
+        file_put_contents($exclude, "# preserve existing exclusion\n/private.tmp\n");
+        addGitPrivateExclude($temporary . '/repo', '/.well-known/', $user);
+        addGitPrivateExclude($temporary . '/repo', '/.well-known/', $user);
+        $excludeContent = (string) file_get_contents($exclude);
+        $assert(str_contains($excludeContent, '/private.tmp') && substr_count($excludeContent, '/.well-known/') === 1, 'the ACME exclusion must preserve existing rules and remain idempotent');
+        mkdir($temporary . '/repo/.well-known/acme-challenge', 0700, true);
+        file_put_contents($temporary . '/repo/.well-known/acme-challenge/token', 'challenge');
+        mkdir($temporary . '/repo/nested/.well-known', 0700, true);
+        file_put_contents($temporary . '/repo/nested/.well-known/visible', 'ordinary application file');
+        foreach ([
+            $temporary . '/repo/.well-known', $temporary . '/repo/.well-known/acme-challenge', $temporary . '/repo/.well-known/acme-challenge/token',
+            $temporary . '/repo/nested', $temporary . '/repo/nested/.well-known', $temporary . '/repo/nested/.well-known/visible',
+        ] as $path) { chown($path, $user); chgrp($path, $user); }
+        $status = $run(['-c', 'core.excludesFile=/dev/null', 'status', '--porcelain=v1', '--untracked-files=all'], $temporary . '/repo')['stdout'];
+        $assert(!str_contains($status, '.well-known/acme-challenge/token'), 'the root ACME challenge must not dirty the clone');
+        $nestedIgnore = $run(['-c', 'core.excludesFile=/dev/null', 'check-ignore', '-v', 'nested/.well-known/visible'], $temporary . '/repo', true);
+        $assert($nestedIgnore['code'] !== 0 && str_contains($status, 'nested/.well-known/visible'), 'the root-anchored rule must not hide nested application files');
+        rename($exclude, $exclude . '.real');
+        symlink($exclude . '.real', $exclude);
+        $rejectedSymlink = false;
+        try { addGitPrivateExclude($temporary . '/repo', '/.well-known/', $user); } catch (RuntimeException) { $rejectedSymlink = true; }
+        $assert($rejectedSymlink, 'a linked private exclusion file must be rejected');
+        unlink($exclude); rename($exclude . '.real', $exclude);
+        deleteTree($temporary . '/repo/.well-known'); deleteTree($temporary . '/repo/nested');
         $run(['init', '--bare', 'origin.git']);
         $run(['remote', 'add', 'origin', $temporary . '/origin.git'], $temporary . '/repo');
         $run(['push', '--all', 'origin'], $temporary . '/repo');
@@ -9368,6 +9420,14 @@ try {
                         deleteTree($temporaryPath);
                         respond(['ok' => false, 'code' => 'GIT_FAILED']);
                     }
+                    if (is_dir($root . '/.well-known')) {
+                        try {
+                            addGitPrivateExclude($temporaryPath, '/.well-known/', (string) $site->getUser());
+                        } catch (RuntimeException $error) {
+                            deleteTree($temporaryPath);
+                            respond(['ok' => false, 'code' => 'GIT_FAILED', 'message' => $error->getMessage()]);
+                        }
+                    }
                     $scaffoldNames = $scaffold
                         ? array_map(static fn(array $file): string => (string) ($file['name'] ?? ''), $scaffold['files'])
                         : ($preservedInventory ? array_map(static fn(array $file): string => (string) ($file['name'] ?? ''), $preservedInventory) : []);
@@ -9496,7 +9556,14 @@ try {
                         deleteTree($scaffoldBackup);
                         @unlink((string) $scaffold['path']);
                     }
-                    if ($preservedBackup) $notice = 'Repository cloned. The previous files remain in the private backups/preserved-git folder.';
+                    if ($preservedBackup) {
+                        $notice = 'Repository cloned. The previous files remain in the private backups/preserved-git folder.';
+                        $retainedBackup = [
+                            'created' => true,
+                            'path' => $preservedBackup,
+                            'detail' => 'The original top-level files are retained under files/ with recovery metadata in manifest.json.',
+                        ];
+                    }
                 } elseif ($action === 'init') runGit($site, ['init']);
                 elseif ($action === 'create-branch') {
                     if ($ref === '' || runGit($site, ['rev-parse', '--verify', 'HEAD'], true)['code'] !== 0) invalidBrokerRequest();
@@ -9613,6 +9680,7 @@ try {
                 }
                 else respond(['ok' => false, 'code' => 'INVALID_ACTION']);
                 $gitData = gitSection($site, null, $notice ?? null);
+                if (isset($retainedBackup)) $gitData['backup'] = $retainedBackup;
                 if (isset($source)) $gitData['source'] = $source;
                 if (isset($deployment)) $gitData['deployment'] = $deployment;
                 respond(['ok' => true, 'data' => $gitData]);

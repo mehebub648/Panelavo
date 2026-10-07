@@ -433,3 +433,5 @@ After a successful domain change, installed certificate coverage and active stat
 Git failures distinguish authentication, dirty working trees, diverged history, missing upstreams, missing identity, empty history, SSH host identity, and network failures. Recovery messages identify the relevant repository view without exposing raw command output or recommending deletion of existing application files.
 
 Connection & Recovery exposes the website public deployment key before cloning. Failed key reads offer a read-only Retry without creating credentials. Conflict Files links open the actual File Manager route.
+
+When clone preserves an existing root ACME directory, its private Git exclusion keeps `/.well-known/` from making the new checkout dirty. Nested application files remain visible, existing exclusions are preserved, and unsafe exclusion paths fail before promotion. Preserved-file import results show the retained backup location and recovery layout. Broker protocol remains 30.
