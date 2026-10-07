@@ -163,6 +163,31 @@ describe("actor-aware website domains", () => {
       "domains",
       expect.objectContaining({ wwwRedirects: [] }),
     );
+    expect(mocks.autoDeleteDns).not.toHaveBeenCalled();
+  });
+
+  it("preserves apex and www DNS records when detaching the apex alias", async () => {
+    mocks.getSiteMeta.mockResolvedValue({
+      id: 20001,
+      category: "sites",
+      aliases: ["example.com", "www.example.com"],
+      block: "none",
+    });
+
+    await manageSiteDomainsForActor(
+      actor,
+      "site.example.test",
+      { action: "remove-alias", domain: "example.com" },
+      "203.0.113.10",
+    );
+
+    expect(mocks.manageSiteSection).toHaveBeenCalledWith(
+      actor.cloudPanel,
+      "site.example.test",
+      "domains",
+      expect.objectContaining({ aliases: ["www.example.com"] }),
+    );
+    expect(mocks.autoDeleteDns).not.toHaveBeenCalled();
   });
 
   it.each(["www.example.com", "example.com"])(

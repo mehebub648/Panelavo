@@ -10,7 +10,6 @@ import {
 import { pointDns, pointDnsError } from "@/server/cloudflare/point-dns";
 import { getZones } from "@/server/cloudflare/store";
 import { AppError } from "@/server/cloudpanel/errors";
-import { autoDeleteDns } from "@/server/network/auto-dns";
 import {
   assertDomainsPointToServer,
   resolveDnsStatus,
@@ -152,12 +151,6 @@ export async function manageSiteDomainsForActor(
     }
     await syncVhost(actor, domain, meta);
     await setSiteMeta(domain, meta);
-
-    void autoDeleteDns(actor.user.id, input.domain, serverIp).catch(
-      (error: unknown) => {
-        console.error("Auto DNS delete failed for removed alias:", error);
-      },
-    );
   } else if (input.action === "set-www-redirect") {
     if (
       input.domain.startsWith("www.") ||

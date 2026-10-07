@@ -393,3 +393,5 @@ Connected-account labels and the server list include detected server IPs. Read-o
 The service does not call a paid OpenAI API or collect payments. It uses the operator's existing hosting resources; users' ChatGPT/Codex plans and limits still apply. Public directory publication requires OpenAI review and approval; a packaged ZIP or deployed endpoint alone is not publication.
 
 Deployment diagnostics distinguish application HTTP health from listener verification. A site-owned public listener is reported as a bind-address problem; configure loopback binding before retrying. Creation explains application port = site ID + 10,000. Artifact upload responses include authentication and resume instructions: the URL requires the same MCP credential that created the upload.
+
+Removing a domain from a website detaches its alias and related redirect settings. It preserves DNS records; remove provider DNS separately when intended.
