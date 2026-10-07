@@ -41,6 +41,15 @@ const tabs = [
   { id: "connection", label: "Connection & Recovery" },
 ] as const;
 type GitTab = (typeof tabs)[number]["id"];
+const interruptedMessage =
+  "The panel connection was interrupted. Refresh the repository before retrying; the operation may already have completed.";
+async function readGitResponse(response: Response) {
+  try {
+    return await response.json();
+  } catch {
+    throw new Error(interruptedMessage);
+  }
+}
 type ConfirmState =
   | { kind: "file"; change: GitChange }
   | { kind: "all" }
@@ -296,7 +305,7 @@ export function GitManager({
   const refreshGit = useCallback(async () => {
     try {
       const result = await fetch(endpoint, { cache: "no-store" }).then(
-        (response) => response.json(),
+        readGitResponse,
       );
       if (result.success) setData(result.data);
     } catch {
@@ -313,7 +322,7 @@ export function GitManager({
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(input),
-      }).then((response) => response.json());
+      }).then(readGitResponse);
       if (!result.success)
         throw new Error(result.error?.message || "Git operation failed");
       setData(result.data);
@@ -322,7 +331,11 @@ export function GitManager({
       return true;
     } catch (error) {
       setActionError(
-        error instanceof Error ? error.message : "Git operation failed",
+        error instanceof TypeError
+          ? interruptedMessage
+          : error instanceof Error
+            ? error.message
+            : "Git operation failed",
       );
       await refreshGit();
       return false;
@@ -407,10 +420,17 @@ export function GitManager({
           className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800"
         >
           <div className="flex items-center gap-2 font-semibold">
-            <AlertTriangle className="h-4 w-4" /> Git action failed
+            <AlertTriangle className="h-4 w-4" /> Git action needs attention
           </div>
           <p className="mt-1">{actionError}</p>
           <p className="mt-2 text-red-700">{recovery.detail}</p>
+          <button
+            type="button"
+            className="mr-4 mt-2 font-semibold underline"
+            onClick={() => void refreshGit()}
+          >
+            Refresh repository
+          </button>
           <button
             type="button"
             className="mt-2 font-semibold underline"

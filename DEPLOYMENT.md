@@ -249,3 +249,5 @@ The bounded Git graph uses topological ordering, so branch tips and children app
 Authenticated browser section reads support Git refresh, deployment public keys, scheduled jobs and logs with standard JSON errors. Git reads reuse current website access; keys, jobs and logs require live website-write permission. Other sections are not exposed through this GET endpoint. Connected-server proxy reads retain the same actor-aware service boundary.
 
 Git mutation dialogs display failed-action messages inside the open form. Duplicate or invalid refs link to Branches; protected local files and a missing initial commit link to Changes. Repository refresh after a rejected action keeps the failure visible.
+
+Interrupted Git requests explain that the operation may already have completed and offer a read-only repository refresh. The interface hides raw HTML/JSON transport errors and never automatically repeats a mutation after losing its response.

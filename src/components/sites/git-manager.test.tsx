@@ -352,6 +352,33 @@ describe("GitManager", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
+  it("explains interrupted responses and never retries a mutation automatically", async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(
+        new Response("<html>Gateway temporarily unavailable</html>", {
+          status: 502,
+        }),
+      )
+      .mockResolvedValue(response({ success: true, data: repository }));
+    renderManager();
+    fireEvent.click(screen.getByRole("tab", { name: "Branches" }));
+    fireEvent.click(screen.getByRole("button", { name: "Fetch" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("operation may already have completed");
+    expect(alert).not.toHaveTextContent("Unexpected token");
+    expect(fetch).toHaveBeenCalledTimes(2);
+    fireEvent.click(
+      within(alert).getByRole("button", { name: "Refresh repository" }),
+    );
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(3));
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.slice(1)
+        .every(([, options]) => !options || !("method" in options)),
+    ).toBe(true);
+  });
+
   it("shows recovery links and restricts replacement choices to merge conflicts", async () => {
     const conflicted: GitData = {
       ...repository,
