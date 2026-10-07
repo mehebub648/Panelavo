@@ -245,3 +245,5 @@ Connection & Recovery exposes the website public deployment key before cloning. 
 When clone preserves an existing root ACME directory, its private Git exclusion keeps `/.well-known/` from making the new checkout dirty. Nested application files remain visible, existing exclusions are preserved, and unsafe exclusion paths fail before promotion. Preserved-file import results show the retained backup location and recovery layout. Broker protocol remains 30.
 
 The bounded Git graph uses topological ordering, so branch tips and children appear before their shared parents even when commit timestamps tie.
+
+Authenticated browser section reads support Git refresh, deployment public keys, scheduled jobs and logs with standard JSON errors. Git reads reuse current website access; keys, jobs and logs require live website-write permission. Other sections are not exposed through this GET endpoint. Connected-server proxy reads retain the same actor-aware service boundary.
