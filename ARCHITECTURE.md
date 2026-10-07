@@ -171,3 +171,5 @@ The Settings form sends a change-only PATCH. A label-only save stays in local me
 Local and Fleet settings distinguish a failed environment request from the read-only secret boundary. Error rendering includes no environment values. Dirty dotenv drafts guard file switches, links and unload.
 
 Creation redirects carry the returned site type and actual CloudPanel appPort or loopback reverseProxyUrl port. The website list uses these returned values for its creation handoff rather than recalculating from a stale preview ID.
+
+Domain addition accepts an optional includeWww choice and attaches the selected names before recording metadata. Creation submits the explicit served aliases array. DNS point/delete and SSL planning operate on exactly those hosts, preventing www resolution or certification without matching NGINX routing.

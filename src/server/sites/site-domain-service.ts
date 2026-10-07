@@ -1,5 +1,6 @@
 import { Resolver } from "node:dns/promises";
 import { z } from "zod";
+import { isApexDomain } from "@/lib/domains";
 import { domainValue } from "@/schemas/sites";
 import type { PanelActor } from "@/server/auth/site-access";
 import {
@@ -26,7 +27,13 @@ import {
 } from "@/server/sites/site-meta";
 
 export const siteDomainActionSchema = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("add-alias"), domain: domainValue }).strict(),
+  z
+    .object({
+      action: z.literal("add-alias"),
+      domain: domainValue,
+      includeWww: z.boolean().optional(),
+    })
+    .strict(),
   z.object({ action: z.literal("remove-alias"), domain: domainValue }).strict(),
   z
     .object({
@@ -116,7 +123,20 @@ export async function manageSiteDomainsForActor(
         "The system domain is already served.",
         400,
       );
-    if (!meta.aliases.includes(input.domain)) meta.aliases.push(input.domain);
+    const includeWww =
+      !input.domain.startsWith("www.") &&
+      (input.includeWww ?? isApexDomain(input.domain));
+    const additions = [
+      input.domain,
+      ...(includeWww ? [`www.${input.domain}`] : []),
+    ].filter((name) => name !== domain && !meta.aliases.includes(name));
+    if (meta.aliases.length + additions.length > 10)
+      throw new AppError(
+        "INVALID_REQUEST",
+        "A website can have no more than 10 additional domains.",
+        400,
+      );
+    meta.aliases.push(...additions);
     await syncVhost(actor, domain, meta);
     await setSiteMeta(domain, meta);
 

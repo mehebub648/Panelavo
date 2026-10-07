@@ -8,7 +8,6 @@ import {
   pointDnsError,
   type PointDnsResult,
 } from "@/server/cloudflare/point-dns";
-import { dnsRecordNames } from "@/lib/domains";
 
 export async function autoPointDns(
   userId: string,
@@ -33,7 +32,7 @@ export async function autoDeleteDns(
     );
     if (!zone) return false;
 
-    const names = dnsRecordNames(domain);
+    const names = [domain];
     let deleted = false;
     for (const name of names) {
       const existing = await checkARecord(

@@ -31,6 +31,7 @@ import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { normalizeDomain } from "@/schemas/sites";
 import { cn } from "@/lib/utils";
+import { isApexDomain } from "@/lib/domains";
 import {
   createdSiteRedirectUrl,
   localSiteProxyUrl,
@@ -131,6 +132,9 @@ export function CreateSiteForm({
   const [category, setCategory] = useState<Category | null>(null);
   const [aliases, setAliases] = useState<string[]>([]);
   const [aliasDraft, setAliasDraft] = useState("");
+  const [includeWwwChoice, setIncludeWwwChoice] = useState<boolean | null>(
+    null,
+  );
   const [values, setValues] = useState(initial);
   const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -182,6 +186,13 @@ export function CreateSiteForm({
       : null;
   const suggestedProxyUrl = localSiteProxyUrl(previewId);
   const previewPort = managedApplicationPort(previewId);
+  const normalizedAliasDraft = normalizeDomain(aliasDraft);
+  const canOfferAliasWww =
+    normalizedAliasDraft.includes(".") &&
+    !normalizedAliasDraft.startsWith("www.");
+  const includeAliasWww =
+    canOfferAliasWww &&
+    (includeWwwChoice ?? isApexDomain(normalizedAliasDraft));
   function change(key: keyof Values, value: string) {
     setValues((current) => ({ ...current, [key]: value }));
   }
@@ -205,10 +216,13 @@ export function CreateSiteForm({
       toast.error("Enter a valid domain, such as example.com.");
       return;
     }
-    setAliases((current) =>
-      current.includes(alias) ? current : [...current, alias],
-    );
+    const requestedAliases = [
+      alias,
+      ...(includeAliasWww ? [`www.${alias}`] : []),
+    ];
+    setAliases((current) => [...new Set([...current, ...requestedAliases])]);
     setAliasDraft("");
+    setIncludeWwwChoice(null);
   }
 
   async function submit(event: React.FormEvent) {
@@ -505,7 +519,10 @@ export function CreateSiteForm({
                 <Input
                   id="alias"
                   value={aliasDraft}
-                  onChange={(event) => setAliasDraft(event.target.value)}
+                  onChange={(event) => {
+                    setAliasDraft(event.target.value);
+                    setIncludeWwwChoice(null);
+                  }}
                   onKeyDown={(event) => {
                     if (event.key === "Enter") {
                       event.preventDefault();
@@ -524,6 +541,22 @@ export function CreateSiteForm({
                   <Plus className="h-4 w-4" /> Add
                 </Button>
               </div>
+              {canOfferAliasWww && (
+                <label className="mt-2 flex items-center gap-2 text-sm text-slate-600">
+                  <input
+                    type="checkbox"
+                    checked={includeAliasWww}
+                    onChange={(event) =>
+                      setIncludeWwwChoice(event.target.checked)
+                    }
+                    className="h-4 w-4 rounded border-slate-300 text-panel-600 focus:ring-panel-500"
+                  />
+                  Also serve{" "}
+                  <span className="font-medium">
+                    www.{normalizedAliasDraft}
+                  </span>
+                </label>
+              )}
               {aliases.length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-2">
                   {aliases.map((alias) => (

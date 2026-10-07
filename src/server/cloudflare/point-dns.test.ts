@@ -24,19 +24,13 @@ describe("pointDns", () => {
     });
   });
 
-  it("creates missing records and returns companion conflicts as data", async () => {
-    cloudflare.checkARecord.mockResolvedValueOnce(null).mockResolvedValueOnce({
-      id: "www",
-      name: "www.example.com",
-      content: "192.0.2.20",
+  it("creates only the requested served hostname", async () => {
+    cloudflare.checkARecord.mockResolvedValueOnce(null);
+    cloudflare.setARecord.mockResolvedValueOnce({
+      id: "apex",
+      name: "example.com",
+      content: "192.0.2.10",
     });
-    cloudflare.setARecord
-      .mockResolvedValueOnce({
-        id: "apex",
-        name: "example.com",
-        content: "192.0.2.10",
-      })
-      .mockRejectedValueOnce(new Error("conflict"));
 
     const result = await pointDns({
       userId: "user-1",
@@ -49,8 +43,8 @@ describe("pointDns", () => {
     expect(result.changed).toBe(true);
     expect(result.outcomes.map((outcome) => outcome.status)).toEqual([
       "created",
-      "failed",
     ]);
+    expect(cloudflare.setARecord).toHaveBeenCalledOnce();
   });
 
   it("reports an unmanaged domain without throwing", async () => {

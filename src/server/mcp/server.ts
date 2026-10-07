@@ -83,7 +83,16 @@ const readableSections = SITE_SECTIONS.filter(
 );
 
 const siteDomainOperationToolSchema = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("add-alias"), domain: domainSchema }),
+  z.object({
+    action: z.literal("add-alias"),
+    domain: domainSchema,
+    includeWww: z
+      .boolean()
+      .optional()
+      .describe(
+        "Also serve and secure www.<domain>. Defaults to true for recognized apex domains and false for subdomains.",
+      ),
+  }),
   z.object({ action: z.literal("remove-alias"), domain: domainSchema }),
   z.object({
     action: z.literal("set-block"),

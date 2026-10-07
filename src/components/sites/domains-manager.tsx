@@ -19,6 +19,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { isApexDomain } from "@/lib/domains";
+import { normalizeDomain } from "@/schemas/sites";
 
 type Meta = {
   id: number;
@@ -49,6 +51,9 @@ export function DomainsManager({
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string>("");
   const [aliasDraft, setAliasDraft] = useState("");
+  const [includeWwwChoice, setIncludeWwwChoice] = useState<boolean | null>(
+    null,
+  );
   const [sslSelection, setSslSelection] = useState<string[]>([domain]);
   const [confirm, setConfirm] = useState<{
     title: string;
@@ -185,6 +190,14 @@ export function DomainsManager({
   const meta = data?.meta ?? null;
   const dnsFor = (name: string) =>
     data?.dns.find((entry) => entry.name === name);
+  const normalizedAliasDraft = normalizeDomain(aliasDraft);
+  const canOfferWww =
+    normalizedAliasDraft.length > 0 &&
+    normalizedAliasDraft.includes(".") &&
+    !normalizedAliasDraft.startsWith("www.");
+  const includeWww =
+    canOfferWww &&
+    (includeWwwChoice ?? isApexDomain(normalizedAliasDraft));
 
   if (!meta)
     return (
@@ -309,36 +322,60 @@ export function DomainsManager({
         <div className="space-y-4 p-5 sm:p-6">
           {canWrite && (
             <form
-              className="flex gap-2"
+              className="space-y-2"
               onSubmit={(event) => {
                 event.preventDefault();
-                const alias = aliasDraft.trim().toLowerCase();
+                const alias = normalizedAliasDraft;
                 if (!alias) return;
                 setAliasDraft("");
+                setIncludeWwwChoice(null);
                 void act(
-                  { action: "add-alias", domain: alias },
+                  { action: "add-alias", domain: alias, includeWww },
                   "add",
-                  `${alias} added`,
+                  includeWww
+                    ? `${alias} and www.${alias} added`
+                    : `${alias} added`,
                 );
               }}
             >
-              <Input
-                value={aliasDraft}
-                onChange={(event) => setAliasDraft(event.target.value)}
-                placeholder="example.com"
-                autoComplete="off"
-              />
-              <Button
-                type="submit"
-                disabled={busy !== "" || !aliasDraft.trim()}
-              >
-                {busy === "add" ? (
-                  <LoaderCircle className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Plus className="h-4 w-4" />
-                )}
-                Add domain
-              </Button>
+              <div className="flex gap-2">
+                <Input
+                  value={aliasDraft}
+                  onChange={(event) => {
+                    setAliasDraft(event.target.value);
+                    setIncludeWwwChoice(null);
+                  }}
+                  placeholder="example.com"
+                  autoComplete="off"
+                />
+                <Button
+                  type="submit"
+                  disabled={busy !== "" || !aliasDraft.trim()}
+                >
+                  {busy === "add" ? (
+                    <LoaderCircle className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Plus className="h-4 w-4" />
+                  )}
+                  Add domain
+                </Button>
+              </div>
+              {canOfferWww && (
+                <label className="flex items-start gap-2 rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5 h-4 w-4 accent-panel-600"
+                    checked={includeWww}
+                    onChange={(event) =>
+                      setIncludeWwwChoice(event.target.checked)
+                    }
+                  />
+                  <span>
+                    Also serve <b>www.{normalizedAliasDraft}</b>. Panelavo will
+                    configure DNS and SSL for both addresses.
+                  </span>
+                </label>
+              )}
             </form>
           )}
           {meta.aliases.length === 0 ? (

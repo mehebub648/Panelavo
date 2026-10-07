@@ -1,4 +1,3 @@
-import { dnsRecordNames } from "@/lib/domains";
 import { AppError } from "@/server/cloudpanel/errors";
 import {
   checkARecord,
@@ -41,9 +40,8 @@ function failed(domain: string, error: unknown): PointDnsResult {
 }
 
 /**
- * Ensures the primary A record and its applicable www companion point at this
- * server. Failures are returned as data so callers choose whether to throw,
- * log, or continue with a partial best-effort result.
+ * Ensures the requested hostname's A record points at this server. Callers
+ * invoke this once for every hostname the website actually serves.
  */
 export async function pointDns(
   options: PointDnsOptions,
@@ -92,7 +90,7 @@ export async function pointDns(
       );
     const selectedCredentialId = credentialId;
     const selectedZoneId = zoneId;
-    const names = dnsRecordNames(domain);
+    const names = [domain];
     const outcomes = await Promise.all(
       names.map(async (name): Promise<PointDnsOutcome> => {
         try {

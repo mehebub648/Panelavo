@@ -1,7 +1,6 @@
 import { getCloudPanelClient } from "@/server/cloudpanel";
 import { resolveDnsStatus } from "@/server/network/dns";
 import { autoPointDns } from "@/server/network/auto-dns";
-import { certAlternativeNames } from "@/lib/domains";
 import type { CloudPanelSession } from "@/types/cloudpanel";
 
 // Certificate lifecycle policy: every panel-created site always carries a
@@ -39,11 +38,7 @@ export async function planSiteSsl(options: {
 }): Promise<SslPlan> {
   const { userId, systemDomain, aliases, serverIp, autoPoint } = options;
   const names = Array.from(
-    new Set(
-      aliases
-        .filter((name) => name !== systemDomain)
-        .flatMap((name) => [name, ...certAlternativeNames(name)]),
-    ),
+    new Set(aliases.filter((name) => name !== systemDomain)),
   );
   if (!names.length) return { san: [], unpointed: [], warnings: [] };
 
@@ -52,7 +47,7 @@ export async function planSiteSsl(options: {
     for (const alias of aliases) {
       if (alias === systemDomain) continue;
       // Best effort: only succeeds when a connected Cloudflare token covers
-      // the alias's zone. autoPointDns also creates the www companion record.
+      // the alias's zone. Every name here is also served by the site's vhost.
       const result = await autoPointDns(userId, alias, serverIp);
       createdRecords = result.changed || createdRecords;
     }

@@ -253,6 +253,63 @@ describe("actor-aware website domains", () => {
     );
   });
 
+  it("serves the www companion when an apex add request uses the compatible default", async () => {
+    await manageSiteDomainsForActor(
+      actor,
+      "site.example.test",
+      { action: "add-alias", domain: "example.com" },
+      "203.0.113.10",
+    );
+
+    expect(mocks.manageSiteSection).toHaveBeenCalledWith(
+      actor.cloudPanel,
+      "site.example.test",
+      "domains",
+      expect.objectContaining({
+        aliases: ["example.com", "www.example.com"],
+      }),
+    );
+    expect(mocks.planSiteSsl).toHaveBeenCalledWith(
+      expect.objectContaining({
+        aliases: ["example.com", "www.example.com"],
+      }),
+    );
+  });
+
+  it("can serve an apex without its www companion when explicitly disabled", async () => {
+    await manageSiteDomainsForActor(
+      actor,
+      "site.example.test",
+      { action: "add-alias", domain: "example.com", includeWww: false },
+      "203.0.113.10",
+    );
+
+    expect(mocks.manageSiteSection).toHaveBeenCalledWith(
+      actor.cloudPanel,
+      "site.example.test",
+      "domains",
+      expect.objectContaining({ aliases: ["example.com"] }),
+    );
+  });
+
+  it("adds a requested www companion for a valid unrecognized suffix", async () => {
+    await manageSiteDomainsForActor(
+      actor,
+      "site.example.test",
+      { action: "add-alias", domain: "example.com.bd", includeWww: true },
+      "203.0.113.10",
+    );
+
+    expect(mocks.manageSiteSection).toHaveBeenCalledWith(
+      actor.cloudPanel,
+      "site.example.test",
+      "domains",
+      expect.objectContaining({
+        aliases: ["example.com.bd", "www.example.com.bd"],
+      }),
+    );
+  });
+
   it("does not commit metadata when the vhost rejects the alias", async () => {
     mocks.manageSiteSection.mockRejectedValueOnce(new Error("nginx rejected"));
 
