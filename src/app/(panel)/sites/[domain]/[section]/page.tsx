@@ -9,7 +9,11 @@ import { DomainsManager } from "@/components/sites/domains-manager";
 import { SiteSectionManager } from "@/components/sites/site-section-manager";
 import { GitManager } from "@/components/sites/git-manager";
 import { ActionsManager } from "@/components/sites/actions-manager";
-import { EnvManager, type EnvSectionData } from "@/components/sites/env-manager";
+import {
+  EnvironmentUnavailable,
+  EnvManager,
+  type EnvSectionData,
+} from "@/components/sites/env-manager";
 import { TerminalManager, type TerminalData } from "@/components/sites/terminal-manager";
 import { BackupsManager, type BackupsData } from "@/components/sites/backups-manager";
 import { getServerPublicIp } from "@/server/network/server-ip";
@@ -88,18 +92,21 @@ export default async function SiteSectionPage({
     // Environment values are secrets: they are only loaded and rendered for
     // users who can already manage this website's files. Project endpoints run
     // no app of their own, so they get no environment section.
-    const env = canWrite && !isService
-      ? await cloudPanel
-          .getSiteSection(session.record.cloudPanel, domain, "env")
-          .catch(() => null)
-      : null;
+    const env =
+      canWrite && !isService
+        ? await cloudPanel
+            .getSiteSection(session.record.cloudPanel, domain, "env")
+            .catch(() => undefined)
+        : null;
     return (
       <div className="w-full space-y-5">
         <SiteSettings initialSite={mergedSite} user={session.user} uptime={uptime} />
         {siteMeta && !isService ? (
           <LinkedServices parentDomain={domain} canWrite={canWrite} />
         ) : null}
-        {env ? (
+        {env === undefined ? (
+          <EnvironmentUnavailable />
+        ) : env ? (
           <EnvManager
             domain={domain}
             initialData={env as EnvSectionData}

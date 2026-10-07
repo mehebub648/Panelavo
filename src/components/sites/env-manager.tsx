@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CheckCircle2,
   Eye,
@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
@@ -67,6 +68,9 @@ export function EnvManager({
   const [syncProfile, setSyncProfile] = useState(true);
   const [busy, setBusy] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [pendingFile, setPendingFile] = useState<string>();
+  const [pendingHref, setPendingHref] = useState<string>();
+  const allowLeave = useRef(false);
 
   const selected = data.files.find((item) => item.name === file);
   const userEnv = useMemo(
@@ -90,8 +94,49 @@ export function EnvManager({
     rows.some((row) => !KEY_PATTERN.test(row.key)) || duplicates.size > 0;
   const profileOnly = data.userEnv.filter((entry) => !savedKeys.has(entry.key));
 
-  function selectFile(name: string) {
+  useEffect(() => {
+    if (!dirty) return;
+    function warnBeforeLeaving(event: BeforeUnloadEvent) {
+      if (allowLeave.current) return;
+      event.preventDefault();
+      event.returnValue = "";
+    }
+    window.addEventListener("beforeunload", warnBeforeLeaving);
+    function warnBeforeFollowingLink(event: MouseEvent) {
+      if (
+        event.defaultPrevented ||
+        event.button !== 0 ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.shiftKey ||
+        event.altKey
+      )
+        return;
+      const target = event.target;
+      const link =
+        target instanceof Element
+          ? target.closest<HTMLAnchorElement>("a[href]")
+          : null;
+      if (!link || link.target === "_blank" || link.hasAttribute("download"))
+        return;
+      event.preventDefault();
+      event.stopPropagation();
+      setPendingHref(link.href);
+    }
+    document.addEventListener("click", warnBeforeFollowingLink, true);
+    return () => {
+      window.removeEventListener("beforeunload", warnBeforeLeaving);
+      document.removeEventListener("click", warnBeforeFollowingLink, true);
+    };
+  }, [dirty]);
+
+  function selectFile(name: string, discardChanges = false) {
     if (busy) return;
+    if (name === file) return;
+    if (dirty && !discardChanges) {
+      setPendingFile(name);
+      return;
+    }
     setFile(name);
     setRows(
       toRows(data.files.find((item) => item.name === name)?.entries ?? []),
@@ -324,7 +369,10 @@ export function EnvManager({
                     className="h-4 w-4"
                     checked={syncProfile}
                     disabled={busy}
-                    onChange={(event) => setSyncProfile(event.target.checked)}
+                    onChange={(event) => {
+                      setSyncProfile(event.target.checked);
+                      setDirty(true);
+                    }}
                   />
                   <RefreshCw className="h-3.5 w-3.5 text-slate-400" />
                   Sync to user environment ({data.profilePath})
@@ -366,6 +414,61 @@ export function EnvManager({
           application from Operations to apply changes to a running process.
         </p>
       </div>
+      {(pendingFile || pendingHref) && (
+        <ConfirmDialog
+          title="Discard unsaved environment changes?"
+          message={
+            pendingFile
+              ? `Switching to ${pendingFile} will discard the changes you made to ${file}.`
+              : `Leaving this page will discard the changes you made to ${file}.`
+          }
+          confirmText={pendingFile ? "Discard and switch" : "Discard and leave"}
+          variant="default"
+          onCancel={() => {
+            setPendingFile(undefined);
+            setPendingHref(undefined);
+          }}
+          onConfirm={() => {
+            if (pendingHref) {
+              allowLeave.current = true;
+              window.location.assign(pendingHref);
+              return;
+            }
+            const nextFile = pendingFile;
+            setPendingFile(undefined);
+            if (nextFile) selectFile(nextFile, true);
+          }}
+        />
+      )}
+    </section>
+  );
+}
+
+export function EnvironmentUnavailable({
+  onRetry = () => window.location.reload(),
+}: {
+  onRetry?: () => void;
+}) {
+  return (
+    <section
+      role="alert"
+      className="rounded-2xl border border-amber-200 bg-amber-50/60 p-5 shadow-sm sm:p-6"
+    >
+      <h3 className="font-bold text-amber-900">Environment is unavailable</h3>
+      <p className="mt-1 text-sm text-amber-800">
+        Panelavo could not load this website&apos;s environment files. Your
+        saved values were not changed. Retry the page, then check the website
+        user and project folder if the problem continues.
+      </p>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className="mt-4"
+        onClick={onRetry}
+      >
+        Retry
+      </Button>
     </section>
   );
 }

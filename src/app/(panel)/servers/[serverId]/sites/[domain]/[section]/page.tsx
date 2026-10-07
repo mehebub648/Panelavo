@@ -8,6 +8,7 @@ import {
 } from "@/components/sites/backups-manager";
 import { DomainsManager } from "@/components/sites/domains-manager";
 import {
+  EnvironmentUnavailable,
   EnvManager,
   type EnvSectionData,
 } from "@/components/sites/env-manager";
@@ -87,7 +88,7 @@ export default async function FleetSiteSectionPage({
             "site.section.get",
             { domain, section: "env" },
             actor,
-          ).catch(() => null),
+          ).catch(() => undefined),
     ]);
     return (
       <div className="space-y-5">
@@ -101,7 +102,9 @@ export default async function FleetSiteSectionPage({
         {site.meta && !site.meta.parent ? (
           <LinkedServices parentDomain={domain} canWrite apiBase={apiBase} />
         ) : null}
-        {env ? (
+        {env === undefined ? (
+          <EnvironmentUnavailable />
+        ) : env ? (
           <EnvManager
             domain={domain}
             initialData={env as EnvSectionData}

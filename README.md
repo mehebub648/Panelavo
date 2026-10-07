@@ -397,3 +397,5 @@ Deployment diagnostics distinguish application HTTP health from listener verific
 Removing a domain from a website detaches its alias and related redirect settings. It preserves DNS records; remove provider DNS separately when intended.
 
 Website Settings shows the project folder separately from the advanced public web folder and upstream. Saves submit changed fields only. Routing changes show the exact old and new upstream for confirmation; they do not restart or reconfigure the application.
+
+Environment edits prompt before file switches or page navigation discard them. If Environment cannot load, Settings shows a retryable error card instead of hiding the section.
