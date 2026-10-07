@@ -29,13 +29,40 @@ type Meta = {
   wwwCanonical?: Record<string, "apex" | "www" | "both">;
   wwwRedirects?: string[];
 };
-type DnsEntry = { name: string; ip: string | null; pointed: boolean };
+type DnsEntry = {
+  name: string;
+  ip: string | null;
+  ips?: string[];
+  pointed: boolean;
+  publicIps?: string[];
+  publicResolved?: boolean;
+  managed?: boolean;
+  originVerified?: boolean;
+  proxied?: boolean;
+  chain?: string[];
+  providerError?: string;
+};
 type Data = {
   meta: Meta | null;
   serverIp: string;
   dns: DnsEntry[];
   warnings?: string[];
 };
+
+function dnsReadiness(entry: DnsEntry | undefined) {
+  if (!entry) return "DNS status unavailable";
+  if (entry.pointed)
+    return entry.proxied
+      ? "Cloudflare proxy · origin verified"
+      : "Points directly here";
+  if (entry.providerError)
+    return `${entry.providerError} Retry in a moment.`;
+  if (entry.originVerified && !entry.publicResolved)
+    return "Origin is correct; waiting for public DNS";
+  if (entry.originVerified)
+    return "Origin is correct; public DNS points elsewhere";
+  return entry.ip ? `Points to ${entry.ip}` : "No public DNS record";
+}
 
 export function DomainsManager({
   domain,
@@ -161,7 +188,19 @@ export function DomainsManager({
             ...current,
             dns: current.dns.map((d) =>
               d.name === targetDomain
-                ? { ...d, ip: status.serverIp, pointed: true }
+                ? {
+                    ...d,
+                    ip: status.serverIp,
+                    ips: [status.serverIp],
+                    publicIps: [status.serverIp],
+                    publicResolved: true,
+                    managed: true,
+                    originVerified: true,
+                    proxied: false,
+                    pointed: true,
+                    chain: [targetDomain],
+                    providerError: undefined,
+                  }
                 : d,
             ),
           };
@@ -272,12 +311,13 @@ export function DomainsManager({
             <b className="break-all">{domain}</b>
             {systemDns?.pointed ? (
               <span className="flex items-center gap-1.5 font-medium text-emerald-600">
-                <CheckCircle2 className="h-4 w-4" /> Points here
+                <CheckCircle2 className="h-4 w-4" />
+                {dnsReadiness(systemDns)}
               </span>
             ) : (
               <span className="flex items-center gap-1.5 font-medium text-amber-600">
                 <TriangleAlert className="h-4 w-4" />
-                {systemDns?.ip ? `Points to ${systemDns.ip}` : "No DNS record"}
+                {dnsReadiness(systemDns)}
               </span>
             )}
           </div>
@@ -435,15 +475,16 @@ export function DomainsManager({
                     <span className="flex items-center gap-2">
                       {dns?.pointed ? (
                         <span className="flex items-center gap-1.5 text-emerald-600">
-                          <CheckCircle2 className="h-4 w-4" /> Points here
+                          <CheckCircle2 className="h-4 w-4" />
+                          {dnsReadiness(dns)}
                         </span>
                       ) : (
                         <div className="flex items-center gap-3">
                           <span className="flex items-center gap-1.5 text-amber-600">
                             <TriangleAlert className="h-4 w-4" />
-                            {dns?.ip ? `Points to ${dns.ip}` : "No DNS record"}
+                            {dnsReadiness(dns)}
                           </span>
-                          {canWrite && (
+                          {canWrite && !dns?.providerError && (
                             <Button
                               size="sm"
                               variant="outline"

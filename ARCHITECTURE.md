@@ -146,7 +146,7 @@ Direct MCP tools are available for common website work: `panelavo_list_files`, `
 
 The update launcher normalizes shell line endings before execution and records worker startup or early-exit failures. Queued attempts that never enter the worker expire after two minutes on the next status check, releasing maintenance mode without interrupting an active build or reload. This applies equally to local and Fleet-initiated updates.
 
-Domain metadata stores optional wwwRedirects containing bare aliases. Domain sync validates that both names belong to the alias list, then installs idempotent, host-specific 301 rules with ACME exemptions through the existing Nginx rollback updater. Alias removal prunes paired rules. Broker protocol 25 enforces this contract; missing metadata means no redirects.
+Domain metadata stores optional wwwCanonical preferences and legacy wwwRedirects containing bare aliases. Domain sync validates that both names belong to the alias list, then installs idempotent, host-specific 301 rules in the selected direction with ACME exemptions through the existing Nginx rollback updater. Alias removal prunes paired rules. Broker protocol 28 enforces this contract; missing metadata means no redirects.
 
 ## Shared deployment jobs and CI
 
@@ -184,6 +184,8 @@ The global /domains route and connected-server domains tab retain their URLs but
 
 Certificate reuse activates a matching unexpired trusted certificate. Issuance selects only certificates covering the complete requested hostname set and propagates default-activation failures.
 
-Broker protocol 28 accepts an explicit per-domain wwwCanonical map (bare/www/both) while retaining legacy wwwRedirects. Both attached names are required. The vhost transformer removes the prior managed redirect block, recreates the chosen direction and preserves ACME challenges and request URI.
+Broker protocol 28 accepts an explicit per-domain wwwCanonical map (apex/www/both) while retaining legacy wwwRedirects. Both attached names are required. The vhost transformer removes the prior managed redirect block, recreates the chosen direction and preserves ACME challenges and request URI.
 
 Root listener inspection carries an explicit availability verdict through Operations, endpoint verification and port repair. Failed or unavailable socket inspection is distinct from an empty listener list and cannot authorize a port change or pass deployment verification.
+
+Actor-scoped DNS readiness uses resolveDnsOriginStatus. A direct public answer to the server is sufficient, including wildcard DNS; otherwise a public answer plus a connected proxied A/CNAME chain must prove this origin. Provider failures are contained per hostname and cannot replace missing evidence. SSL planning and domain reads share this verdict.

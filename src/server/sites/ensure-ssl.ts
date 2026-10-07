@@ -1,6 +1,6 @@
 import { getCloudPanelClient } from "@/server/cloudpanel";
 import { AppError } from "@/server/cloudpanel/errors";
-import { resolveDnsStatus } from "@/server/network/dns";
+import { resolveDnsOriginStatus } from "@/server/network/dns-origin";
 import { autoPointDns } from "@/server/network/auto-dns";
 import type { CloudPanelSession } from "@/types/cloudpanel";
 
@@ -54,11 +54,11 @@ export async function planSiteSsl(options: {
     }
   }
 
-  let statuses = await resolveDnsStatus(names, serverIp);
+  let statuses = await resolveDnsOriginStatus(userId, names, serverIp);
   if (createdRecords && statuses.some((status) => !status.pointed)) {
     // Give just-created records a moment to reach the public resolvers.
     await sleep(2_500);
-    statuses = await resolveDnsStatus(names, serverIp);
+    statuses = await resolveDnsOriginStatus(userId, names, serverIp);
   }
 
   const san = statuses
@@ -67,10 +67,13 @@ export async function planSiteSsl(options: {
   const unpointed = statuses
     .filter((status) => !status.pointed)
     .map((status) => status.name);
-  const warnings = unpointed.map(
-    (name) =>
-      `${name} does not point to this server (${serverIp}) yet, so it was left out of the SSL certificate. Point it here, then use "Recheck DNS & secure" to include it.`,
-  );
+  const warnings = statuses
+    .filter((status) => !status.pointed)
+    .map((status) =>
+      status.providerError
+        ? `${status.name}: ${status.providerError} It was left out of the SSL certificate. Retry "Recheck DNS & secure" when Cloudflare is available.`
+        : `${status.name} does not publicly reach this server (${serverIp}) yet, so it was left out of the SSL certificate. Fix its DNS, then use "Recheck DNS & secure" to include it.`,
+    );
   return { san, unpointed, warnings };
 }
 

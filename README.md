@@ -382,7 +382,7 @@ Direct MCP tools are available for common website work: `panelavo_list_files`, `
 
 The update launcher normalizes shell line endings before execution and records worker startup or early-exit failures. Queued attempts that never enter the worker expire after two minutes on the next status check, releasing maintenance mode without interrupting an active build or reload. This applies equally to local and Fleet-initiated updates.
 
-When both a bare domain and its www alias are added, the Domains tab offers a redirect switch for that pair. Off serves the same website at both addresses; on permanently redirects the bare domain to HTTPS www, preserving the path and query. Both names still need valid certificates. Application-level redirects may also apply.
+When both a domain and its www alias are attached, the Domains tab offers a preferred-address selector: the domain without www, the www address, or both. Redirects preserve the path and query. Both names still need valid certificates. Application-level redirects may also apply.
 
 ## Public ChatGPT and Codex plugin
 
@@ -419,3 +419,5 @@ For every attached domain/www pair, choose Use domain without www, Use www, or K
 Operations always displays Website traffic with the configured private port and any detected website-owned ports. If listener inspection is unavailable, Panelavo reports that uncertainty and blocks ownership-dependent actions instead of claiming the application is stopped.
 
 DNS preparation preserves a valid www CNAME that already leads to this server. A conflicting CNAME is reported with instructions to change it in Cloudflare; Panelavo does not overwrite it automatically.
+
+Domains distinguishes direct DNS from Cloudflare proxy DNS with a verified origin. Proxy edge addresses do not have to match the server address: connected provider records must prove the origin and the hostname must resolve publicly. HTTPS and application health are checked separately.

@@ -110,4 +110,63 @@ describe("website domains", () => {
       mode: "apex",
     });
   });
+
+  it("distinguishes a verified Cloudflare proxy from a provider lookup failure", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        json: async () => ({
+          success: true,
+          data: {
+            meta: {
+              id: 21001,
+              category: "personal",
+              aliases: ["example.com", "unavailable.example.com"],
+              block: "none",
+            },
+            serverIp: "203.0.113.10",
+            dns: [
+              {
+                name: "site.example.test",
+                ip: "203.0.113.10",
+                pointed: true,
+                proxied: false,
+              },
+              {
+                name: "example.com",
+                ip: "198.51.100.20",
+                pointed: true,
+                managed: true,
+                originVerified: true,
+                proxied: true,
+              },
+              {
+                name: "unavailable.example.com",
+                ip: null,
+                pointed: false,
+                managed: true,
+                originVerified: false,
+                proxied: false,
+                providerError: "Cloudflare records could not be verified.",
+              },
+            ],
+          },
+        }),
+      }),
+    );
+
+    render(<DomainsManager domain="site.example.test" canWrite={true} />);
+
+    expect(
+      await screen.findByText("Cloudflare proxy · origin verified"),
+    ).toBeVisible();
+    expect(
+      screen.getByText(
+        "Cloudflare records could not be verified. Retry in a moment.",
+      ),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "Point to this server" }),
+    ).not.toBeInTheDocument();
+  });
 });

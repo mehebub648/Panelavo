@@ -1,4 +1,3 @@
-import { Resolver } from "node:dns/promises";
 import { z } from "zod";
 import { isApexDomain } from "@/lib/domains";
 import { domainValue } from "@/schemas/sites";
@@ -11,10 +10,7 @@ import {
 import { pointDns, pointDnsError } from "@/server/cloudflare/point-dns";
 import { getZones } from "@/server/cloudflare/store";
 import { AppError } from "@/server/cloudpanel/errors";
-import {
-  assertDomainsPointToServer,
-  resolveDnsStatus,
-} from "@/server/network/dns";
+import { resolveDnsOriginStatus } from "@/server/network/dns-origin";
 import {
   certificateAlreadyCovers,
   issueSiteSsl,
@@ -111,7 +107,8 @@ export async function getSiteDomainsForActor(
   const { site } = await accessibleSiteForActor(actor, requestedDomain);
   const domain = site.domain;
   const meta = await getSiteMeta(domain);
-  const dns = await resolveDnsStatus(
+  const dns = await resolveDnsOriginStatus(
+    actor.user.id,
     [domain, ...(meta?.aliases ?? [])],
     serverIp,
   );
@@ -270,12 +267,20 @@ export async function manageSiteDomainsForActor(
     const san = Array.from(
       new Set(requested.filter((name) => name !== domain)),
     );
-    await assertDomainsPointToServer(
+    const statuses = await resolveDnsOriginStatus(
+      actor.user.id,
       Array.from(new Set([domain, ...san])),
       serverIp,
-      (status) =>
-        `${status.name} must point to this server (${serverIp}) before a certificate can be issued.`,
     );
+    const failing = statuses.find((status) => !status.pointed);
+    if (failing)
+      throw new AppError(
+        "INVALID_REQUEST",
+        failing.providerError
+          ? `${failing.name}: ${failing.providerError} Retry when Cloudflare is available.`
+          : `${failing.name} must publicly reach this server (${serverIp}) before a certificate can be issued.`,
+        409,
+      );
     await issueSiteSsl(actor.cloudPanel, domain, san);
   } else {
     const plan = await planSiteSsl({
@@ -296,7 +301,11 @@ export async function manageSiteDomainsForActor(
     }
   }
 
-  const dns = await resolveDnsStatus([domain, ...meta.aliases], serverIp);
+  const dns = await resolveDnsOriginStatus(
+    actor.user.id,
+    [domain, ...meta.aliases],
+    serverIp,
+  );
   return {
     meta: await getSiteMeta(domain),
     serverIp,
@@ -314,17 +323,11 @@ export async function getSiteDnsForActor(
     actor,
     requestedDomain,
   );
-  let ip: string | null = null;
-  let pointed = false;
-  try {
-    const resolver = new Resolver();
-    resolver.setServers(["1.1.1.1", "1.0.0.1", "8.8.8.8"]);
-    const records = await resolver.resolve4(target);
-    ip = records[0] ?? null;
-    pointed = ip === serverIp;
-  } catch {
-    pointed = false;
-  }
+  const [status] = await resolveDnsOriginStatus(
+    actor.user.id,
+    [target],
+    serverIp,
+  );
 
   let matchZone: Awaited<ReturnType<typeof getZones>>["zones"][number] | null =
     null;
@@ -339,8 +342,7 @@ export async function getSiteDnsForActor(
   }
 
   return {
-    pointed,
-    ip,
+    ...status,
     serverIp,
     zoneId: matchZone?.id ?? null,
     credentialId: matchZone?.credentialId ?? null,

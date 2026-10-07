@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   autoPointDns: vi.fn(),
-  resolveDnsStatus: vi.fn(),
+  resolveDnsOriginStatus: vi.fn(),
   getSiteSection: vi.fn(),
   manageSiteSection: vi.fn(),
 }));
@@ -12,8 +12,8 @@ vi.mock("@/server/cloudpanel", () => ({ getCloudPanelClient: () => mocks }));
 vi.mock("@/server/network/auto-dns", () => ({
   autoPointDns: mocks.autoPointDns,
 }));
-vi.mock("@/server/network/dns", () => ({
-  resolveDnsStatus: mocks.resolveDnsStatus,
+vi.mock("@/server/network/dns-origin", () => ({
+  resolveDnsOriginStatus: mocks.resolveDnsOriginStatus,
 }));
 
 import {
@@ -27,11 +27,17 @@ describe("site SSL planning", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.autoPointDns.mockResolvedValue({ changed: false });
-    mocks.resolveDnsStatus.mockResolvedValue([
+    mocks.resolveDnsOriginStatus.mockResolvedValue([
       {
         name: "example.com",
         ip: "203.0.113.10",
         ips: ["203.0.113.10"],
+        publicIps: ["203.0.113.10"],
+        publicResolved: true,
+        managed: false,
+        originVerified: true,
+        proxied: false,
+        chain: ["example.com"],
         pointed: true,
       },
     ]);
@@ -52,11 +58,68 @@ describe("site SSL planning", () => {
       "203.0.113.10",
     );
     expect(mocks.autoPointDns).toHaveBeenCalledOnce();
-    expect(mocks.resolveDnsStatus).toHaveBeenCalledWith(
+    expect(mocks.resolveDnsOriginStatus).toHaveBeenCalledWith(
+      "user-1",
       ["example.com"],
       "203.0.113.10",
     );
     expect(plan.san).toEqual(["example.com"]);
+  });
+
+  it("accepts a publicly resolved Cloudflare proxy with a verified origin", async () => {
+    mocks.resolveDnsOriginStatus.mockResolvedValueOnce([
+      {
+        name: "example.com",
+        ip: "104.16.1.1",
+        ips: ["104.16.1.1"],
+        publicIps: ["104.16.1.1"],
+        publicResolved: true,
+        managed: true,
+        originVerified: true,
+        proxied: true,
+        pointed: true,
+        chain: ["example.com"],
+      },
+    ]);
+
+    const plan = await planSiteSsl({
+      userId: "user-1",
+      systemDomain: "site.example.test",
+      aliases: ["example.com"],
+      serverIp: "203.0.113.10",
+    });
+
+    expect(plan.san).toEqual(["example.com"]);
+    expect(plan.warnings).toEqual([]);
+  });
+
+  it("returns an actionable warning when Cloudflare origin verification fails", async () => {
+    mocks.resolveDnsOriginStatus.mockResolvedValueOnce([
+      {
+        name: "example.com",
+        ip: "104.16.1.1",
+        ips: ["104.16.1.1"],
+        publicIps: ["104.16.1.1"],
+        publicResolved: true,
+        managed: true,
+        originVerified: false,
+        proxied: false,
+        pointed: false,
+        chain: ["example.com"],
+        providerError: "Cloudflare records could not be verified.",
+      },
+    ]);
+
+    const plan = await planSiteSsl({
+      userId: "user-1",
+      systemDomain: "site.example.test",
+      aliases: ["example.com"],
+      serverIp: "203.0.113.10",
+    });
+
+    expect(plan.san).toEqual([]);
+    expect(plan.warnings[0]).toContain("Retry");
+    expect(plan.warnings[0]).toContain("Cloudflare records could not be verified");
   });
 });
 

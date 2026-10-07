@@ -8,11 +8,10 @@ const mocks = vi.hoisted(() => ({
   manageSiteSection: vi.fn(),
   getSiteMeta: vi.fn(),
   setSiteMeta: vi.fn(),
-  resolveDnsStatus: vi.fn(),
+  resolveDnsOriginStatus: vi.fn(),
   planSiteSsl: vi.fn(),
   issueSiteSsl: vi.fn(),
   certificateAlreadyCovers: vi.fn(),
-  assertDomainsPointToServer: vi.fn(),
   autoDeleteDns: vi.fn(),
   getZones: vi.fn(),
   pointDns: vi.fn(),
@@ -32,9 +31,8 @@ vi.mock("@/server/cloudflare/store", () => ({ getZones: mocks.getZones }));
 vi.mock("@/server/network/auto-dns", () => ({
   autoDeleteDns: mocks.autoDeleteDns,
 }));
-vi.mock("@/server/network/dns", () => ({
-  assertDomainsPointToServer: mocks.assertDomainsPointToServer,
-  resolveDnsStatus: mocks.resolveDnsStatus,
+vi.mock("@/server/network/dns-origin", () => ({
+  resolveDnsOriginStatus: mocks.resolveDnsOriginStatus,
 }));
 vi.mock("@/server/sites/ensure-ssl", () => ({
   certificateAlreadyCovers: mocks.certificateAlreadyCovers,
@@ -47,6 +45,7 @@ vi.mock("@/server/sites/site-meta", () => ({
 }));
 
 import {
+  getSiteDnsForActor,
   manageSiteDomainsForActor,
   pointSiteDnsForActor,
 } from "./site-domain-service";
@@ -82,7 +81,7 @@ describe("actor-aware website domains", () => {
     });
     mocks.manageSiteSection.mockResolvedValue({});
     mocks.setSiteMeta.mockResolvedValue(undefined);
-    mocks.resolveDnsStatus.mockResolvedValue([]);
+    mocks.resolveDnsOriginStatus.mockResolvedValue([]);
     mocks.planSiteSsl.mockResolvedValue({ san: [], warnings: [] });
     mocks.issueSiteSsl.mockResolvedValue(undefined);
     mocks.autoDeleteDns.mockResolvedValue(undefined);
@@ -269,10 +268,10 @@ describe("actor-aware website domains", () => {
         "203.0.113.10",
       );
 
-      expect(mocks.assertDomainsPointToServer).toHaveBeenCalledWith(
+      expect(mocks.resolveDnsOriginStatus).toHaveBeenCalledWith(
+        "user-1",
         ["site.example.test", alias],
         "203.0.113.10",
-        expect.any(Function),
       );
       expect(mocks.issueSiteSsl).toHaveBeenCalledWith(
         actor.cloudPanel,
@@ -281,6 +280,83 @@ describe("actor-aware website domains", () => {
       );
     },
   );
+
+  it("explains a provider verification failure before manual SSL issuance", async () => {
+    mocks.getSiteMeta.mockResolvedValue({
+      id: 20001,
+      category: "sites",
+      aliases: ["example.com"],
+      block: "none",
+    });
+    mocks.resolveDnsOriginStatus.mockResolvedValueOnce([
+      {
+        name: "site.example.test",
+        ip: null,
+        ips: [],
+        publicIps: [],
+        publicResolved: false,
+        managed: true,
+        originVerified: false,
+        proxied: false,
+        pointed: false,
+        chain: ["site.example.test"],
+        providerError: "Cloudflare records could not be verified.",
+      },
+    ]);
+
+    await expect(
+      manageSiteDomainsForActor(
+        actor,
+        "site.example.test",
+        {
+          action: "issue-ssl",
+          domains: ["site.example.test", "example.com"],
+        },
+        "203.0.113.10",
+      ),
+    ).rejects.toThrow(
+      "site.example.test: Cloudflare records could not be verified. Retry when Cloudflare is available.",
+    );
+    expect(mocks.issueSiteSsl).not.toHaveBeenCalled();
+  });
+
+  it("returns verified proxy and origin flags for the DNS action", async () => {
+    mocks.resolveDnsOriginStatus.mockResolvedValueOnce([
+      {
+        name: "example.com",
+        ip: "104.16.1.1",
+        ips: ["104.16.1.1"],
+        publicIps: ["104.16.1.1"],
+        publicResolved: true,
+        managed: true,
+        originVerified: true,
+        proxied: true,
+        pointed: true,
+        chain: ["example.com"],
+      },
+    ]);
+    mocks.getZones.mockResolvedValue({
+      zones: [
+        {
+          id: "zone-1",
+          name: "example.com",
+          credentialId: "credential-1",
+        },
+      ],
+    });
+
+    await expect(
+      getSiteDnsForActor(actor, "example.com", "203.0.113.10"),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        pointed: true,
+        proxied: true,
+        originVerified: true,
+        zoneId: "zone-1",
+        credentialId: "credential-1",
+      }),
+    );
+  });
 
   it("updates the accepted vhost before committing alias metadata", async () => {
     const result = await manageSiteDomainsForActor(
