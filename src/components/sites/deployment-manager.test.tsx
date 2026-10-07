@@ -167,7 +167,7 @@ describe("deployment browser workflow", () => {
     expect(screen.getByText(/refs\/heads\/main/)).toBeInTheDocument();
     expect(screen.queryByText(/refs\/heads\/feature/)).not.toBeInTheDocument();
   });
-  it("keeps the files-only update inside Advanced Git tools", async () => {
+  it("keeps primary deployment and files-only updates in the Deployment tab", async () => {
     vi.mocked(fetch).mockResolvedValue({
       json: async () => ({ success: true, data: { jobs: [] } }),
     } as Response);
@@ -190,10 +190,18 @@ describe("deployment browser workflow", () => {
         }}
       />,
     );
-    const update = screen.getByRole("button", { name: "Update files only" });
-    expect(update.closest("details")).toHaveTextContent("Advanced Git tools");
+    expect(screen.getByRole("tab", { name: "Deployment" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
     expect(
-      screen.getByRole("button", { name: "Deploy latest changes" }),
+      screen.getByRole("tab", { name: "Connection & Recovery" }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Update files only" }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Deploy current files" }),
     ).toBeVisible();
   });
   it("blocks deployment when history or server capability cannot be loaded", async () => {
@@ -224,7 +232,7 @@ describe("deployment browser workflow", () => {
     ).not.toBeInTheDocument();
     expect(screen.queryByText(/Deployment settings/)).not.toBeInTheDocument();
   });
-  it("loads detailed logs only when opened", async () => {
+  it("loads detailed logs when the selected tab mounts its section", async () => {
     vi.mocked(fetch).mockResolvedValue({
       json: async () => ({ success: true, data: { items: [] } }),
     } as Response);
@@ -236,10 +244,6 @@ describe("deployment browser workflow", () => {
         canWrite
       />,
     );
-    expect(fetch).not.toHaveBeenCalled();
-    const details = screen.getByText("Application logs").closest("details")!;
-    details.open = true;
-    fireEvent(details, new Event("toggle"));
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
     expect(fetch).toHaveBeenCalledWith("/api/sites/site.test/sections/logs");
   });

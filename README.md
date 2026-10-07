@@ -410,7 +410,7 @@ Website navigation keeps common tasks visible and groups Vhost, Git & Deploy and
 
 Website Settings can align the proxy with an already-running application owned by that website. The target must be a healthy private loopback listener and cannot belong to another website; Panelavo checks it again after saving and restores the previous proxy setting if it stops responding.
 
-Git & Deploy presents the deployment workflow first. Advanced tools contain Update files only, which skips build, migrations and application restart and can immediately change PHP/static pages. Automatic deployment tokens and generated workflows are available only after saving enablement; workflows use the saved branch.
+Git & Deploy uses Deployment, Changes, Branches, History, and Connection & Recovery tabs. Deployment presents the primary deploy workflow and a separate Update files only card, which skips build, migrations and application restart and can immediately change PHP/static pages. Branches offers local/remote switching, creation, upstream selection, and merge review. History draws actual commit-parent connections with an accessible text list. Connection & Recovery provides repository keys, explicit file preservation and active conflict recovery. Tab selection persists through refresh and browser history. Automatic deployment tokens and generated workflows are available only after saving enablement; workflows use the saved branch.
 
 The website Domains page provides one Recheck DNS & secure action. Adding addresses and creating websites wait for their certificate attempt and report any remaining DNS/HTTPS work. Installed certificates are displayed below without competing issuance controls. Alias metadata reflects the addresses CloudPanel successfully accepted.
 
