@@ -88,26 +88,57 @@ export function SiteSettings({
 
   async function save(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setBusy(true);
+    if (busy || confirmAction) return;
     setError("");
     setSaved(false);
     const data = new FormData(event.currentTarget);
-    const body: Record<string, string | number> = {
-      label: String(data.get("label") ?? ""),
-      applicationRootDirectory: String(
-        data.get("applicationRootDirectory") ?? "",
-      ),
-      servingDirectory: String(data.get("servingDirectory") ?? ""),
-    };
+    const body: Record<string, string | number> = {};
+    for (const [field, current] of [
+      ["label", site.label ?? ""],
+      [
+        "applicationRootDirectory",
+        site.applicationRootDirectory ?? site.rootDirectory,
+      ],
+      ["servingDirectory", site.rootDirectory],
+    ] as const) {
+      const next = String(data.get(field) ?? "").trim();
+      if (next !== (current ?? "")) body[field] = next;
+    }
     if (["php", "nodejs", "python"].includes(site.type ?? ""))
-      body.runtimeVersion = String(data.get("runtimeVersion") ?? "");
+      if (String(data.get("runtimeVersion") ?? "") !== currentRuntime)
+        body.runtimeVersion = String(data.get("runtimeVersion") ?? "");
     if (["nodejs", "python"].includes(site.type ?? ""))
-      body.appPort = Number(data.get("appPort"));
+      if (Number(data.get("appPort")) !== site.appPort)
+        body.appPort = Number(data.get("appPort"));
     if (
       (site.type === "reverse-proxy" || site.type === "docker") &&
       !site.meta?.parent
     )
-      body.reverseProxyUrl = String(data.get("reverseProxyUrl") ?? "");
+      if (
+        String(data.get("reverseProxyUrl") ?? "").trim() !==
+        (site.reverseProxyUrl ?? "")
+      )
+        body.reverseProxyUrl = String(data.get("reverseProxyUrl") ?? "").trim();
+    if (!Object.keys(body).length) {
+      setSaved(true);
+      return;
+    }
+    if (body.appPort !== undefined || body.reverseProxyUrl !== undefined) {
+      const previous =
+        site.reverseProxyUrl ?? `http://127.0.0.1:${site.appPort}`;
+      const next = body.reverseProxyUrl ?? `http://127.0.0.1:${body.appPort}`;
+      setConfirmAction({
+        title: "Change website routing",
+        message: `Change the website upstream from ${previous} to ${next}? This updates where NGINX sends traffic immediately. Start and verify your application at the new address first. This does not change or restart the application.`,
+        onConfirm: () => void submitSettings(body),
+      });
+      return;
+    }
+    await submitSettings(body);
+  }
+
+  async function submitSettings(body: Record<string, string | number>) {
+    setBusy(true);
     try {
       const response = await fetch(
         `${apiBase}/api/sites/${encodeURIComponent(site.domain)}`,
@@ -128,6 +159,7 @@ export function SiteSettings({
       setError(reason instanceof Error ? reason.message : "Update failed.");
     } finally {
       setBusy(false);
+      setConfirmAction(null);
     }
   }
 
@@ -243,7 +275,7 @@ export function SiteSettings({
           <div>
             <h3 className="font-bold">Website configuration</h3>
             <p className="mt-1 text-sm text-slate-500">
-              Saving reloads NGINX automatically.
+              Save only the settings you change. Traffic changes reload NGINX.
             </p>
           </div>
           {user.canCreateSites && (
@@ -275,7 +307,7 @@ export function SiteSettings({
               htmlFor="applicationRootDirectory"
               className="font-medium text-slate-700"
             >
-              Root directory
+              Project folder
             </Label>
             <Input
               id="applicationRootDirectory"
@@ -289,112 +321,127 @@ export function SiteSettings({
               Environment, and backups.
             </p>
           </div>
-          <div>
-            <Label
-              htmlFor="servingDirectory"
-              className="font-medium text-slate-700"
-            >
-              Serving directory
-            </Label>
-            <Input
-              id="servingDirectory"
-              name="servingDirectory"
-              defaultValue={site.rootDirectory}
-              disabled={!user.canCreateSites}
-              className="mt-1.5 bg-white/70 transition-all focus:ring-2 focus:ring-panel-500/50"
-            />
-            <p className="mt-1.5 text-xs text-slate-400">
-              Document root served by NGINX, commonly the project&apos;s public
-              folder for PHP or static websites.
+          <details className="rounded-lg border p-4 sm:col-span-2">
+            <summary className="cursor-pointer font-medium">
+              Advanced: public folder and website routing
+            </summary>
+            <p className="mt-2 text-sm text-slate-500">
+              Keep these defaults unless your deployment needs a different
+              public folder or upstream. For PHP and static sites, the public
+              folder is often the project&apos;s public subfolder.
             </p>
-          </div>
-          {hasRuntime && (
-            <div>
-              <Label
-                htmlFor="runtimeVersion"
-                className="font-medium text-slate-700"
-              >
-                Runtime version
-              </Label>
-              {runtimeChoices ? (
-                <Select
-                  id="runtimeVersion"
-                  name="runtimeVersion"
-                  defaultValue={currentRuntime || runtimeChoices[0]}
-                  disabled={!user.canCreateSites}
-                  className="mt-1.5 bg-white/70"
-                >
-                  {runtimeChoices.map((version) => (
-                    <option key={version} value={version}>
-                      {site.type === "php"
-                        ? "PHP"
-                        : site.type === "nodejs"
-                          ? "Node.js"
-                          : "Python"}{" "}
-                      {version}
-                    </option>
-                  ))}
-                </Select>
-              ) : (
-                <Input
-                  id="runtimeVersion"
-                  name="runtimeVersion"
-                  defaultValue={currentRuntime || site.runtimeVersion}
-                  disabled={!user.canCreateSites}
-                  className="mt-1.5 bg-white/70 transition-all focus:ring-2 focus:ring-panel-500/50"
-                />
-              )}
-            </div>
-          )}
-          {["nodejs", "python"].includes(site.type ?? "") && (
-            <div>
-              <Label htmlFor="appPort" className="font-medium text-slate-700">
-                Application port
-              </Label>
-              <Input
-                id="appPort"
-                name="appPort"
-                type="number"
-                min={1024}
-                max={65535}
-                defaultValue={site.appPort}
-                disabled={!user.canCreateSites}
-                className="mt-1.5 bg-white/70 transition-all focus:ring-2 focus:ring-panel-500/50"
-              />
-              <p className="mt-1.5 text-xs text-slate-400">
-                This is the private loopback port CloudPanel sends traffic to.
-                Changing it never changes the website id, user, or system
-                domain; the server rejects ports already owned by another
-                service.
-              </p>
-            </div>
-          )}
-          {(site.type === "reverse-proxy" || site.type === "docker") &&
-            !site.meta?.parent && (
+            <div className="mt-4 grid gap-5 sm:grid-cols-2">
               <div>
                 <Label
-                  htmlFor="reverseProxyUrl"
+                  htmlFor="servingDirectory"
                   className="font-medium text-slate-700"
                 >
-                  {site.type === "docker"
-                    ? "Container URL"
-                    : "Reverse proxy URL"}
+                  Public web folder
                 </Label>
                 <Input
-                  id="reverseProxyUrl"
-                  name="reverseProxyUrl"
-                  defaultValue={site.reverseProxyUrl}
+                  id="servingDirectory"
+                  name="servingDirectory"
+                  defaultValue={site.rootDirectory}
                   disabled={!user.canCreateSites}
                   className="mt-1.5 bg-white/70 transition-all focus:ring-2 focus:ring-panel-500/50"
                 />
-                {site.type === "docker" && (
-                  <p className="mt-1.5 text-xs text-slate-400">
-                    Traffic is proxied to this address — usually the published
-                    port of your container.
-                  </p>
-                )}
+                <p className="mt-1.5 text-xs text-slate-400">
+                  Document root served by NGINX, commonly the project&apos;s
+                  public folder for PHP or static websites.
+                </p>
               </div>
-            )}
+              {hasRuntime && (
+                <div>
+                  <Label
+                    htmlFor="runtimeVersion"
+                    className="font-medium text-slate-700"
+                  >
+                    Runtime version
+                  </Label>
+                  {runtimeChoices ? (
+                    <Select
+                      id="runtimeVersion"
+                      name="runtimeVersion"
+                      defaultValue={currentRuntime || runtimeChoices[0]}
+                      disabled={!user.canCreateSites}
+                      className="mt-1.5 bg-white/70"
+                    >
+                      {runtimeChoices.map((version) => (
+                        <option key={version} value={version}>
+                          {site.type === "php"
+                            ? "PHP"
+                            : site.type === "nodejs"
+                              ? "Node.js"
+                              : "Python"}{" "}
+                          {version}
+                        </option>
+                      ))}
+                    </Select>
+                  ) : (
+                    <Input
+                      id="runtimeVersion"
+                      name="runtimeVersion"
+                      defaultValue={currentRuntime || site.runtimeVersion}
+                      disabled={!user.canCreateSites}
+                      className="mt-1.5 bg-white/70 transition-all focus:ring-2 focus:ring-panel-500/50"
+                    />
+                  )}
+                </div>
+              )}
+              {["nodejs", "python"].includes(site.type ?? "") && (
+                <div>
+                  <Label
+                    htmlFor="appPort"
+                    className="font-medium text-slate-700"
+                  >
+                    Website port
+                  </Label>
+                  <Input
+                    id="appPort"
+                    name="appPort"
+                    type="number"
+                    min={1024}
+                    max={65535}
+                    defaultValue={site.appPort}
+                    disabled={!user.canCreateSites}
+                    className="mt-1.5 bg-white/70 transition-all focus:ring-2 focus:ring-panel-500/50"
+                  />
+                  <p className="mt-1.5 text-xs text-slate-400">
+                    NGINX sends traffic to 127.0.0.1 on this port. Your
+                    application must already use the new loopback port before
+                    changing it here. Operations supplies PORT when it starts
+                    the application.
+                  </p>
+                </div>
+              )}
+              {(site.type === "reverse-proxy" || site.type === "docker") &&
+                !site.meta?.parent && (
+                  <div>
+                    <Label
+                      htmlFor="reverseProxyUrl"
+                      className="font-medium text-slate-700"
+                    >
+                      Website upstream
+                    </Label>
+                    <Input
+                      id="reverseProxyUrl"
+                      name="reverseProxyUrl"
+                      defaultValue={site.reverseProxyUrl}
+                      disabled={!user.canCreateSites}
+                      className="mt-1.5 bg-white/70 transition-all focus:ring-2 focus:ring-panel-500/50"
+                    />
+                    {site.type === "docker" && (
+                      <p className="mt-1.5 text-xs text-slate-400">
+                        Use the container&apos;s published host port on
+                        127.0.0.1, not its internal port. For example, a
+                        127.0.0.1:30004:80 mapping uses http://127.0.0.1:30004
+                        here.
+                      </p>
+                    )}
+                  </div>
+                )}
+            </div>
+          </details>
           {saved && (
             <p
               role="status"
@@ -457,6 +504,7 @@ export function SiteSettings({
           message={confirmAction.message}
           onConfirm={confirmAction.onConfirm}
           onCancel={() => setConfirmAction(null)}
+          busy={busy}
         />
       )}
     </div>

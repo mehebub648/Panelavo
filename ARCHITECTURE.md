@@ -165,3 +165,5 @@ Gateway grants use the existing hashed OAuth store with a `plugin:` subject and 
 Deployment port-verification steps expose applicationHealth and portVerification independently. A failed binding check still fails the operation; HTTP probing after that failure is limited to ports whose reported listeners are all proven site-owned. Unknown ownership is not reported as proven foreign ownership. Artifact response metadata describes the existing credential-bound bearer requirement without returning a secret or granting public access.
 
 Alias removal does not invoke provider DNS deletion. Detaching an apex alias preserves any www alias still served by that website and the provider records for both hosts.
+
+The Settings form sends a change-only PATCH. A label-only save stays in local metadata and does not invoke CloudPanel site updates. Port/upstream changes require the form's explicit old-to-new confirmation.
