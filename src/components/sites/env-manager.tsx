@@ -207,7 +207,7 @@ export function EnvManager({
   }
 
   return (
-    <section className="overflow-hidden rounded-2xl border border-white/40 bg-white/60 shadow-card backdrop-blur-md">
+    <section id="environment" className="scroll-mt-24 overflow-hidden rounded-2xl border border-white/40 bg-white/60 shadow-card backdrop-blur-md">
       <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200/50 bg-slate-50/40 px-5 py-4 sm:px-6">
         <div className="flex gap-3">
           <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-panel-50 text-panel-600">

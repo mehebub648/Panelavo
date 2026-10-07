@@ -21,6 +21,20 @@ const mocks = vi.hoisted(() => ({
   error: vi.fn(),
 }));
 
+function chooseStep(name: string) {
+  fireEvent.click(
+    within(
+      screen.getByRole("navigation", { name: "Deployment steps" }),
+    ).getByRole("button", { name: new RegExp(name + "$", "i") }),
+  );
+}
+
+function openAdvanced() {
+  screen
+    .getByText("Advanced tools · individual commands and process controls")
+    .closest("details")!.open = true;
+}
+
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ refresh: mocks.refresh }),
 }));
@@ -85,19 +99,31 @@ function dockerData(ready: boolean): OperationsData {
         : undefined,
     },
   };
-  return normalizeOperationsData(raw, { typeOverride: "docker", panelAdmin: true });
+  return normalizeOperationsData(raw, {
+    typeOverride: "docker",
+    panelAdmin: true,
+  });
 }
 
 describe("ActionsManager", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.history.replaceState(null, "", "/sites/example.test/actions");
     vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) =>
       window.setTimeout(callback, 0),
     );
     vi.stubGlobal("cancelAnimationFrame", (id: number) =>
       window.clearTimeout(id),
     );
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({ success: true, data: { jobs: [] } }) }));
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue({
+          ok: true,
+          json: async () => ({ success: true, data: { jobs: [] } }),
+        }),
+    );
   });
 
   afterEach(() => {
@@ -110,36 +136,91 @@ describe("ActionsManager", () => {
       <ActionsManager domain="example.test" initialData={dockerData(false)} />,
     );
 
-    expect(screen.getByText("Docker Compose")).toBeInTheDocument();
+    expect(
+      within(
+        screen.getByRole("region", { name: "Website detection" }),
+      ).getByText("Docker Compose"),
+    ).toBeInTheDocument();
+    chooseStep("Prepare");
     expect(
       screen.getAllByText(
         "The Docker executable is not installed on this server.",
       ),
     ).not.toHaveLength(0);
-    expect(screen.getByRole("button", { name: "Deploy current files" })).toBeDisabled();
-    screen.getByText("Advanced: Runtime & lifecycle").closest("details")!.open = true;
+    chooseStep("Deploy");
+    expect(
+      screen.getByRole("button", { name: "Deploy current files" }),
+    ).toBeDisabled();
+    openAdvanced();
+    screen.getByText("Advanced: Runtime & lifecycle").closest("details")!.open =
+      true;
     expect(
       screen.getByRole("button", { name: /^Start services/i }),
     ).toBeDisabled();
     expect(
       screen.queryByText("No managed actions for this architecture"),
     ).not.toBeInTheDocument();
-    expect(vi.mocked(fetch).mock.calls.some(([, request]) => request?.method === "POST")).toBe(false);
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.some(([, request]) => request?.method === "POST"),
+    ).toBe(false);
   });
 
   it("submits a persistent deployment job after reviewing current-file deployment", async () => {
-    vi.mocked(fetch).mockImplementation(async (_url, request) => ({ ok: true, json: async () => request?.method === "POST" ? { success: true, data: { id: "job-1", kind: "Deploy current files", status: "queued", createdAt: new Date().toISOString(), logs: [] } } : { success: true, data: { jobs: [] } } }) as Response);
-    render(<ActionsManager domain="example.test" initialData={dockerData(true)} />);
-    await waitFor(() => expect(screen.getByRole("button", { name: "Deploy current files" })).toBeEnabled());
-    fireEvent.click(screen.getByRole("button", { name: "Deploy current files" }));
-    const dialog = screen.getByRole("dialog", { name: "Deploy current files?" });
+    vi.mocked(fetch).mockImplementation(
+      async (_url, request) =>
+        ({
+          ok: true,
+          json: async () =>
+            request?.method === "POST"
+              ? {
+                  success: true,
+                  data: {
+                    id: "job-1",
+                    kind: "Deploy current files",
+                    status: "queued",
+                    createdAt: new Date().toISOString(),
+                    logs: [],
+                  },
+                }
+              : { success: true, data: { jobs: [] } },
+        }) as Response,
+    );
+    render(
+      <ActionsManager domain="example.test" initialData={dockerData(true)} />,
+    );
+    chooseStep("Deploy");
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Deploy current files" }),
+      ).toBeEnabled(),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Deploy current files" }),
+    );
+    const dialog = screen.getByRole("dialog", {
+      name: "Deploy current files?",
+    });
     fireEvent.click(within(dialog).getByRole("button", { name: "Deploy" }));
-    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([, request]) => request?.method === "POST")).toBe(true));
-    const [url, request] = vi.mocked(fetch).mock.calls.find(([, request]) => request?.method === "POST")!;
+    await waitFor(() =>
+      expect(
+        vi
+          .mocked(fetch)
+          .mock.calls.some(([, request]) => request?.method === "POST"),
+      ).toBe(true),
+    );
+    const [url, request] = vi
+      .mocked(fetch)
+      .mock.calls.find(([, request]) => request?.method === "POST")!;
     expect(url).toBe("/api/sites/example.test/deployments");
     expect(JSON.parse(String(request?.body))).toEqual({ source: "current" });
-    expect((request?.headers as Record<string, string>)["idempotency-key"]).toBeTruthy();
-    expect(await screen.findByText(/Deploy current files: queued/)).toBeInTheDocument();
+    expect(
+      (request?.headers as Record<string, string>)["idempotency-key"],
+    ).toBeTruthy();
+    expect(
+      await screen.findByText(/Deploy current files: queued/),
+    ).toBeInTheDocument();
   });
 
   it("requires confirmation before a destructive Compose action", async () => {
@@ -147,12 +228,18 @@ describe("ActionsManager", () => {
       <ActionsManager domain="example.test" initialData={dockerData(true)} />,
     );
 
-    screen.getByText("Advanced: Runtime & lifecycle").closest("details")!.open = true;
+    openAdvanced();
+    screen.getByText("Advanced: Runtime & lifecycle").closest("details")!.open =
+      true;
     fireEvent.click(screen.getByRole("button", { name: /Stop project/i }));
     const dialog = await screen.findByRole("dialog", {
       name: "Stop the entire Compose project?",
     });
-    expect(vi.mocked(fetch).mock.calls.some(([, request]) => request?.method === "POST")).toBe(false);
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.some(([, request]) => request?.method === "POST"),
+    ).toBe(false);
     expect(
       within(dialog).getByText(/Named volumes are preserved/i),
     ).toBeInTheDocument();
@@ -174,13 +261,16 @@ describe("ActionsManager", () => {
           'level=warning msg="The \\"HOST_DATA_DIR\\" variable is not set. Defaulting to a blank string."',
       },
     };
-    const initialData = normalizeOperationsData(raw, { typeOverride: "docker" });
+    const initialData = normalizeOperationsData(raw, {
+      typeOverride: "docker",
+    });
     vi.mocked(fetch).mockResolvedValue({
       ok: true,
       json: async () => ({ success: true, data: { jobs: [] } }),
     } as Response);
 
     render(<ActionsManager domain="example.test" initialData={initialData} />);
+    chooseStep("Prepare");
 
     expect(screen.queryByText(/level=warning/)).not.toBeInTheDocument();
     expect(
@@ -193,10 +283,20 @@ describe("ActionsManager", () => {
     fireEvent.change(within(dialog).getByLabelText("HOST_DATA_DIR"), {
       target: { value: "/home/site/data" },
     });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Save and recheck" }));
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Save and recheck" }),
+    );
 
-    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([, request]) => request?.method === "POST")).toBe(true));
-    const [, request] = vi.mocked(fetch).mock.calls.find(([, request]) => request?.method === "POST")!;
+    await waitFor(() =>
+      expect(
+        vi
+          .mocked(fetch)
+          .mock.calls.some(([, request]) => request?.method === "POST"),
+      ).toBe(true),
+    );
+    const [, request] = vi
+      .mocked(fetch)
+      .mock.calls.find(([, request]) => request?.method === "POST")!;
     expect(JSON.parse(String(request?.body))).toEqual({
       action: "upsert",
       entries: [{ key: "HOST_DATA_DIR", value: "/home/site/data" }],
@@ -221,6 +321,7 @@ describe("ActionsManager", () => {
     });
 
     render(<ActionsManager domain="example.test" initialData={initialData} />);
+    chooseStep("Prepare");
 
     expect(
       screen.getByRole("region", { name: "Website traffic alignment" }),
@@ -248,11 +349,88 @@ describe("ActionsManager", () => {
     });
 
     render(<ActionsManager domain="example.test" initialData={initialData} />);
+    chooseStep("Prepare");
 
     const traffic = screen.getByRole("region", {
       name: "Website traffic alignment",
     });
     expect(traffic).toHaveTextContent("127.0.0.1:34000");
     expect(traffic).toHaveTextContent("Site-owned listener: 24000");
+  });
+
+  it("guides the user through four steps without executing an operation by navigation", async () => {
+    render(
+      <ActionsManager domain="example.test" initialData={dockerData(true)} />,
+    );
+    expect(
+      screen.getByRole("heading", { name: "Review website" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Deploy current files" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Continue to Prepare" }),
+    );
+    expect(
+      screen.getByRole("heading", { name: "Prepare" }),
+    ).toBeInTheDocument();
+    expect(window.location.search).toBe("?step=2");
+    fireEvent.click(screen.getByRole("button", { name: "Continue to Deploy" }));
+    expect(screen.getByRole("heading", { name: "Deploy" })).toBeInTheDocument();
+    chooseStep("Verify");
+    expect(
+      screen.getByRole("region", { name: "Application status" }),
+    ).toBeVisible();
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.some(([, request]) => request?.method === "POST"),
+    ).toBe(false);
+  });
+
+  it("restores a linked step and responds to browser history navigation", () => {
+    window.history.replaceState(null, "", "/sites/example.test/actions?step=3");
+    render(
+      <ActionsManager domain="example.test" initialData={dockerData(false)} />,
+    );
+    expect(screen.getByRole("heading", { name: "Deploy" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Deploy current files" }),
+    ).toBeDisabled();
+    window.history.replaceState(null, "", "/sites/example.test/actions?step=2");
+    fireEvent(window, new PopStateEvent("popstate"));
+    expect(
+      screen.getByRole("heading", { name: "Prepare" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Continue to Deploy" }),
+    ).toBeDisabled();
+  });
+
+  it("uses the fleet website path for suggested repairs", () => {
+    const data = dockerData(true);
+    data.guidance = {
+      summary: "Detected Compose",
+      recommendations: [
+        {
+          id: "folder",
+          title: "Check files",
+          detail: "Review application files",
+          section: "file-manager",
+        },
+      ],
+    };
+    render(
+      <ActionsManager
+        domain="example.test"
+        apiBase="/api/fleet/servers/server-1/proxy"
+        initialData={data}
+      />,
+    );
+    chooseStep("Prepare");
+    expect(screen.getByRole("link", { name: "Open Files" })).toHaveAttribute(
+      "href",
+      "/servers/server-1/sites/example.test/file-manager",
+    );
   });
 });
